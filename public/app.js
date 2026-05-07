@@ -49,7 +49,7 @@ async function init() {
     ["configuration", "configuration"]
   ]) {
     const value = params.get(urlKey);
-    if (value) els.importForm.elements[formKey].value = value;
+    if (value && !isUnresolvedMacro(value)) els.importForm.elements[formKey].value = value;
   }
   if (params.get("server")) {
     els.importForm.dataset.baseUrl = params.get("server");
@@ -64,6 +64,10 @@ async function init() {
     renderAuth(session);
     if (embeddedMode && session.authenticated && hasOnshapeContext()) {
       els.importForm.requestSubmit();
+    } else if (embeddedMode && !session.authenticated) {
+      setMessage("Log in with Onshape, then PlateFlow will send this Part Studio to inventory.", "");
+    } else if (embeddedMode) {
+      setMessage("PlateFlow is missing document context. Check the Onshape extension action URL.", "error");
     } else if (!embeddedMode) {
       await loadInventory();
     }
@@ -101,6 +105,7 @@ async function onImport(event) {
   event.preventDefault();
   const form = new FormData(els.importForm);
   source = Object.fromEntries(form.entries());
+  source.configuration = isUnresolvedMacro(source.configuration) ? "" : source.configuration;
   if (els.importForm.dataset.baseUrl) source.baseUrl = els.importForm.dataset.baseUrl;
   if (els.importForm.dataset.workspaceOrVersion) source.workspaceOrVersion = els.importForm.dataset.workspaceOrVersion;
   setMessage("Reading parts and assigned materials from Onshape...");
@@ -130,6 +135,11 @@ async function onImport(event) {
 
 function hasOnshapeContext() {
   return ["documentId", "workspaceId", "elementId"].every((name) => els.importForm.elements[name].value.trim());
+}
+
+function isUnresolvedMacro(value) {
+  const text = String(value || "").trim();
+  return text.includes("$") || text.includes("{") || text.includes("}");
 }
 
 function loadDemo() {
