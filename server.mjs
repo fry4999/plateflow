@@ -968,7 +968,10 @@ function normalizeOnshapeBase(value) {
 
 function requireCsrf(req, session) {
   const header = req.headers["x-csrf-token"];
-  if (!header || header !== session.csrf) throw httpError(403, "Invalid CSRF token");
+  if (!header || header !== session.csrf) {
+    session.csrf = randomBytes(24).toString("base64url");
+    throw httpError(403, "Invalid CSRF token");
+  }
 }
 
 async function onshapeJson(accessToken, url, options = {}) {

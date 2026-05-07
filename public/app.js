@@ -78,7 +78,7 @@ async function init() {
   setSyncMode(params.get("mode") === "assembly" || params.get("mode") === "cots" ? "cots" : "custom");
 
   try {
-    const session = await api("/api/session");
+    const session = await api("/api/session", {}, { skipCsrfRetry: true });
     csrfToken = session.csrfToken;
     renderAuth(session);
     if (embeddedMode && session.authenticated && hasOnshapeContext()) {
@@ -477,7 +477,7 @@ function updateSummary() {
   els.summaryMaterials.textContent = materials.length ? materials.join(", ") : "None";
 }
 
-async function api(url, options = {}) {
+async function api(url, options = {}, retry = {}) {
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -488,8 +488,19 @@ async function api(url, options = {}) {
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
+  if (response.status === 403 && /csrf/i.test(data.error || "") && !retry.skipCsrfRetry) {
+    await refreshSession();
+    return api(url, options, { skipCsrfRetry: true });
+  }
   if (!response.ok) throw new Error(data.error || "Request failed");
   return data;
+}
+
+async function refreshSession() {
+  const session = await api("/api/session", {}, { skipCsrfRetry: true });
+  csrfToken = session.csrfToken;
+  renderAuth(session);
+  return session;
 }
 
 function setMessage(text, type = "") {
