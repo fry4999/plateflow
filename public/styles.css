@@ -596,6 +596,11 @@ td select {
   font-size: 20px;
 }
 
+.embedded #message {
+  display: block;
+  margin: 12px 16px 0;
+}
+
 .embedded .tool-surface {
   grid-template-columns: 1fr;
   padding: 12px;
@@ -610,17 +615,25 @@ td select {
 }
 
 .embedded .table-shell,
-.embedded .inventory-layout {
+.embedded .summary dl {
   display: none;
 }
 
 .embedded .inventory-layout {
+  display: block;
   grid-template-columns: 1fr;
-  padding-top: 36px;
+  padding: 0 0 14px;
 }
 
 .embedded .summary {
   order: -1;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.embedded .summary h3 {
+  display: none;
 }
 
 @media (max-width: 900px) {
