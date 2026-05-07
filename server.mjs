@@ -98,7 +98,8 @@ function loadDotEnv() {
 async function createStorage() {
   if (config.databaseUrl) {
     try {
-      const { Pool } = await import("pg");
+      const pg = await import("pg");
+      const { Pool } = pg.default || pg;
       const pool = new Pool({
         connectionString: config.databaseUrl,
         ssl: config.databaseUrl.includes("localhost") ? false : { rejectUnauthorized: false }
