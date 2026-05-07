@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>FRC PlateFlow</title>
-    <link rel="stylesheet" href="/styles.css?v=2">
+    <title>PlateFlow Inventory</title>
+    <link rel="stylesheet" href="/styles.css?v=3">
   </head>
   <body>
     <header class="topbar">
@@ -12,12 +12,12 @@
         <span class="brand-mark">PF</span>
         <span>
           <strong>PlateFlow</strong>
-          <small>Onshape to FRC laser quotes</small>
+          <small>FRC plate inventory</small>
         </span>
       </a>
       <nav class="nav">
-        <a href="#parts">Parts</a>
-        <a href="#order">Order</a>
+        <a href="#dashboard">Dashboard</a>
+        <a href="#parts">Import</a>
         <a href="#security">Security</a>
       </nav>
       <div class="auth">
@@ -30,12 +30,12 @@
     <main>
       <section class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">Built for FRC teams cutting belly pans, gussets, brackets, and sponsor-night miracles.</p>
-          <h1>Order laser-cut plates straight from Onshape materials and STEP exports.</h1>
-          <p class="lede">Connect an Onshape Part Studio, pull every part with its assigned material, tune quantities and finishes, export a STEP bundle, then send a quote request.</p>
+          <p class="eyebrow">Built for FRC teams tracking belly pans, gussets, brackets, and spares.</p>
+          <h1>Keep your robot plate inventory synced from Onshape.</h1>
+          <p class="lede">Use the Onshape side panel to import Part Studio plates, assigned materials, thickness fields, and source links. Review everything here as an inventory dashboard.</p>
           <div class="hero-actions">
             <a class="button" href="/auth/onshape">Connect Onshape</a>
-            <a class="ghost" href="#parts">Enter document IDs</a>
+            <a class="ghost" href="#dashboard">View inventory</a>
           </div>
         </div>
         <div class="machine-panel" aria-label="laser cutting status">
@@ -49,7 +49,7 @@
           <div class="machine-stats">
             <div><strong>6061</strong><small>Aluminum</small></div>
             <div><strong>.125"</strong><small>Plate</small></div>
-            <div><strong>STEP</strong><small>AP242</small></div>
+            <div><strong>Live</strong><small>Inventory</small></div>
           </div>
         </div>
       </section>
@@ -62,22 +62,34 @@
         </article>
         <article>
           <span class="icon">2</span>
-          <h2>Quote</h2>
-          <p>Clean up quantities, thickness, finish, and notes without re-uploading the same robot plates manually.</p>
+          <h2>Send</h2>
+          <p>The Onshape panel posts those parts into PlateFlow inventory without making the CAD workspace feel crowded.</p>
         </article>
         <article>
           <span class="icon">3</span>
-          <h2>Export</h2>
-          <p>Generate a STEP bundle through Onshape translations and attach it to the manufacturing request.</p>
+          <h2>Track</h2>
+          <p>The dashboard shows what parts exist, which materials are assigned, and when the list was last refreshed.</p>
         </article>
+      </section>
+
+      <section id="dashboard" class="dashboard">
+        <div class="section-heading">
+          <span class="eyebrow">Inventory Dashboard</span>
+          <h2>Plate library</h2>
+        </div>
+        <div class="metrics">
+          <article><span>Imports</span><strong id="metricImports">0</strong></article>
+          <article><span>Parts</span><strong id="metricParts">0</strong></article>
+          <article><span>Materials</span><strong id="metricMaterials">0</strong></article>
+        </div>
       </section>
 
       <section id="parts" class="workspace">
         <div class="section-heading">
           <span class="eyebrow">Onshape Import</span>
-          <h2>Part Studio source</h2>
+          <h2>Send Part Studio to inventory</h2>
         </div>
-        <form id="importForm" class="tool-surface">
+        <form id="importForm" class="tool-surface import-panel">
           <label>
             <span>Document ID</span>
             <input name="documentId" autocomplete="off" placeholder="did">
@@ -94,14 +106,14 @@
             <span>Configuration</span>
             <input name="configuration" autocomplete="off" placeholder="optional encoded config">
           </label>
-          <button class="button" type="submit">Import parts</button>
+          <button class="button" type="submit">Send to inventory</button>
           <button id="demoButton" class="ghost" type="button">Load demo plates</button>
         </form>
 
         <div class="table-shell">
           <div class="table-toolbar">
             <strong id="partCount">No parts loaded</strong>
-            <button id="exportButton" class="button small" type="button" disabled>Export STEP bundle</button>
+            <button id="exportButton" class="button small" type="button" disabled>Download STEP</button>
           </div>
           <div class="responsive-table">
             <table>
@@ -116,28 +128,16 @@
                 </tr>
               </thead>
               <tbody id="partsBody">
-                <tr><td colspan="6" class="empty">Connect Onshape or load demo plates to start a quote.</td></tr>
+                <tr><td colspan="6" class="empty">Import from Onshape to populate inventory.</td></tr>
               </tbody>
             </table>
           </div>
         </div>
       </section>
 
-      <section id="order" class="order-layout">
-        <div class="section-heading">
-          <span class="eyebrow">FRC Ordering</span>
-          <h2>Send quote request</h2>
-        </div>
-        <form id="orderForm" class="order-form">
-          <label><span>FRC team number</span><input name="teamNumber" inputmode="numeric" placeholder="1678"></label>
-          <label><span>Contact name</span><input name="contactName" placeholder="Drive team CAD lead"></label>
-          <label><span>Email</span><input name="email" type="email" placeholder="cad@team.org"></label>
-          <label><span>Need by</span><input name="needBy" placeholder="Before Week 1"></label>
-          <label class="wide"><span>Notes</span><textarea name="notes" placeholder="Material substitutions, sponsor PO, deburr preferences, spare quantities..."></textarea></label>
-          <button class="button" type="submit">Submit quote</button>
-        </form>
+      <section class="inventory-layout">
         <aside class="summary">
-          <h3>Quote summary</h3>
+          <h3>Current selection</h3>
           <dl>
             <div><dt>Selected parts</dt><dd id="summaryParts">0</dd></div>
             <div><dt>Total quantity</dt><dd id="summaryQty">0</dd></div>
@@ -161,6 +161,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=2"></script>
+    <script src="/app.js?v=3"></script>
   </body>
 </html>
