@@ -223,6 +223,56 @@ main {
   overflow: hidden;
 }
 
+.login-screen {
+  display: grid;
+  place-items: center;
+  min-height: calc(100vh - 72px);
+  padding: 32px;
+}
+
+.login-card {
+  width: min(420px, 100%);
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.login-card h1 {
+  margin-bottom: 8px;
+  font-size: 44px;
+  line-height: 1;
+}
+
+.login-card p {
+  color: var(--muted);
+}
+
+.login-card label {
+  display: block;
+  margin-top: 16px;
+}
+
+.login-card button {
+  width: 100%;
+  margin-top: 18px;
+}
+
+.login-card .message:empty {
+  display: none;
+}
+
+.app-shell {
+  display: block;
+}
+
+body.locked .nav,
+body.locked #authStatus,
+body.locked #loginLink,
+body.locked #logoutLink {
+  display: none;
+}
+
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(360px, .95fr);
@@ -900,6 +950,7 @@ td select {
 
 .embedded .brand small,
 .embedded .nav,
+.embedded #loginScreen,
 .embedded .hero,
 .embedded .steps,
 .embedded #dashboard,

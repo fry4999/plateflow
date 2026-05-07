@@ -4,6 +4,14 @@ let parts = [];
 let embeddedMode = false;
 
 const els = {
+  appShell: document.querySelector("#appShell"),
+  loginScreen: document.querySelector("#loginScreen"),
+  plateflowLoginForm: document.querySelector("#plateflowLoginForm"),
+  plateflowLoginButton: document.querySelector("#plateflowLoginButton"),
+  loginHelp: document.querySelector("#loginHelp"),
+  loginMessage: document.querySelector("#loginMessage"),
+  nameField: document.querySelector("#nameField"),
+  appAuthStatus: document.querySelector("#appAuthStatus"),
   authStatus: document.querySelector("#authStatus"),
   loginLink: document.querySelector("#loginLink"),
   logoutLink: document.querySelector("#logoutLink"),
@@ -82,13 +90,14 @@ async function init() {
     const session = await api("/api/session", {}, { skipCsrfRetry: true });
     csrfToken = session.csrfToken;
     renderAuth(session);
+    renderAppAccess(session);
     if (embeddedMode && session.authenticated && hasOnshapeContext()) {
       setMessage("Onshape connected. Press Submit sync batch when you are ready.", "ok");
     } else if (embeddedMode && !session.authenticated) {
       setMessage("Log in with Onshape, then submit this tab to PlateFlow inventory.", "");
     } else if (embeddedMode) {
       setMessage("PlateFlow is missing document context. Check the Onshape extension action URL.", "error");
-    } else if (!embeddedMode) {
+    } else if (!embeddedMode && canLoadDashboard(session)) {
       await loadDashboard();
     }
   } catch (error) {
@@ -100,6 +109,7 @@ async function init() {
 
 function bindEvents() {
   els.importForm.addEventListener("submit", onImport);
+  if (els.plateflowLoginForm) els.plateflowLoginForm.addEventListener("submit", onPlateFlowLogin);
   els.demoButton.addEventListener("click", loadDemo);
   els.partsBody.addEventListener("input", onPartEdit);
   els.partsBody.addEventListener("change", onPartEdit);
@@ -125,6 +135,54 @@ function renderAuth(session) {
     els.authStatus.classList.remove("ok");
     els.loginLink.classList.remove("hidden");
     els.logoutLink.classList.add("hidden");
+  }
+}
+
+function renderAppAccess(session) {
+  const allowApp = embeddedMode || canLoadDashboard(session);
+  els.loginScreen?.classList.toggle("hidden", allowApp);
+  els.appShell?.classList.toggle("hidden", !allowApp);
+  document.body.classList.toggle("locked", !allowApp);
+  document.body.classList.toggle("bootstrap", Boolean(session.bootstrapRequired));
+  if (els.nameField) els.nameField.classList.toggle("hidden", !session.bootstrapRequired);
+  if (els.loginHelp) els.loginHelp.textContent = session.bootstrapRequired ? "Create the first admin account." : "Sign in to continue.";
+  if (els.plateflowLoginButton) els.plateflowLoginButton.textContent = session.bootstrapRequired ? "Create admin" : "Log in";
+  if (els.appAuthStatus) {
+    if (session.bootstrapRequired) {
+      els.appAuthStatus.textContent = "Setup required";
+      els.appAuthStatus.classList.remove("ok");
+    } else if (session.appAuthenticated) {
+      els.appAuthStatus.textContent = session.appUser ? `${session.appUser.name || session.appUser.email} · ${session.appUser.role}` : "Signed in";
+      els.appAuthStatus.classList.add("ok");
+    } else {
+      els.appAuthStatus.textContent = "Not signed in";
+      els.appAuthStatus.classList.remove("ok");
+    }
+  }
+}
+
+function canLoadDashboard(session) {
+  return Boolean(session.bootstrapRequired || session.appAuthenticated);
+}
+
+async function onPlateFlowLogin(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(els.plateflowLoginForm).entries());
+  try {
+    const session = await api(body.name ? "/auth/plateflow/register" : "/auth/plateflow/login", {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    const nextSession = session.session || await refreshSession();
+    csrfToken = nextSession.csrfToken || csrfToken;
+    renderAuth(nextSession);
+    renderAppAccess(nextSession);
+    els.loginMessage.textContent = "";
+    els.plateflowLoginForm.reset();
+    await loadDashboard();
+  } catch (error) {
+    els.loginMessage.textContent = error.message;
+    els.loginMessage.className = "message error";
   }
 }
 
@@ -191,9 +249,9 @@ function normalizeOnshapeServer(value) {
 
 function loadDemo() {
   source = null;
-  parts = demoParts.map((part) => ({ ...part }));
+  parts = demoParts.map((part) => ({ ...part, type: "custom", sourceType: "custom", selected: part.selected !== false }));
   renderParts();
-  setMessage("Demo plates loaded. Connect Onshape to import a real robot document.", "ok");
+  setMessage("Local custom-part demo loaded. Demo rows are never saved unless you import from Onshape.", "ok");
 }
 
 function renderParts() {
@@ -510,6 +568,7 @@ async function refreshSession() {
   const session = await api("/api/session", {}, { skipCsrfRetry: true });
   csrfToken = session.csrfToken;
   renderAuth(session);
+  renderAppAccess(session);
   return session;
 }
 

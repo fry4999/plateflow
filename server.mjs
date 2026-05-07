@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
-import { randomBytes, timingSafeEqual, createHmac } from "node:crypto";
+import { randomBytes, timingSafeEqual, createHmac, scryptSync } from "node:crypto";
 
 const root = new URL(".", import.meta.url).pathname;
 const publicDir = join(root, "public");
@@ -46,17 +46,20 @@ createServer(async (req, res) => {
     const url = new URL(req.url || "/", config.appBaseUrl);
     const session = getSession(req, res);
 
+    if (url.pathname === "/auth/plateflow/register" && req.method === "POST") return await registerPlateFlow(req, res, session);
+    if (url.pathname === "/auth/plateflow/login" && req.method === "POST") return await loginPlateFlow(req, res, session);
     if (url.pathname === "/auth/onshape") return onshapeStart(req, res, session, url);
     if (url.pathname === "/auth/onshape/callback") return await onshapeCallback(req, res, session, url);
     if (url.pathname === "/auth/logout") return logout(res, session);
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
-    if (url.pathname === "/api/inventory") return json(res, 200, inventorySnapshot());
-    if (url.pathname === "/api/dashboard") return json(res, 200, dashboardSnapshot());
-    if (url.pathname === "/api/sync-batches") return json(res, 200, syncBatchSnapshot());
-    if (url.pathname === "/api/raw-materials" && req.method === "GET") return json(res, 200, { rawMaterials: store.rawMaterials });
-    if (url.pathname === "/api/raw-materials" && req.method === "POST") return await addRawMaterial(req, res, session);
+    if (url.pathname === "/api/inventory") return withAppAccess(session, res, () => json(res, 200, inventorySnapshot()));
+    if (url.pathname === "/api/dashboard") return withAppAccess(session, res, () => json(res, 200, dashboardSnapshot()));
+    if (url.pathname === "/api/sync-batches") return withAppAccess(session, res, () => json(res, 200, syncBatchSnapshot()));
+    if (url.pathname === "/api/raw-materials" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, { rawMaterials: store.rawMaterials }));
+    if (url.pathname === "/api/raw-materials" && req.method === "POST") return withAppAccess(session, res, () => addRawMaterial(req, res, session), ["admin", "mentor", "fabricator"]);
     if (url.pathname === "/api/robots") return json(res, 200, { robots: robotSnapshot(inventorySnapshot().parts) });
     if (url.pathname === "/api/audit-log") return json(res, 200, { auditLogs: store.auditLogs.slice(0, 50) });
+    if (url.pathname === "/api/admin/remove-placeholder-cots" && req.method === "POST") return withAppAccess(session, res, () => removePlaceholderCots(req, res, session), ["admin"]);
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return await importOnshape(req, res, session);
     if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return await importCots(req, res, session);
     if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return await exportStep(req, res, session);
@@ -153,6 +156,7 @@ function mergeStore(parsed) {
     ...fallback,
     ...parsed,
     teams: Array.isArray(parsed.teams) ? parsed.teams : fallback.teams,
+    invites: Array.isArray(parsed.invites) ? parsed.invites : fallback.invites,
     users: Array.isArray(parsed.users) ? parsed.users : fallback.users,
     robots: Array.isArray(parsed.robots) ? parsed.robots : fallback.robots,
     inventoryRecords: Array.isArray(parsed.inventoryRecords) ? parsed.inventoryRecords : fallback.inventoryRecords,
@@ -174,6 +178,7 @@ function defaultStore() {
   const now = new Date().toISOString();
   return {
     teams: [{ id: "team-default", name: "FRC Team", status: "active" }],
+    invites: [],
     users: [],
     robots: [
       {
@@ -304,6 +309,7 @@ function getSession(req, res) {
     oauthState: null,
     token: null,
     user: null,
+    appUserId: null,
     downloads: new Map(),
     createdAt: Date.now()
   };
@@ -353,10 +359,95 @@ function cookie(name, value, opts) {
 function publicSession(session) {
   return {
     authenticated: Boolean(session.token),
+    appAuthenticated: Boolean(session.appUserId),
+    bootstrapRequired: !store.users.length,
     csrfToken: session.csrf,
     user: session.user,
+    appUser: session.appUserId ? publicAppUser(store.users.find((user) => user.id === session.appUserId)) : null,
     configured: Boolean(config.onshapeClientId && config.onshapeClientSecret),
     appBaseUrl: config.appBaseUrl
+  };
+}
+
+function withAppAccess(session, res, handler, roles = []) {
+  if (!store.users.length) return handler();
+  const user = store.users.find((item) => item.id === session.appUserId && item.status === "active");
+  if (!user) return json(res, 401, { error: "Sign in to PlateFlow first" });
+  if (roles.length && !roles.includes(user.role)) return json(res, 403, { error: "Your role cannot do that" });
+  return handler(user);
+}
+
+async function registerPlateFlow(req, res, session) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const input = validateAuthInput(body, { requireName: !store.users.length });
+  const existing = store.users.find((user) => user.email === input.email);
+  if (existing) throw httpError(409, "A PlateFlow account already exists for that email");
+
+  const bootstrap = !store.users.length;
+  if (!bootstrap) throw httpError(403, "Invite-only registration is not enabled yet");
+
+  const user = {
+    id: `user-${randomBytes(6).toString("hex")}`,
+    email: input.email,
+    name: input.name || input.email.split("@")[0],
+    role: "admin",
+    status: "active",
+    passwordHash: hashPassword(input.password),
+    createdAt: new Date().toISOString(),
+    approvedAt: new Date().toISOString()
+  };
+  store.users.unshift(user);
+  session.appUserId = user.id;
+  audit("auth.bootstrap_admin", `Created first PlateFlow admin ${user.email}`, user.email);
+  await persistStore();
+  return json(res, 201, { user: publicAppUser(user), session: publicSession(session) });
+}
+
+async function loginPlateFlow(req, res, session) {
+  requireCsrf(req, session);
+  const input = validateAuthInput(await readJson(req));
+  const user = store.users.find((item) => item.email === input.email);
+  if (!user || !verifyPassword(input.password, user.passwordHash)) throw httpError(401, "Invalid email or password");
+  if (user.status !== "active") throw httpError(403, "This account is not active yet");
+  session.appUserId = user.id;
+  audit("auth.login", `PlateFlow login ${user.email}`, user.email);
+  await persistStore();
+  return json(res, 200, { user: publicAppUser(user), session: publicSession(session) });
+}
+
+function validateAuthInput(body, options = {}) {
+  const email = String(body.email || "").trim().toLowerCase().slice(0, 160);
+  const password = String(body.password || "");
+  const name = String(body.name || "").trim().slice(0, 80);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw httpError(400, "Valid email is required");
+  if (password.length < 10 || password.length > 200) throw httpError(400, "Password must be at least 10 characters");
+  if (options.requireName && !name) throw httpError(400, "Name is required");
+  return { email, password, name };
+}
+
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("base64url");
+  const hash = scryptSync(password, salt, 64).toString("base64url");
+  return `scrypt:${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  const [scheme, salt, hash] = String(stored || "").split(":");
+  if (scheme !== "scrypt" || !salt || !hash) return false;
+  const expected = Buffer.from(hash, "base64url");
+  const actual = Buffer.from(scryptSync(password, salt, 64).toString("base64url"), "base64url");
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+function publicAppUser(user) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    status: user.status
   };
 }
 
@@ -486,7 +577,10 @@ async function importCots(req, res, session) {
   const input = validateImport(body);
   await ensureAccessToken(session);
 
-  const rows = Array.isArray(body.rows) && body.rows.length ? body.rows : demoCotsRows();
+  const rows = Array.isArray(body.rows) && body.rows.length ? body.rows : [];
+  if (!rows.length) {
+    throw httpError(501, "Assembly BOM import is not connected yet. PlateFlow will not create placeholder COTS items.");
+  }
   const normalized = rows.slice(0, 200).map((row, index) => normalizeCotsRow(row, input, index));
   const saved = saveInventory(input, normalized, "cots", "Assembly BOM procurement sync");
   return json(res, 200, { parts: normalized, source: input, inventory: saved });
@@ -810,14 +904,6 @@ function vendorLink(vendor, sku, name) {
   return query ? `https://www.google.com/search?q=${query}` : "";
 }
 
-function demoCotsRows() {
-  return [
-    { name: "NEO V1.1 Brushless Motor", vendor: "REV", vendorSku: "REV-21-1650", quantity: 4, category: "motors" },
-    { name: "1/2 in Hex Bearing", vendor: "WCP", vendorSku: "WCP-0132", quantity: 12, category: "bearings" },
-    { name: "HTD 5mm Belt 60T", vendor: "WCP", vendorSku: "WCP-0158", quantity: 6, category: "belts" }
-  ];
-}
-
 async function exportStep(req, res, session) {
   requireCsrf(req, session);
   const body = await readJson(req);
@@ -884,6 +970,33 @@ async function addRawMaterial(req, res, session) {
   audit("raw_material.added", `${material.grade} ${material.materialFamily} ${material.dimensions}`, session.user?.label || "user");
   await persistStore();
   return json(res, 201, material);
+}
+
+async function removePlaceholderCots(req, res, session) {
+  requireCsrf(req, session);
+  const placeholderNames = new Set(["NEO V1.1 Brushless Motor", "1/2 in Hex Bearing", "HTD 5mm Belt 60T"]);
+  const before = {
+    records: store.inventoryRecords.length,
+    catalogParts: store.catalogParts.length,
+    procurementOrders: store.procurementOrders.length,
+    syncBatches: store.syncBatches.length
+  };
+  store.inventoryRecords = store.inventoryRecords.map((record) => ({
+    ...record,
+    parts: record.parts.filter((part) => !(record.sourceType === "cots" && placeholderNames.has(part.name)))
+  })).filter((record) => record.parts.length);
+  store.catalogParts = store.catalogParts.filter((part) => !(part.sourceType === "cots" && placeholderNames.has(part.name)));
+  store.procurementOrders = store.procurementOrders.filter((order) => !order.lines?.some((line) => placeholderNames.has(line.name)));
+  store.syncBatches = store.syncBatches.filter((batch) => batch.sourceType !== "cots" || batch.label !== "Assembly BOM procurement sync");
+  const removed = {
+    records: before.records - store.inventoryRecords.length,
+    catalogParts: before.catalogParts - store.catalogParts.length,
+    procurementOrders: before.procurementOrders - store.procurementOrders.length,
+    syncBatches: before.syncBatches - store.syncBatches.length
+  };
+  audit("admin.cleanup_placeholder_cots", `Removed placeholder COTS data: ${JSON.stringify(removed)}`, session.user?.label || "user");
+  await persistStore();
+  return json(res, 200, { removed });
 }
 
 function downloadBlob(res, session, id) {

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=7">
+    <link rel="stylesheet" href="/styles.css?v=8">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -27,72 +27,51 @@
         <a href="#admin">Admin</a>
       </nav>
       <div class="auth">
-        <span id="authStatus" class="status-pill">Checking</span>
-        <a id="loginLink" class="button small" href="/auth/onshape">Log in with Onshape</a>
+        <span id="appAuthStatus" class="status-pill">Checking</span>
+        <span id="authStatus" class="status-pill">Onshape checking</span>
+        <a id="loginLink" class="button small" href="/auth/onshape">Connect Onshape</a>
         <a id="logoutLink" class="ghost small hidden" href="/auth/logout">Log out</a>
         <button id="themeToggle" class="ghost small" type="button" aria-label="Switch color theme">Light</button>
       </div>
     </header>
 
     <main>
-      <section class="hero">
-        <div class="hero-copy">
-          <p class="eyebrow">Built for FRC teams tracking belly pans, gussets, brackets, and spares.</p>
-          <h1>CAD-to-inventory build ops for FRC robots.</h1>
-          <p class="lede">Sync custom parts from Part Studios, sync COTS items from Assembly BOMs, then track inventory, fabrication, procurement, and subsystem readiness in one operational workspace.</p>
-          <div class="hero-actions">
-            <a class="button" href="/auth/onshape">Connect Onshape</a>
-            <a class="ghost" href="#dashboard">View inventory</a>
-          </div>
-        </div>
-        <div class="machine-panel" aria-label="laser cutting status">
-          <div class="machine-head">
-            <span></span><span></span><span></span>
-          </div>
-          <div class="plate-preview">
-            <i></i><i></i><i></i><i></i><i></i><i></i>
-            <b></b>
-          </div>
-          <div class="machine-stats">
-            <div><strong>6061</strong><small>Aluminum</small></div>
-            <div><strong>.125"</strong><small>Plate</small></div>
-            <div><strong>Live</strong><small>Inventory</small></div>
-          </div>
-        </div>
+      <section id="loginScreen" class="login-screen">
+        <form id="plateflowLoginForm" class="login-card">
+          <h1>plateflow</h1>
+          <p id="loginHelp">Sign in to continue.</p>
+          <label id="nameField" class="hidden">
+            <span>Name</span>
+            <input name="name" autocomplete="name">
+          </label>
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" autocomplete="email" required>
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" autocomplete="current-password" minlength="10" required>
+          </label>
+          <button id="plateflowLoginButton" class="button" type="submit">Log in</button>
+          <p id="loginMessage" class="message" role="status" aria-live="polite"></p>
+        </form>
       </section>
 
-      <section class="band steps">
-        <article>
-          <span class="icon">1</span>
-          <h2>Read</h2>
-          <p>Part Studios feed the custom fabrication pipeline. Assembly BOMs feed the purchased/COTS procurement pipeline.</p>
-        </article>
-        <article>
-          <span class="icon">2</span>
-          <h2>Send</h2>
-          <p>The embedded Onshape app submits small sync batches; heavier matching, exports, and inventory updates stay on the backend.</p>
-        </article>
-        <article>
-          <span class="icon">3</span>
-          <h2>Track</h2>
-          <p>The dashboard merges normalized parts into global inventory, robot requirements, procurement, and fabrication queues.</p>
-        </article>
-      </section>
-
-      <section id="dashboard" class="dashboard">
-        <div class="section-heading">
-          <span class="eyebrow">Build Ops Overview</span>
-          <h2>Team state</h2>
-        </div>
-        <div class="metrics">
-          <article><span>Imports</span><strong id="metricImports">0</strong></article>
-          <article><span>Parts</span><strong id="metricParts">0</strong></article>
-          <article><span>Custom</span><strong id="metricCustom">0</strong></article>
-          <article><span>COTS</span><strong id="metricCots">0</strong></article>
-          <article><span>Fabrication</span><strong id="metricFabrication">0</strong></article>
-          <article><span>Procurement</span><strong id="metricProcurement">0</strong></article>
-        </div>
-      </section>
+      <div id="appShell" class="app-shell hidden">
+        <section id="dashboard" class="dashboard">
+          <div class="section-heading">
+            <span class="eyebrow">Build Ops Overview</span>
+            <h2>Team state</h2>
+          </div>
+          <div class="metrics">
+            <article><span>Imports</span><strong id="metricImports">0</strong></article>
+            <article><span>Parts</span><strong id="metricParts">0</strong></article>
+            <article><span>Custom</span><strong id="metricCustom">0</strong></article>
+            <article><span>COTS</span><strong id="metricCots">0</strong></article>
+            <article><span>Fabrication</span><strong id="metricFabrication">0</strong></article>
+            <article><span>Procurement</span><strong id="metricProcurement">0</strong></article>
+          </div>
+        </section>
 
       <section id="inventory" class="workspace">
         <div class="section-heading split-heading">
@@ -307,8 +286,9 @@
           <div id="auditLog" class="batch-list audit-list">No audit activity yet.</div>
         </div>
       </section>
+      </div>
     </main>
 
-    <script src="/app.js?v=7"></script>
+    <script src="/app.js?v=8"></script>
   </body>
 </html>
