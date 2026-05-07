@@ -23,9 +23,17 @@ const els = {
   metricCots: document.querySelector("#metricCots"),
   metricFabrication: document.querySelector("#metricFabrication"),
   metricProcurement: document.querySelector("#metricProcurement"),
+  inventorySearch: document.querySelector("#inventorySearch"),
+  inventoryBody: document.querySelector("#inventoryBody"),
+  robotList: document.querySelector("#robotList"),
   fabQueueCount: document.querySelector("#fabQueueCount"),
   procQueueCount: document.querySelector("#procQueueCount"),
+  fabricationJobs: document.querySelector("#fabricationJobs"),
+  procurementOrders: document.querySelector("#procurementOrders"),
   batchList: document.querySelector("#batchList"),
+  rawMaterialForm: document.querySelector("#rawMaterialForm"),
+  rawMaterialList: document.querySelector("#rawMaterialList"),
+  auditLog: document.querySelector("#auditLog"),
   summaryParts: document.querySelector("#summaryParts"),
   summaryQty: document.querySelector("#summaryQty"),
   summaryMaterials: document.querySelector("#summaryMaterials"),
@@ -80,7 +88,7 @@ async function init() {
     } else if (embeddedMode) {
       setMessage("PlateFlow is missing document context. Check the Onshape extension action URL.", "error");
     } else if (!embeddedMode) {
-      await loadInventory();
+      await loadDashboard();
     }
   } catch {
     setMessage("Could not initialize the session.", "error");
@@ -93,6 +101,8 @@ async function init() {
   els.selectAll.addEventListener("change", toggleAll);
   els.exportButton.addEventListener("click", onExport);
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
+  if (els.rawMaterialForm) els.rawMaterialForm.addEventListener("submit", onRawMaterialAdd);
+  if (els.inventorySearch) els.inventorySearch.addEventListener("input", () => loadDashboard());
   els.modeTabs.forEach((button) => button.addEventListener("click", () => setSyncMode(button.dataset.mode)));
   if (els.themeToggle) els.themeToggle.addEventListener("click", toggleTheme);
   renderParts();
@@ -131,15 +141,7 @@ async function onImport(event) {
     parts = result.parts.map((part) => ({ ...part, selected: true }));
     source = result.source;
     renderParts();
-    renderInventory(result.inventory ? {
-      records: [result.inventory],
-      parts: result.parts,
-      totals: {
-        records: 1,
-        parts: result.parts.length,
-        materials: new Set(result.parts.map((part) => part.material || "Unassigned")).size
-      }
-    } : null);
+    if (!embeddedMode) await loadDashboard();
     const noun = parts.length === 1 ? "part" : "parts";
     setMessage(embeddedMode ? `Sent ${parts.length} ${noun} to the PlateFlow dashboard.` : `Imported ${parts.length} ${noun} into ${mode === "cots" ? "procurement" : "fabrication"} inventory.`, "ok");
   } catch (error) {
@@ -269,6 +271,21 @@ async function loadInventory() {
   if (parts.length) setMessage(`Loaded ${parts.length} inventoried part${parts.length === 1 ? "" : "s"}.`, "ok");
 }
 
+async function loadDashboard() {
+  const dashboard = await api("/api/dashboard");
+  renderInventory(dashboard.inventory);
+  renderInventoryTable(dashboard.inventory.parts);
+  renderRobots(dashboard.robots);
+  renderFabrication(dashboard.fabrication);
+  renderProcurement(dashboard.procurement);
+  renderRawMaterials(dashboard.rawMaterials);
+  renderAudit(dashboard.admin.auditLogs);
+  parts = dashboard.inventory.parts.map((part) => ({ ...part, selected: true }));
+  source = null;
+  renderParts();
+  if (parts.length) setMessage(`Loaded ${parts.length} inventoried item${parts.length === 1 ? "" : "s"}.`, "ok");
+}
+
 function renderInventory(inventory) {
   if (!inventory || !els.metricImports) return;
   els.metricImports.textContent = String(inventory.totals.records);
@@ -280,6 +297,156 @@ function renderInventory(inventory) {
   if (els.fabQueueCount) els.fabQueueCount.textContent = inventory.totals.fabrication ? `${inventory.totals.fabrication} custom part${inventory.totals.fabrication === 1 ? "" : "s"} awaiting fabrication review.` : "No custom parts queued.";
   if (els.procQueueCount) els.procQueueCount.textContent = inventory.totals.procurement ? `${inventory.totals.procurement} COTS item${inventory.totals.procurement === 1 ? "" : "s"} awaiting procurement review.` : "No COTS parts queued.";
   loadBatches();
+}
+
+function renderInventoryTable(items) {
+  if (!els.inventoryBody) return;
+  const query = (els.inventorySearch?.value || "").trim().toLowerCase();
+  const visible = items.filter((part) => [
+    part.name,
+    part.category,
+    part.material,
+    part.vendor,
+    part.vendorSku,
+    part.process,
+    part.status
+  ].join(" ").toLowerCase().includes(query)).slice(0, 200);
+
+  if (!visible.length) {
+    els.inventoryBody.innerHTML = `<tr><td colspan="7" class="empty">No matching inventory.</td></tr>`;
+    return;
+  }
+
+  els.inventoryBody.innerHTML = visible.map((part) => `
+    <tr>
+      <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
+      <td><span class="part-name">${escapeHtml(part.name)}</span><br><small>${escapeHtml(part.vendorSku || part.id || "")}</small></td>
+      <td>${escapeHtml(part.category || "uncategorized")}</td>
+      <td>${escapeHtml(part.sourceType === "cots" ? [part.vendor, part.vendorSku].filter(Boolean).join(" ") || "Unassigned" : [part.material, part.thickness].filter(Boolean).join(" ") || "Unassigned")}</td>
+      <td>${Number(part.quantity || part.quantityNeeded || 1)}</td>
+      <td>${Number(part.onHand || 0)}</td>
+      <td><span class="status">${escapeHtml(part.status || "needed")}</span></td>
+    </tr>
+  `).join("");
+}
+
+function renderRobots(robots) {
+  if (!els.robotList) return;
+  if (!robots.length) {
+    els.robotList.innerHTML = `<article><p>No robots configured.</p></article>`;
+    return;
+  }
+  els.robotList.innerHTML = robots.map((robot) => `
+    <article>
+      <div class="card-head">
+        <div>
+          <h3>${escapeHtml(robot.name)}</h3>
+          <p>${escapeHtml(robot.season)} season · ${Number(robot.counts.requirements)} requirements</p>
+        </div>
+        <strong>${Number(robot.readiness)}%</strong>
+      </div>
+      <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(robot.readiness)))}%"></span></div>
+      <dl class="mini-stats">
+        <div><dt>Procurement</dt><dd>${Number(robot.progress.procurement)}%</dd></div>
+        <div><dt>Fabrication</dt><dd>${Number(robot.progress.fabrication)}%</dd></div>
+        <div><dt>Install</dt><dd>${Number(robot.progress.receivedInstalled)}%</dd></div>
+      </dl>
+      <div class="subsystem-list">
+        ${robot.subsystems.map((subsystem) => `
+          <span>${escapeHtml(subsystem.name)} <b>${Number(subsystem.readiness)}%</b></span>
+        `).join("")}
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderFabrication(fabrication) {
+  if (!els.fabricationJobs) return;
+  if (!fabrication.jobs.length) {
+    els.fabricationJobs.textContent = "No fabrication jobs yet.";
+    return;
+  }
+  els.fabricationJobs.innerHTML = fabrication.jobs.slice(0, 8).map((job) => {
+    const lines = Array.isArray(job.lines) ? job.lines : [];
+    const grouping = Array.isArray(job.grouping) ? job.grouping : [];
+    return `
+    <div>
+      <strong>${escapeHtml(job.id)} · ${escapeHtml(job.status)}</strong>
+      <span>${lines.length} custom line${lines.length === 1 ? "" : "s"} · ${grouping.map((group) => `${group.key} (${group.count})`).join(", ") || "Ungrouped"}</span>
+    </div>
+  `;
+  }).join("");
+}
+
+function renderProcurement(procurement) {
+  if (!els.procurementOrders) return;
+  if (!procurement.orders.length) {
+    els.procurementOrders.textContent = "No procurement groups yet.";
+    return;
+  }
+  els.procurementOrders.innerHTML = procurement.orders.slice(0, 8).map((order) => {
+    const lines = Array.isArray(order.lines) ? order.lines : Array.isArray(order.parts) ? order.parts : [];
+    const groups = Array.isArray(order.vendorGroups) ? order.vendorGroups : [];
+    return `
+    <div>
+      <strong>${escapeHtml(order.id)} · ${escapeHtml(order.status)}</strong>
+      <span>${lines.length} COTS line${lines.length === 1 ? "" : "s"} · ${groups.map((group) => `${group.vendor} (${group.count})`).join(", ") || "Ungrouped"}</span>
+    </div>
+  `;
+  }).join("");
+}
+
+function renderRawMaterials(rawMaterials) {
+  if (!els.rawMaterialList) return;
+  if (!rawMaterials.length) {
+    els.rawMaterialList.innerHTML = `<article><p>No raw stock entered.</p></article>`;
+    return;
+  }
+  els.rawMaterialList.innerHTML = rawMaterials.slice(0, 12).map((stock) => `
+    <article>
+      <div class="card-head">
+        <div>
+          <h3>${escapeHtml([stock.grade, stock.materialFamily].filter(Boolean).join(" "))}</h3>
+          <p>${escapeHtml(stock.stockType)} · ${escapeHtml(stock.dimensions)}</p>
+        </div>
+        <span class="status">${escapeHtml(stock.status)}</span>
+      </div>
+      <dl class="mini-stats">
+        <div><dt>Remaining</dt><dd>${Number(stock.remainingQuantity)} ${escapeHtml(stock.unit)}</dd></div>
+        <div><dt>Location</dt><dd>${escapeHtml(stock.location || "Unset")}</dd></div>
+      </dl>
+    </article>
+  `).join("");
+}
+
+function renderAudit(logs) {
+  if (!els.auditLog) return;
+  if (!logs.length) {
+    els.auditLog.textContent = "No audit activity yet.";
+    return;
+  }
+  els.auditLog.innerHTML = logs.slice(0, 8).map((entry) => `
+    <div>
+      <strong>${escapeHtml(entry.action)}</strong>
+      <span>${escapeHtml(entry.detail)} · ${new Date(entry.createdAt).toLocaleString()}</span>
+    </div>
+  `).join("");
+}
+
+async function onRawMaterialAdd(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(els.rawMaterialForm).entries());
+  try {
+    await api("/api/raw-materials", {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    els.rawMaterialForm.reset();
+    await loadDashboard();
+    setMessage("Raw stock added to inventory.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
 }
 
 async function loadBatches() {

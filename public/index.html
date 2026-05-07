@@ -4,9 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=4">
+    <link rel="stylesheet" href="/styles.css?v=5">
   </head>
   <body data-theme="dark">
+    <a class="skip-link" href="#dashboard">Skip to main content</a>
     <header class="topbar">
       <a class="brand" href="/">
         <span class="brand-mark">PF</span>
@@ -17,15 +18,19 @@
       </a>
       <nav class="nav">
         <a href="#dashboard">Overview</a>
+        <a href="#inventory">Inventory</a>
+        <a href="#robots">Robots</a>
         <a href="#parts">Sync</a>
-        <a href="#queues">Queues</a>
-        <a href="#security">Security</a>
+        <a href="#fabrication">Fabrication</a>
+        <a href="#procurement">Procurement</a>
+        <a href="#raw-material">Raw</a>
+        <a href="#admin">Admin</a>
       </nav>
       <div class="auth">
         <span id="authStatus" class="status-pill">Checking</span>
         <a id="loginLink" class="button small" href="/auth/onshape">Log in with Onshape</a>
         <a id="logoutLink" class="ghost small hidden" href="/auth/logout">Log out</a>
-        <button id="themeToggle" class="ghost small" type="button">Light</button>
+        <button id="themeToggle" class="ghost small" type="button" aria-label="Switch color theme">Light</button>
       </div>
     </header>
 
@@ -89,6 +94,45 @@
         </div>
       </section>
 
+      <section id="inventory" class="workspace">
+        <div class="section-heading split-heading">
+          <div>
+            <span class="eyebrow">Inventory</span>
+            <h2>Global catalog</h2>
+          </div>
+          <input id="inventorySearch" class="search-input" placeholder="Search parts, materials, vendors">
+        </div>
+        <div class="table-shell">
+          <div class="responsive-table">
+            <table>
+              <caption>Global inventory catalog</caption>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Part</th>
+                  <th>Category</th>
+                  <th>Material/Vendor</th>
+                  <th>Needed</th>
+                  <th>On hand</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="inventoryBody">
+                <tr><td colspan="7" class="empty">No inventory yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="robots" class="workspace">
+        <div class="section-heading">
+          <span class="eyebrow">Robots</span>
+          <h2>Requirements and readiness</h2>
+        </div>
+        <div id="robotList" class="ops-grid"></div>
+      </section>
+
       <section id="parts" class="workspace">
         <div class="section-heading">
           <span class="eyebrow">Onshape Sync</span>
@@ -102,7 +146,7 @@
           <input name="syncMode" type="hidden" value="custom">
           <label>
             <span>Document ID</span>
-            <input name="documentId" autocomplete="off" placeholder="did">
+            <input name="documentId" autocomplete="off" placeholder="did" aria-describedby="message">
           </label>
           <label>
             <span>Workspace ID</span>
@@ -127,6 +171,7 @@
           </div>
           <div class="responsive-table">
             <table>
+              <caption>Current Onshape sync selection</caption>
               <thead>
                 <tr>
                   <th><input id="selectAll" type="checkbox" aria-label="select all parts"></th>
@@ -146,31 +191,92 @@
         </div>
       </section>
 
-      <section id="queues" class="queue-grid">
+      <section id="fabrication" class="queue-grid">
         <div class="section-heading">
-          <span class="eyebrow">Queues</span>
-          <h2>Operational handoff</h2>
+          <span class="eyebrow">Fabrication</span>
+          <h2>Custom part queue</h2>
         </div>
         <article>
-          <h3>Fabrication queue</h3>
+          <h3>Review queue</h3>
           <p id="fabQueueCount">No custom parts queued.</p>
           <ul>
             <li>Group by material, thickness, process, and destination.</li>
             <li>Track extracted, queued, making, sent out, ready, received, installed.</li>
           </ul>
         </article>
+        <article class="wide-card">
+          <h3>Fabrication jobs</h3>
+          <div id="fabricationJobs" class="batch-list">No fabrication jobs yet.</div>
+        </article>
+      </section>
+
+      <section id="procurement" class="queue-grid">
+        <div class="section-heading">
+          <span class="eyebrow">Procurement</span>
+          <h2>COTS purchasing queue</h2>
+        </div>
         <article>
-          <h3>Procurement queue</h3>
+          <h3>Review queue</h3>
           <p id="procQueueCount">No COTS parts queued.</p>
           <ul>
             <li>Group by vendor, subsystem, robot, and sourcing status.</li>
             <li>Track needed, sourcing, ordered, partially received, received.</li>
           </ul>
         </article>
+        <article class="wide-card">
+          <h3>Procurement groups</h3>
+          <div id="procurementOrders" class="batch-list">No procurement groups yet.</div>
+        </article>
         <article>
           <h3>Recent sync batches</h3>
           <div id="batchList" class="batch-list">No sync batches yet.</div>
         </article>
+      </section>
+
+      <section id="raw-material" class="workspace">
+        <div class="section-heading">
+          <span class="eyebrow">Raw Material</span>
+          <h2>Sheet, tube, bar, remnants</h2>
+        </div>
+        <form id="rawMaterialForm" class="tool-surface raw-panel">
+          <label>
+            <span>Material</span>
+            <input name="materialFamily" placeholder="aluminum">
+          </label>
+          <label>
+            <span>Grade/type</span>
+            <input name="grade" placeholder="6061">
+          </label>
+          <label>
+            <span>Stock type</span>
+            <select name="stockType">
+              <option>sheet</option>
+              <option>tube</option>
+              <option>bar</option>
+              <option>rod</option>
+              <option>filament</option>
+              <option>remnant</option>
+            </select>
+          </label>
+          <label>
+            <span>Dimensions</span>
+            <input name="dimensions" placeholder="0.125 x 24 x 48">
+          </label>
+          <label>
+            <span>Remaining</span>
+            <input name="remainingQuantity" type="number" min="0" step="0.01" placeholder="1">
+          </label>
+          <label>
+            <span>Unit</span>
+            <input name="unit" placeholder="sheets">
+          </label>
+          <label>
+            <span>Location</span>
+            <input name="location" placeholder="Raw rack">
+          </label>
+          <button class="button" type="submit">Add stock</button>
+        </form>
+        <div id="rawMaterialList" class="ops-grid"></div>
       </section>
 
       <section class="inventory-layout">
@@ -181,24 +287,28 @@
             <div><dt>Total quantity</dt><dd id="summaryQty">0</dd></div>
             <div><dt>Materials</dt><dd id="summaryMaterials">None</dd></div>
           </dl>
-          <p id="message" class="message">Ready when your CAD is.</p>
+          <p id="message" class="message" role="status" aria-live="polite">Ready when your CAD is.</p>
         </aside>
       </section>
 
-      <section id="security" class="band security">
+      <section id="admin" class="band security">
         <div>
-          <span class="eyebrow">Security</span>
-          <h2>Built for App Store review</h2>
+          <span class="eyebrow">Admin</span>
+          <h2>Security and audit</h2>
         </div>
-        <ul>
-          <li>Onshape OAuth2 login with state verification.</li>
-          <li>Tokens stay on the server behind an HTTP-only session cookie.</li>
-          <li>Mutating requests require CSRF tokens and validated input.</li>
-          <li>Browser code never calls Onshape directly.</li>
-        </ul>
+        <div>
+          <ul>
+            <li>Onshape OAuth2 login with state verification.</li>
+            <li>Tokens stay on the server behind an HTTP-only session cookie.</li>
+            <li>Mutating requests require CSRF tokens and validated input.</li>
+            <li>Browser code never calls Onshape directly.</li>
+            <li>Roles planned: admin, mentor, purchaser, fabricator, student, read_only.</li>
+          </ul>
+          <div id="auditLog" class="batch-list audit-list">No audit activity yet.</div>
+        </div>
       </section>
     </main>
 
-    <script src="/app.js?v=4"></script>
+    <script src="/app.js?v=5"></script>
   </body>
 </html>

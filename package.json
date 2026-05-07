@@ -7,6 +7,9 @@
     "dev": "node server.mjs",
     "start": "NODE_ENV=production node server.mjs"
   },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
   "engines": {
     "node": ">=20"
   }

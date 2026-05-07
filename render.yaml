@@ -16,6 +16,8 @@ services:
         value: https://plateflow.teknik-engineering.com
       - key: TRUST_PROXY
         value: "true"
+      - key: DATABASE_URL
+        sync: false
       - key: ONSHAPE_OAUTH_BASE
         value: https://oauth.onshape.com
       - key: ONSHAPE_API_BASE

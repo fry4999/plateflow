@@ -3,6 +3,7 @@
 .env.production
 .plateflow.log
 .plateflow.pid
+.plateflow-data.json
 node_modules/
 .DS_Store
 npm-debug.log*
