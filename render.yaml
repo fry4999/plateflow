@@ -8,12 +8,12 @@ services:
     healthCheckPath: /api/session
     autoDeployTrigger: commit
     domains:
-      - teknik-engineering.com
+      - plateflow.teknik-engineering.com
     envVars:
       - key: NODE_ENV
         value: production
       - key: APP_BASE_URL
-        value: https://teknik-engineering.com
+        value: https://plateflow.teknik-engineering.com
       - key: TRUST_PROXY
         value: "true"
       - key: ONSHAPE_OAUTH_BASE
