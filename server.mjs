@@ -68,6 +68,7 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/admin/invites" && req.method === "POST") return withAppAccess(session, res, (user) => createInvite(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/admin/remove-placeholder-cots" && req.method === "POST") return withAppAccess(session, res, () => removePlaceholderCots(req, res, session), ["admin"]);
     if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
+    if (url.pathname.startsWith("/api/procurement/orders/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementOrder(req, res, session, user, pathId(url.pathname, "/api/procurement/orders/")), ["admin", "mentor", "purchaser"]);
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), ["admin", "mentor", "fabricator", "student"]);
     if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), ["admin", "mentor", "purchaser", "student"]);
     if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return withAppAccess(session, res, () => exportStep(req, res, session), ["admin", "mentor", "fabricator"]);
@@ -625,15 +626,48 @@ async function importCots(req, res, session) {
   requireCsrf(req, session);
   const body = await readJson(req);
   const input = validateImport(body);
-  await ensureAccessToken(session);
+  const accessToken = await ensureAccessToken(session);
+  const base = normalizeOnshapeBase(input.baseUrl);
 
-  const rows = Array.isArray(body.rows) && body.rows.length ? body.rows : [];
+  const rows = Array.isArray(body.rows) && body.rows.length ? body.rows : await fetchAssemblyBomRows(accessToken, base, input);
   if (!rows.length) {
-    throw httpError(501, "Assembly BOM import is not connected yet. PlateFlow will not create placeholder COTS items.");
+    throw httpError(404, "No Assembly BOM rows were returned by Onshape for this tab.");
   }
   const normalized = rows.slice(0, 200).map((row, index) => normalizeCotsRow(row, input, index));
   const saved = await saveInventory(input, normalized, "cots", "Assembly BOM procurement sync");
   return json(res, 200, { parts: normalized, source: input, inventory: saved });
+}
+
+async function fetchAssemblyBomRows(accessToken, base, input) {
+  const params = new URLSearchParams({ indented: "false" });
+  if (input.configuration) params.set("configuration", input.configuration);
+  const url = `${base}/api/assemblies/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}/e/${input.elementId}/bom?${params}`;
+  try {
+    const data = await onshapeJson(accessToken, url);
+    return extractBomRows(data);
+  } catch (error) {
+    const message = String(error.message || "");
+    if (error.status === 404) {
+      throw httpError(404, "Onshape did not find an Assembly BOM for this tab. Make sure the extension action is opened from an Assembly tab, not a Part Studio.");
+    }
+    if (error.status === 403) {
+      throw httpError(403, "Onshape denied BOM access. Check the OAuth app permissions include assembly/BOM read access, then reconnect Onshape.");
+    }
+    if (error.status === 400 && /configuration/i.test(message)) {
+      throw httpError(400, "Onshape rejected the Assembly configuration. Try the default configuration or reopen PlateFlow from the active Assembly tab.");
+    }
+    throw error;
+  }
+}
+
+function extractBomRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.rows)) return data.rows;
+  if (Array.isArray(data.bomTable?.items)) return data.bomTable.items;
+  if (Array.isArray(data.bomTable?.rows)) return data.bomTable.rows;
+  if (Array.isArray(data.table?.items)) return data.table.items;
+  return [];
 }
 
 async function saveInventory(input, parts, sourceType, label) {
@@ -648,10 +682,12 @@ async function saveInventory(input, parts, sourceType, label) {
     parts
   };
   const existingIndex = store.inventoryRecords.findIndex((item) => item.id === key);
+  const replacedBatchId = existingIndex >= 0 ? store.inventoryRecords[existingIndex].batchId : "";
   if (existingIndex >= 0) store.inventoryRecords.splice(existingIndex, 1, record);
   else store.inventoryRecords.unshift(record);
 
   const normalizedParts = parts.map((part) => upsertCatalogPart(part, sourceType, batchId));
+  if (replacedBatchId) removeOperationalQueue(replacedBatchId, sourceType);
   upsertOperationalQueue(batchId, sourceType, normalizedParts);
   store.syncBatches.unshift({
     id: batchId,
@@ -666,6 +702,15 @@ async function saveInventory(input, parts, sourceType, label) {
   audit("sync.received", `${label}: ${parts.length} item${parts.length === 1 ? "" : "s"}`, "onshape");
   await persistStore();
   return record;
+}
+
+function removeOperationalQueue(batchId, sourceType) {
+  if (sourceType === "custom") {
+    store.fabricationJobs = store.fabricationJobs.filter((job) => job.syncBatchId !== batchId);
+  } else {
+    store.procurementOrders = store.procurementOrders.filter((order) => order.syncBatchId !== batchId);
+  }
+  store.syncBatches = store.syncBatches.filter((batch) => batch.id !== batchId);
 }
 
 function inventorySnapshot() {
@@ -825,7 +870,10 @@ function dashboardSnapshot(user = null) {
   return {
     overview: {
       partsMissing: inventory.parts.reduce((sum, part) => sum + Math.max(0, Number(part.quantity || 1) - Number(part.onHand || 0)), 0),
-      partsOnOrder: store.procurementOrders.reduce((sum, order) => sum + order.lines.reduce((lineSum, line) => lineSum + Number(line.quantityOrdered || 0), 0), 0),
+      partsOnOrder: store.procurementOrders.reduce((sum, order) => {
+        const lines = Array.isArray(order.lines) ? order.lines : Array.isArray(order.parts) ? order.parts : [];
+        return sum + lines.reduce((lineSum, line) => lineSum + Number(line.quantityOrdered || line.quantity || 0), 0);
+      }, 0),
       partsInFabrication: customParts.length,
       partsReceivedToday: 0,
       lowStockAlerts: inventory.totals.lowStock,
@@ -918,31 +966,89 @@ function normalizePart(part, input) {
 }
 
 function normalizeCotsRow(row, input, index) {
-  const vendor = String(row.vendor || row.supplier || "").trim();
-  const vendorSku = String(row.vendorSku || row.partNumber || row.sku || "").trim();
+  const name = rowValue(row, ["name", "component name", "part name", "title", "description"]) || "Purchased item";
+  const vendor = rowValue(row, ["vendor", "supplier", "supplier name"]);
+  const vendorSku = rowValue(row, ["vendor sku", "vendor part number", "vendor part no", "sku", "catalog number", "part number"]);
+  const manufacturer = rowValue(row, ["manufacturer", "mfg", "maker"]);
+  const manufacturerSku = rowValue(row, ["manufacturer sku", "manufacturer part number", "mpn", "manufacturer part no"]);
+  const quantity = numericRowValue(row, ["quantity", "qty", "count"]) || 1;
+  const rowKey = rowValue(row, ["id", "row id", "rowId", "item", "item number"]) || `bom-${index + 1}`;
   return {
-    id: String(row.id || row.rowId || `bom-${index + 1}`).slice(0, 80),
-    name: String(row.name || row.title || row.partName || "Purchased item").slice(0, 120),
+    id: String(rowKey).slice(0, 80),
+    name: String(name).slice(0, 120),
     type: "cots",
-    category: String(row.category || "purchased").slice(0, 80),
+    category: String(rowValue(row, ["category", "classification"]) || "purchased").slice(0, 80),
     vendor: vendor || "Unassigned",
     vendorSku,
-    manufacturer: String(row.manufacturer || "").slice(0, 120),
-    manufacturerSku: String(row.manufacturerSku || row.mpn || "").slice(0, 120),
+    manufacturer,
+    manufacturerSku,
     material: "Purchased",
     thickness: "",
-    quantity: Math.min(999, Math.max(1, Number(row.quantity || 1))),
+    quantity: Math.min(999, Math.max(1, quantity)),
     status: "needed",
     procurementStatus: "needed",
-    vendorUrl: vendorLink(vendor, vendorSku, row.name || row.title || ""),
+    vendorUrl: vendorLink(vendor, vendorSku || manufacturerSku, name),
     source: {
       documentId: input.documentId,
       workspaceId: input.workspaceId,
       elementId: input.elementId,
-      bomRowKey: String(row.id || row.rowId || `bom-${index + 1}`),
+      bomRowKey: String(rowKey),
       configuration: input.configuration || ""
     }
   };
+}
+
+function rowValue(row, aliases) {
+  const wanted = aliases.map(normalizePropertyName);
+  const direct = findObjectValue(row, wanted);
+  if (direct !== "") return direct;
+  for (const key of ["properties", "propertyValues", "values", "cells", "columns"]) {
+    const nested = findNestedValue(row?.[key], wanted);
+    if (nested !== "") return nested;
+  }
+  return "";
+}
+
+function numericRowValue(row, aliases) {
+  const value = Number(String(rowValue(row, aliases)).replace(/[^0-9.+-]/g, ""));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function findObjectValue(value, wanted) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  for (const [key, raw] of Object.entries(value)) {
+    if (wanted.includes(normalizePropertyName(key))) return cleanCellValue(raw);
+  }
+  return "";
+}
+
+function findNestedValue(value, wanted) {
+  if (!value) return "";
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const name = normalizePropertyName(item?.name || item?.displayName || item?.columnName || item?.propertyName || item?.key || item?.id || "");
+      if (wanted.includes(name)) {
+        const cleaned = cleanCellValue(item?.value ?? item?.displayValue ?? item?.computedValue ?? item?.text);
+        if (cleaned !== "") return cleaned;
+      }
+      const nested = findObjectValue(item, wanted);
+      if (nested !== "") return nested;
+    }
+    return "";
+  }
+  return findObjectValue(value, wanted);
+}
+
+function cleanCellValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") {
+    return String(value.displayValue ?? value.value ?? value.name ?? value.text ?? "").trim();
+  }
+  return String(value).trim();
+}
+
+function normalizePropertyName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 function vendorLink(vendor, sku, name) {
@@ -1154,6 +1260,22 @@ async function updateFabricationJob(req, res, session, actor, jobId) {
   return json(res, 200, { fabrication: dashboardSnapshot().fabrication });
 }
 
+async function updateProcurementOrder(req, res, session, actor, orderId) {
+  requireCsrf(req, session);
+  const order = store.procurementOrders.find((item) => item.id === orderId);
+  if (!order) throw httpError(404, "Procurement order not found");
+  const body = await readJson(req);
+  const status = validateProcurementStatus(body.status || order.status);
+  order.status = status;
+  order.updatedAt = new Date().toISOString();
+  if (Array.isArray(order.lines)) {
+    order.lines = order.lines.map((line) => ({ ...line, status }));
+  }
+  audit("procurement.order_updated", `Updated ${order.id} to ${order.status}`, actor.email);
+  await persistStore();
+  return json(res, 200, { procurement: dashboardSnapshot().procurement });
+}
+
 function activeAdminCount() {
   return store.users.filter((user) => user.role === "admin" && user.status === "active").length;
 }
@@ -1176,6 +1298,13 @@ function validateFabricationStatus(value) {
   const status = String(value || "").trim();
   const statuses = new Set(["draft", "queued", "in_progress", "sent_out", "completed", "received", "installed", "canceled"]);
   if (!statuses.has(status)) throw httpError(400, "Invalid fabrication status");
+  return status;
+}
+
+function validateProcurementStatus(value) {
+  const status = String(value || "").trim();
+  const statuses = new Set(["needed", "sourcing", "ready_to_order", "ordered", "partially_received", "received", "backordered", "canceled"]);
+  if (!statuses.has(status)) throw httpError(400, "Invalid procurement status");
   return status;
 }
 

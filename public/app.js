@@ -64,6 +64,7 @@ const demoParts = [
 const roles = ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"];
 const userStatuses = ["active", "disabled", "pending"];
 const fabricationStatuses = ["draft", "queued", "in_progress", "sent_out", "completed", "received", "installed", "canceled"];
+const procurementStatuses = ["needed", "sourcing", "ready_to_order", "ordered", "partially_received", "received", "backordered", "canceled"];
 
 init();
 
@@ -127,6 +128,7 @@ function bindEvents() {
   if (els.inviteForm) els.inviteForm.addEventListener("submit", onInviteCreate);
   if (els.userList) els.userList.addEventListener("click", onAdminUserAction);
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("change", onFabricationJobChange);
+  if (els.procurementOrders) els.procurementOrders.addEventListener("change", onProcurementOrderChange);
   els.demoButton.addEventListener("click", loadDemo);
   els.partsBody.addEventListener("input", onPartEdit);
   els.partsBody.addEventListener("change", onPartEdit);
@@ -550,9 +552,17 @@ function renderProcurement(procurement) {
     const lines = Array.isArray(order.lines) ? order.lines : Array.isArray(order.parts) ? order.parts : [];
     const groups = Array.isArray(order.vendorGroups) ? order.vendorGroups : [];
     return `
-    <div>
-      <strong>${escapeHtml(order.id)} · ${escapeHtml(order.status)}</strong>
-      <span>${lines.length} COTS line${lines.length === 1 ? "" : "s"} · ${groups.map((group) => `${group.vendor} (${group.count})`).join(", ") || "Ungrouped"}</span>
+    <div class="queue-row">
+      <span>
+        <strong>${escapeHtml(order.id)}</strong>
+        <small>${lines.length} COTS line${lines.length === 1 ? "" : "s"} · ${groups.map((group) => `${group.vendor} (${group.count})`).join(", ") || "Ungrouped"}</small>
+      </span>
+      <label class="inline-select">
+        <span>Status</span>
+        <select data-order-id="${escapeAttr(order.id)}">
+          ${procurementStatuses.map((status) => `<option value="${escapeAttr(status)}"${status === order.status ? " selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+        </select>
+      </label>
     </div>
   `;
   }).join("");
@@ -669,6 +679,22 @@ async function onFabricationJobChange(event) {
     });
     renderFabrication(result.fabrication);
     setMessage("Fabrication job status updated.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+    await loadDashboard();
+  }
+}
+
+async function onProcurementOrderChange(event) {
+  const select = event.target.closest("select[data-order-id]");
+  if (!select) return;
+  try {
+    const result = await api(`/api/procurement/orders/${encodeURIComponent(select.dataset.orderId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: select.value })
+    });
+    renderProcurement(result.procurement);
+    setMessage("Procurement status updated.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();
