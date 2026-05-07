@@ -6,7 +6,7 @@ Use Cloudflare for DNS and Render for the Node server.
 
 App domain:
 
-`https://teknik-engineering.com`
+`https://plateflow.teknik-engineering.com`
 
 Render service:
 
@@ -14,7 +14,7 @@ Render service:
 
 ## Cloudflare Records
 
-After adding `teknik-engineering.com` as a custom domain in the Render service, Render shows your service hostname, usually like:
+After adding `plateflow.teknik-engineering.com` as a custom domain in the Render service, Render shows your service hostname, usually like:
 
 `plateflow.onrender.com`
 
@@ -22,12 +22,9 @@ In Cloudflare DNS, create:
 
 | Type | Name | Target | Proxy status |
 | --- | --- | --- | --- |
-| CNAME | `@` | `plateflow.onrender.com` | DNS only |
-| CNAME | `www` | `plateflow.onrender.com` | DNS only |
+| CNAME | `plateflow` | `plateflow.onrender.com` | DNS only |
 
-Cloudflare supports CNAME flattening at the zone apex, so using a CNAME for `@` is okay.
-
-Remove any old conflicting `A`, `AAAA`, or `CNAME` records for `@` and `www`. Render recommends removing `AAAA` records because Render custom domains do not support IPv6 records.
+Remove any old conflicting `A`, `AAAA`, or `CNAME` records with the name `plateflow`. Render recommends removing `AAAA` records because Render custom domains do not support IPv6 records.
 
 ## SSL/TLS
 
@@ -45,8 +42,7 @@ After Render shows the certificates are valid, you may optionally switch the Clo
 In the Render service:
 
 - Settings -> Custom Domains
-- Add `teknik-engineering.com`
-- Add `www.teknik-engineering.com` if desired
+- Add `plateflow.teknik-engineering.com`
 - Wait for certificate status to become valid
 
 ## Onshape URLs
@@ -54,11 +50,11 @@ In the Render service:
 Use:
 
 ```text
-https://teknik-engineering.com/auth/onshape/callback
+https://plateflow.teknik-engineering.com/auth/onshape/callback
 ```
 
 and:
 
 ```text
-https://teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
+https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
 ```
