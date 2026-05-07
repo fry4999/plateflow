@@ -44,19 +44,19 @@ createServer(async (req, res) => {
     const session = getSession(req, res);
 
     if (url.pathname === "/auth/onshape") return onshapeStart(req, res, session, url);
-    if (url.pathname === "/auth/onshape/callback") return onshapeCallback(req, res, session, url);
+    if (url.pathname === "/auth/onshape/callback") return await onshapeCallback(req, res, session, url);
     if (url.pathname === "/auth/logout") return logout(res, session);
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
-    if (url.pathname === "/api/onshape/import" && req.method === "POST") return importOnshape(req, res, session);
-    if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return exportStep(req, res, session);
-    if (url.pathname === "/api/orders" && req.method === "POST") return createOrder(req, res, session);
+    if (url.pathname === "/api/onshape/import" && req.method === "POST") return await importOnshape(req, res, session);
+    if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return await exportStep(req, res, session);
+    if (url.pathname === "/api/orders" && req.method === "POST") return await createOrder(req, res, session);
     if (url.pathname.startsWith("/api/downloads/")) return downloadBlob(res, session, url.pathname.split("/").pop());
     if (url.pathname.startsWith("/api/")) return json(res, 404, { error: "Not found" });
 
-    return serveStatic(res, url.pathname);
+    return await serveStatic(res, url.pathname);
   } catch (error) {
     console.error(error);
-    return json(res, 500, { error: "Unexpected server error" });
+    return json(res, error.status || 500, { error: error.expose ? error.message : "Unexpected server error" });
   }
 }).listen(config.port, () => {
   console.log(`FRC PlateFlow listening on ${config.appBaseUrl}`);
@@ -206,24 +206,30 @@ async function onshapeCallback(_req, res, session, url) {
   const state = url.searchParams.get("state");
   if (!code || !state || state !== session.oauthState) return redirect(res, "/?auth=state-failed");
 
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    client_id: config.onshapeClientId,
-    client_secret: config.onshapeClientSecret,
-    redirect_uri: `${config.appBaseUrl}/auth/onshape/callback`
-  });
+  try {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      client_id: config.onshapeClientId,
+      client_secret: config.onshapeClientSecret,
+      redirect_uri: `${config.appBaseUrl}/auth/onshape/callback`
+    });
 
-  const token = await fetchJson(`${config.onshapeOAuthBase}/oauth/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body
-  });
+    const token = await fetchJson(`${config.onshapeOAuthBase}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body
+    });
 
-  session.token = normalizeToken(token);
-  session.oauthState = null;
-  session.user = { provider: "onshape", label: "Onshape connected" };
-  return redirect(res, session.returnTo || "/?auth=ok");
+    session.token = normalizeToken(token);
+    session.oauthState = null;
+    session.user = { provider: "onshape", label: "Onshape connected" };
+    return redirect(res, session.returnTo || "/?auth=ok");
+  } catch (error) {
+    console.error("Onshape OAuth callback failed", error);
+    const detail = encodeURIComponent(error.expose ? error.message : "Token exchange failed. Check Render environment variables and Onshape redirect URLs.");
+    return redirect(res, `/?auth=callback-failed&detail=${detail}`);
+  }
 }
 
 function logout(res, session) {
@@ -477,6 +483,7 @@ async function readJson(req) {
 function httpError(status, message) {
   const error = new Error(String(message).slice(0, 500));
   error.status = status;
+  error.expose = status < 500;
   return error;
 }
 
