@@ -614,6 +614,7 @@ async function importOnshape(req, res, session) {
   requireCsrf(req, session);
   const body = await readJson(req);
   const input = validateImport(body);
+  const configuredParts = normalizeConfiguredParts(body.configuredParts);
   const accessToken = await ensureAccessToken(session);
   const base = normalizeOnshapeBase(input.baseUrl);
   await enrichSourceInfo(accessToken, base, input);
@@ -626,9 +627,76 @@ async function importOnshape(req, res, session) {
   if (input.configuration) params.set("configuration", input.configuration);
 
   const parts = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}?${params}`);
-  const normalized = (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input));
-  const saved = await saveInventory(input, normalized, "custom", "Part Studio custom sync");
+  const normalizedParts = (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input));
+  if (body.previewOnly) return json(res, 200, { parts: normalizedParts, source: input });
+
+  const normalized = configuredParts.length ? applyConfiguredParts(normalizedParts, configuredParts, input) : normalizedParts;
+  if (!normalized.length) throw httpError(400, "Select at least one custom part to submit");
+  const saved = await saveInventory(input, normalized, "custom", "Part Studio custom sync", { mergeParts: Boolean(configuredParts.length) });
   return json(res, 200, { parts: normalized, source: input, inventory: saved });
+}
+
+function normalizeConfiguredParts(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 50).map((item) => {
+    const id = String(item.id || item.partId || "").trim().slice(0, 100);
+    const stock = String(item.stock || "").trim().slice(0, 80);
+    if (!id) throw httpError(400, "Configured part is missing an Onshape part id");
+    if (!stock) throw httpError(400, "Stock is required for custom parts");
+    const quantity = Math.max(1, Math.min(999, Number(item.quantity || 1)));
+    return {
+      id,
+      subsystem: String(item.subsystem || "").trim().slice(0, 120),
+      thickness: String(item.thickness || "").trim().slice(0, 40),
+      materialType: String(item.materialType || item.material || "").trim().slice(0, 120),
+      stock,
+      machine: String(item.machine || item.process || "").trim().slice(0, 80),
+      partNumber: String(item.partNumber || "").trim().slice(0, 80),
+      quantity
+    };
+  });
+}
+
+function applyConfiguredParts(parts, configuredParts, input) {
+  const byId = new Map(configuredParts.map((part) => [part.id, part]));
+  return parts
+    .filter((part) => byId.has(part.id))
+    .map((part, index) => {
+      const config = byId.get(part.id);
+      return {
+        ...part,
+        partNumber: config.partNumber || generatePartNumber(input, part, config, index),
+        subsystem: config.subsystem,
+        thickness: config.thickness || part.thickness,
+        material: config.materialType || part.material,
+        stock: config.stock,
+        process: config.machine || "Router",
+        machine: config.machine || "Router",
+        fabricationIntent: config.machine.toLowerCase() === "fabworks" ? "send_out" : "make_now",
+        category: stockCategory(config.stock),
+        quantity: config.quantity,
+        status: "extracted"
+      };
+    });
+}
+
+function generatePartNumber(input, part, config, index) {
+  const source = partNumberCode(input.sourceTag || input.documentName || "PF", 3);
+  const subsystem = partNumberCode(config.subsystem || "GEN", 3);
+  const suffix = partNumberCode(part.id || part.name || String(index + 1), 4);
+  return `PF-${source}-${subsystem}-${suffix}`;
+}
+
+function partNumberCode(value, length) {
+  const normalized = normalizeKey(value).replace(/-/g, "").toUpperCase();
+  return (normalized || "X").slice(0, length).padEnd(length, "X");
+}
+
+function stockCategory(stock) {
+  const text = String(stock || "").toLowerCase();
+  if (text.includes("tube")) return "tube";
+  if (text.includes("spacer") || text.includes("churro") || text.includes("hex")) return "stock";
+  return "fabricated";
 }
 
 async function importCots(req, res, session) {
@@ -702,8 +770,11 @@ function shortDocumentId(documentId) {
   return `doc-${String(documentId || "").slice(0, 6)}`;
 }
 
-async function saveInventory(input, parts, sourceType, label) {
+async function saveInventory(input, parts, sourceType, label, options = {}) {
   const key = `${input.documentId}:${input.workspacePath}:${input.workspaceId}:${input.elementId}:${input.configuration || "default"}`;
+  const existingIndex = store.inventoryRecords.findIndex((item) => item.id === key);
+  const existing = existingIndex >= 0 ? store.inventoryRecords[existingIndex] : null;
+  const recordParts = options.mergeParts && existing ? mergeInventoryParts(existing.parts, parts) : parts;
   const batchId = `S-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex").toUpperCase()}`;
   const record = {
     id: key,
@@ -711,14 +782,13 @@ async function saveInventory(input, parts, sourceType, label) {
     sourceType,
     updatedAt: new Date().toISOString(),
     source: input,
-    parts
+    parts: recordParts
   };
-  const existingIndex = store.inventoryRecords.findIndex((item) => item.id === key);
-  const replacedBatchId = existingIndex >= 0 ? store.inventoryRecords[existingIndex].batchId : "";
+  const replacedBatchId = existing?.batchId || "";
   if (existingIndex >= 0) store.inventoryRecords.splice(existingIndex, 1, record);
   else store.inventoryRecords.unshift(record);
 
-  const normalizedParts = parts.map((part) => upsertCatalogPart(part, sourceType, batchId));
+  const normalizedParts = recordParts.map((part) => upsertCatalogPart(part, sourceType, batchId));
   if (replacedBatchId) removeOperationalQueue(replacedBatchId, sourceType);
   upsertOperationalQueue(batchId, sourceType, normalizedParts);
   store.syncBatches.unshift({
@@ -726,14 +796,21 @@ async function saveInventory(input, parts, sourceType, label) {
     label,
     sourceType,
     status: "received",
-    partCount: parts.length,
+    partCount: recordParts.length,
     createdAt: record.updatedAt,
     source: input
   });
   store.syncBatches.splice(100);
-  audit("sync.received", `${label}: ${parts.length} item${parts.length === 1 ? "" : "s"}`, "onshape");
+  audit("sync.received", `${label}: ${recordParts.length} item${recordParts.length === 1 ? "" : "s"}`, "onshape");
   await persistStore();
   return record;
+}
+
+function mergeInventoryParts(existingParts = [], incomingParts = []) {
+  const keyForPart = (part) => part.source?.partId || part.id || part.name;
+  const merged = new Map(existingParts.map((part) => [keyForPart(part), part]));
+  for (const part of incomingParts) merged.set(keyForPart(part), part);
+  return [...merged.values()];
 }
 
 function removeOperationalQueue(batchId, sourceType) {
@@ -798,6 +875,10 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     manufacturerSku: part.manufacturerSku || "",
     sourceDocument: part.sourceDocument || part.source?.sourceTag || "",
     sourceDocumentName: part.sourceDocumentName || part.source?.documentName || "",
+    partNumber: part.partNumber || "",
+    subsystem: part.subsystem || "",
+    stock: part.stock || "",
+    machine: part.machine || part.process || "",
     process: part.process || "",
     fabricationIntent: part.fabricationIntent || "",
     status: part.status || (sourceType === "custom" ? "extracted" : "needed"),
@@ -826,7 +907,7 @@ function partIdentity(part, sourceType) {
   }
   const source = part.source || {};
   const reference = [source.documentId, source.workspaceId, source.elementId, source.partId || part.id].filter(Boolean).join(":");
-  return `custom:${normalizeKey(part.partNumber || part.name)}:${reference || normalizeKey(part.id || part.name)}`;
+  return reference ? `custom:${reference}` : `custom:${normalizeKey(part.partNumber || part.name)}:${normalizeKey(part.id || part.name)}`;
 }
 
 function normalizeKey(value) {
@@ -846,7 +927,10 @@ function upsertOperationalQueue(batchId, sourceType, catalogParts) {
         name: part.name,
         material: part.material,
         thickness: part.thickness,
+        subsystem: part.subsystem,
+        stock: part.stock,
         process: part.process || "unknown",
+        machine: part.machine || part.process || "unknown",
         fabricationIntent: part.fabricationIntent || "review_needed",
         quantityNeeded: part.quantityNeeded,
         quantityMade: 0,
@@ -1018,21 +1102,31 @@ function publicRequirement(requirement) {
 
 function normalizePart(part, input) {
   const material = part.material || {};
-  const materialName = material.displayName || material.name || material.id || part.customProperties?.Material || "Unassigned";
-  const thickness = part.customProperties?.Thickness || part.customProperties?.thickness || "";
+  const materialName = material.displayName || material.name || material.id || partCustomProperty(part, ["material"]) || "Unassigned";
+  const thickness = partCustomProperty(part, ["thickness", "plate thickness", "sheet thickness"]);
+  const partNumber = partCustomProperty(part, ["part number", "partnumber", "team part number"]);
+  const subsystem = partCustomProperty(part, ["subsystem", "system"]);
+  const stock = partCustomProperty(part, ["stock", "stock type"]);
+  const machine = partCustomProperty(part, ["machine", "process", "manufacturing process"]) || "unknown";
+  const category = partCustomProperty(part, ["category", "part category"]);
+  const fabricationIntent = partCustomProperty(part, ["fabrication intent", "fab intent"]);
   return {
     id: part.partId,
     name: part.name || part.partId,
     type: "custom",
-    category: part.customProperties?.Category || part.customProperties?.category || "fabricated",
+    category: category || "fabricated",
     material: materialName,
     materialLibrary: material.libraryName || material.libraryId || "",
     bodyType: part.bodyType || "",
+    partNumber,
+    subsystem,
+    stock,
     thickness,
     quantity: 1,
     status: "extracted",
-    process: part.customProperties?.Process || "unknown",
-    fabricationIntent: part.customProperties?.FabricationIntent || "review_needed",
+    process: machine,
+    machine,
+    fabricationIntent: fabricationIntent || "review_needed",
     finish: "Deburred",
     sourceDocument: input.sourceTag,
     sourceDocumentName: input.documentName || input.sourceTag,
@@ -1046,6 +1140,15 @@ function normalizePart(part, input) {
       configuration: input.configuration || ""
     }
   };
+}
+
+function partCustomProperty(part, aliases) {
+  const wanted = aliases.map(normalizePropertyName);
+  const direct = findObjectValue(part?.customProperties, wanted);
+  if (direct !== "") return direct;
+  const nested = findNestedValue(part?.customProperties, wanted);
+  if (nested !== "") return nested;
+  return findNestedValue(part?.properties || part?.propertyValues, wanted);
 }
 
 function normalizeCotsRow(row, input, index) {

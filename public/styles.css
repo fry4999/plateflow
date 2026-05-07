@@ -797,6 +797,71 @@ textarea {
   align-self: end;
 }
 
+.configurator {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.configurator-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.configurator-head h3,
+.configurator-head p {
+  margin: 0;
+}
+
+.configurator-head p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.detected-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.detected-grid div {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.detected-grid span,
+.detected-grid strong {
+  display: block;
+}
+
+.detected-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.detected-grid strong {
+  margin-top: 4px;
+}
+
+.config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .table-shell {
   margin-top: 18px;
   overflow: hidden;
@@ -889,6 +954,12 @@ td select {
   background: var(--soft);
   font-size: 11px;
   font-weight: 900;
+}
+
+.status.warn {
+  border-color: rgba(234, 179, 8, .45);
+  color: var(--yellow);
+  background: rgba(234, 179, 8, .12);
 }
 
 .chip.custom {
@@ -1061,6 +1132,90 @@ td select {
   color: var(--ink);
 }
 
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(190px, 1fr));
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.kanban-column {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 190px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.kanban-column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.kanban-column-head h4 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.kanban-column-head span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  min-height: 24px;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.kanban-cards {
+  display: grid;
+  gap: 10px;
+}
+
+.kanban-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.kanban-card strong,
+.kanban-card small,
+.kanban-card p,
+.kanban-line {
+  display: block;
+}
+
+.kanban-card small,
+.kanban-card p,
+.kanban-line,
+.kanban-empty {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.kanban-card p,
+.kanban-empty {
+  margin: 0;
+}
+
+.kanban-line {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--soft);
+}
+
 .inline-select {
   display: grid;
   gap: 5px;
@@ -1164,16 +1319,22 @@ td select {
 .embedded #fabrication,
 .embedded #procurement,
 .embedded #raw-material,
+.embedded #selection,
 .embedded #admin {
   display: none;
 }
 
-.embedded .app-page[hidden] {
+.embedded .app-page:not(#parts) {
+  display: none !important;
+}
+
+.embedded #parts {
   display: block !important;
 }
 
 .embedded .workspace {
-  padding-top: 22px;
+  min-height: auto;
+  padding: 18px 14px 24px;
 }
 
 .embedded .section-heading .eyebrow {
@@ -1204,6 +1365,10 @@ td select {
   display: block;
 }
 
+.embedded #demoButton {
+  display: none;
+}
+
 .embedded .mode-tabs {
   display: flex;
   margin: 0 12px 10px;
@@ -1212,6 +1377,29 @@ td select {
 .embedded .mode-tab {
   flex: 1;
   font-size: 12px;
+}
+
+.embedded .configurator {
+  grid-template-columns: 1fr;
+  margin: 12px 0 0;
+  padding: 12px;
+}
+
+.embedded .configurator-head {
+  display: grid;
+  gap: 8px;
+}
+
+.embedded .configurator-head h3 {
+  font-size: 16px;
+}
+
+.embedded .configurator-head p {
+  font-size: 12px;
+}
+
+.embedded .detected-grid {
+  grid-template-columns: 1fr;
 }
 
 .embedded .table-shell,
@@ -1253,6 +1441,8 @@ td select {
   .ops-grid,
   .queue-grid,
   .tool-surface,
+  .configurator,
+  .detected-grid,
   .robot-form,
   .robot-source-row,
   .requirement-row,
@@ -1305,12 +1495,22 @@ td select {
     grid-column: auto;
   }
 
+  .kanban-board {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
   .admin-user .invite-form {
     grid-template-columns: 1fr;
   }
 
   .user-row,
   .batch-list .queue-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .kanban-board {
     grid-template-columns: 1fr;
   }
 }

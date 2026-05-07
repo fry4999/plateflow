@@ -24,7 +24,21 @@ const els = {
   navLinks: document.querySelectorAll(".nav a[href^='#']"),
   pages: document.querySelectorAll("[data-page]"),
   importForm: document.querySelector("#importForm"),
+  importSubmitButton: document.querySelector("#importSubmitButton"),
   demoButton: document.querySelector("#demoButton"),
+  customConfigurator: document.querySelector("#customConfigurator"),
+  configPartSelect: document.querySelector("#configPartSelect"),
+  configSubsystem: document.querySelector("#configSubsystem"),
+  configStock: document.querySelector("#configStock"),
+  configMachine: document.querySelector("#configMachine"),
+  configQuantity: document.querySelector("#configQuantity"),
+  configPartNumber: document.querySelector("#configPartNumber"),
+  configMaterialDetected: document.querySelector("#configMaterialDetected"),
+  configThicknessDetected: document.querySelector("#configThicknessDetected"),
+  configDetectedStatus: document.querySelector("#configDetectedStatus"),
+  autoPartNumberButton: document.querySelector("#autoPartNumberButton"),
+  clearConfigButton: document.querySelector("#clearConfigButton"),
+  submitConfiguredPartButton: document.querySelector("#submitConfiguredPartButton"),
   partsBody: document.querySelector("#partsBody"),
   partCount: document.querySelector("#partCount"),
   exportButton: document.querySelector("#exportButton"),
@@ -88,6 +102,7 @@ async function init() {
   document.body.classList.toggle("embedded", embeddedMode);
   applyTheme(localStorage.getItem("plateflow-theme") || "dark");
   bindEvents();
+  setupEmbeddedPage();
   syncPageFromHash();
 
   for (const [urlKey, formKey] of [
@@ -120,16 +135,17 @@ async function init() {
     bootstrapRequired = Boolean(session.bootstrapRequired);
     renderAuth(session);
     renderAppAccess(session);
+    if (canLoadDashboard(session)) {
+      await loadDashboard({ preserveParts: embeddedMode, quiet: embeddedMode });
+    }
     if (!session.appAuthenticated && !session.bootstrapRequired) {
       if (els.loginMessage) els.loginMessage.textContent = embeddedMode ? "Sign in to your PlateFlow account before syncing from Onshape." : "";
     } else if (embeddedMode && session.authenticated && hasOnshapeContext()) {
-      setMessage("Onshape connected. Press Submit sync batch when you are ready.", "ok");
+      setMessage("Onshape connected. Load this tab's parts, then submit the configured custom part.", "ok");
     } else if (embeddedMode && !session.authenticated) {
       setMessage("Log in with Onshape, then submit this tab to PlateFlow inventory.", "");
     } else if (embeddedMode) {
       setMessage("PlateFlow is missing document context. Check the Onshape extension action URL.", "error");
-    } else if (!embeddedMode && canLoadDashboard(session)) {
-      await loadDashboard();
     }
   } catch (error) {
     setMessage(`Could not initialize the session: ${error.message}`, "error");
@@ -146,6 +162,11 @@ function bindEvents() {
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("change", onFabricationJobChange);
   if (els.procurementOrders) els.procurementOrders.addEventListener("change", onProcurementOrderChange);
   els.demoButton.addEventListener("click", loadDemo);
+  els.configPartSelect?.addEventListener("change", onConfigPartChange);
+  els.configSubsystem?.addEventListener("change", onGeneratePartNumber);
+  els.autoPartNumberButton?.addEventListener("click", onGeneratePartNumber);
+  els.clearConfigButton?.addEventListener("click", onClearConfig);
+  els.submitConfiguredPartButton?.addEventListener("click", onSubmitConfiguredPart);
   els.partsBody.addEventListener("input", onPartEdit);
   els.partsBody.addEventListener("change", onPartEdit);
   els.selectAll.addEventListener("change", toggleAll);
@@ -165,7 +186,10 @@ function bindEvents() {
 }
 
 function syncPageFromHash() {
-  if (embeddedMode) return;
+  if (embeddedMode) {
+    setupEmbeddedPage();
+    return;
+  }
   const visiblePages = [...els.pages].filter((page) => page.id !== "admin" || document.body.classList.contains("admin-user"));
   if (!visiblePages.length) return;
   const requested = (location.hash || "#dashboard").slice(1);
@@ -180,6 +204,15 @@ function syncPageFromHash() {
     const selected = link.getAttribute("href") === `#${active}`;
     link.classList.toggle("active", selected);
     link.setAttribute("aria-current", selected ? "page" : "false");
+  });
+}
+
+function setupEmbeddedPage() {
+  if (!embeddedMode) return;
+  els.pages.forEach((page) => {
+    const selected = page.id === "parts";
+    page.classList.toggle("active-page", selected);
+    page.toggleAttribute("hidden", !selected);
   });
 }
 
@@ -215,7 +248,8 @@ function renderAppAccess(session) {
   if ((!session.appUser || session.appUser.role !== "admin") && location.hash === "#admin") {
     history.replaceState(null, "", "#dashboard");
   }
-  syncPageFromHash();
+  if (embeddedMode) setupEmbeddedPage();
+  else syncPageFromHash();
   if (els.loginHelp) els.loginHelp.textContent = session.bootstrapRequired ? "Create the first admin account." : inviteToken ? "Create your invited PlateFlow account." : "Sign in to continue.";
   if (els.plateflowLoginButton) els.plateflowLoginButton.textContent = session.bootstrapRequired ? "Create admin" : inviteToken ? "Create account" : "Log in";
   if (els.appAuthStatus) {
@@ -270,18 +304,23 @@ async function onImport(event) {
   const form = new FormData(els.importForm);
   source = Object.fromEntries(form.entries());
   const mode = source.syncMode === "cots" ? "cots" : "custom";
+  const previewOnly = embeddedMode && mode === "custom";
   source.configuration = isUnresolvedMacro(source.configuration) ? "" : source.configuration;
   if (els.importForm.dataset.baseUrl) source.baseUrl = els.importForm.dataset.baseUrl;
   if (els.importForm.dataset.workspaceOrVersion) source.workspaceOrVersion = els.importForm.dataset.workspaceOrVersion;
-  setMessage(mode === "cots" ? "Submitting Assembly BOM rows to procurement..." : "Reading custom parts and assigned materials from Onshape...");
+  setMessage(mode === "cots" ? "Submitting Assembly BOM rows to procurement..." : "Reading custom parts, assigned material, and part metadata from Onshape...");
   try {
     const result = await api(mode === "cots" ? "/api/onshape/import-cots" : "/api/onshape/import", {
       method: "POST",
-      body: JSON.stringify(source)
+      body: JSON.stringify({ ...source, previewOnly })
     });
     parts = result.parts.map((part) => ({ ...part, selected: true }));
     source = result.source;
     renderParts();
+    if (previewOnly) {
+      setMessage(`Loaded ${parts.length} Onshape custom part${parts.length === 1 ? "" : "s"}. Pick one, add routing data, then submit it.`, "ok");
+      return;
+    }
     if (!embeddedMode) await loadDashboard();
     const noun = parts.length === 1 ? "part" : "parts";
     setMessage(embeddedMode ? `Sent ${parts.length} ${noun} to the PlateFlow dashboard.` : `Imported ${parts.length} ${noun} into ${mode === "cots" ? "procurement" : "fabrication"} inventory.`, "ok");
@@ -295,6 +334,12 @@ function setSyncMode(mode) {
   els.importForm.elements.syncMode.value = selected;
   els.modeTabs.forEach((button) => button.classList.toggle("active", button.dataset.mode === selected));
   if (els.syncTitle) els.syncTitle.textContent = selected === "cots" ? "Assembly BOM COTS sync" : "Part Studio custom sync";
+  if (els.importSubmitButton) {
+    if (embeddedMode && selected === "custom") els.importSubmitButton.textContent = "Load parts from Onshape";
+    else if (selected === "cots") els.importSubmitButton.textContent = "Submit Assembly BOM";
+    else els.importSubmitButton.textContent = "Submit sync batch";
+  }
+  renderCustomConfigurator();
   if (embeddedMode) {
     setMessage(selected === "cots" ? "Assembly mode: submit purchased BOM rows to procurement." : "Part Studio mode: submit custom parts to fabrication inventory.", "");
   }
@@ -340,6 +385,7 @@ function renderParts() {
   if (!parts.length) {
     els.partsBody.innerHTML = `<tr><td colspan="7" class="empty">Import from Onshape to populate inventory.</td></tr>`;
     updateSummary();
+    renderCustomConfigurator();
     return;
   }
 
@@ -356,6 +402,7 @@ function renderParts() {
   `).join("");
   els.selectAll.checked = parts.every((part) => part.selected);
   updateSummary();
+  renderCustomConfigurator();
 }
 
 function onPartEdit(event) {
@@ -370,6 +417,129 @@ function onPartEdit(event) {
 function toggleAll(event) {
   parts = parts.map((part) => ({ ...part, selected: event.target.checked }));
   renderParts();
+}
+
+function renderCustomConfigurator() {
+  if (!els.customConfigurator) return;
+  const mode = els.importForm?.elements.syncMode?.value === "cots" ? "cots" : "custom";
+  const visible = mode === "custom" && Boolean(source) && parts.length > 0;
+  els.customConfigurator.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  const currentId = els.configPartSelect?.value || parts[0]?.id || "";
+  els.configPartSelect.innerHTML = parts.map((part) => `
+    <option value="${escapeAttr(part.id || part.name)}"${(part.id || part.name) === currentId ? " selected" : ""}>
+      ${escapeHtml(part.name || part.id || "Unnamed part")}
+    </option>
+  `).join("");
+  if (![...els.configPartSelect.options].some((option) => option.value === currentId) && els.configPartSelect.options.length) {
+    els.configPartSelect.selectedIndex = 0;
+  }
+  renderSubsystemOptions();
+  fillConfigFromSelectedPart({ preservePartNumber: true });
+}
+
+function renderSubsystemOptions() {
+  if (!els.configSubsystem) return;
+  const current = els.configSubsystem.value;
+  const subsystems = [...new Set((dashboardState?.robots || []).flatMap((robot) => robot.subsystems || []).map((subsystem) => subsystem.name).filter(Boolean))];
+  const options = subsystems.length ? subsystems : ["Drive", "Intake", "Shooter"];
+  els.configSubsystem.innerHTML = [
+    `<option value="">Unassigned</option>`,
+    ...options.map((name) => `<option value="${escapeAttr(name)}"${name === current ? " selected" : ""}>${escapeHtml(name)}</option>`)
+  ].join("");
+  if (current && !options.includes(current)) els.configSubsystem.value = "";
+}
+
+function selectedConfigPart() {
+  const selectedId = els.configPartSelect?.value || "";
+  return parts.find((part) => (part.id || part.name) === selectedId) || parts[0] || null;
+}
+
+function onConfigPartChange() {
+  fillConfigFromSelectedPart();
+}
+
+function fillConfigFromSelectedPart(options = {}) {
+  const part = selectedConfigPart();
+  if (!part) return;
+  const material = part.material && part.material !== "Unassigned" ? part.material : "Not assigned in Onshape";
+  const thickness = part.thickness || "Not set in Onshape";
+  els.configMaterialDetected.textContent = material;
+  els.configThicknessDetected.textContent = thickness;
+  els.configDetectedStatus.textContent = part.thickness ? "Onshape data loaded" : "Missing thickness";
+  els.configDetectedStatus.classList.toggle("warn", !part.thickness);
+  if (els.configQuantity) els.configQuantity.value = Math.max(1, Number(part.quantity || 1));
+  if (!options.preservePartNumber || !els.configPartNumber?.value) onGeneratePartNumber();
+}
+
+function onGeneratePartNumber() {
+  const part = selectedConfigPart();
+  if (!part || !els.configPartNumber) return;
+  els.configPartNumber.value = generateClientPartNumber(part);
+}
+
+function generateClientPartNumber(part) {
+  const sourceCode = partNumberCode(source?.sourceTag || source?.documentName || "PF", 3);
+  const subsystemCode = partNumberCode(els.configSubsystem?.value || "GEN", 3);
+  const partCode = partNumberCode(part.id || part.name || "part", 4);
+  return `PF-${sourceCode}-${subsystemCode}-${partCode}`;
+}
+
+function partNumberCode(value, length) {
+  const normalized = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
+  return (normalized || "X").slice(0, length).padEnd(length, "X");
+}
+
+function onClearConfig() {
+  if (els.configSubsystem) els.configSubsystem.value = "";
+  if (els.configStock) els.configStock.value = "";
+  if (els.configMachine) els.configMachine.value = "Router";
+  if (els.configQuantity) els.configQuantity.value = selectedConfigPart()?.quantity || 1;
+  onGeneratePartNumber();
+  setMessage("Cleared routing fields. Onshape material and thickness stay attached to the selected part.", "");
+}
+
+async function onSubmitConfiguredPart() {
+  const part = selectedConfigPart();
+  if (!source || !part) {
+    setMessage("Load Onshape parts before submitting a custom part.", "error");
+    return;
+  }
+  const stock = els.configStock?.value || "";
+  if (!stock) {
+    setMessage("Choose a stock type before submitting.", "error");
+    els.configStock?.focus();
+    return;
+  }
+  const configuredPart = {
+    id: part.id,
+    subsystem: els.configSubsystem?.value || "",
+    thickness: part.thickness || "",
+    materialType: part.material || "",
+    stock,
+    machine: els.configMachine?.value || "Router",
+    partNumber: els.configPartNumber?.value || generateClientPartNumber(part),
+    quantity: Math.max(1, Number(els.configQuantity?.value || part.quantity || 1))
+  };
+  const previousParts = parts;
+  setMessage(`Submitting ${part.name || part.id} to fabrication inventory...`);
+  try {
+    const result = await api("/api/onshape/import", {
+      method: "POST",
+      body: JSON.stringify({ ...source, configuredParts: [configuredPart] })
+    });
+    const savedPart = result.parts[0] || {};
+    source = result.source;
+    parts = previousParts.map((item) => (item.id === part.id ? { ...item, ...savedPart, selected: true } : item));
+    renderParts();
+    await loadDashboard({ preserveParts: true, quiet: true });
+    setMessage(`Sent ${savedPart.partNumber || configuredPart.partNumber} to fabrication inventory.`, "ok");
+  } catch (error) {
+    parts = previousParts;
+    renderParts();
+    setMessage(error.message, "error");
+  }
 }
 
 async function onExport() {
@@ -418,7 +588,7 @@ async function loadInventory() {
   if (parts.length) setMessage(`Loaded ${parts.length} inventoried part${parts.length === 1 ? "" : "s"}.`, "ok");
 }
 
-async function loadDashboard() {
+async function loadDashboard(options = {}) {
   const dashboard = await api("/api/dashboard");
   dashboardState = dashboard;
   renderInventory(dashboard.inventory);
@@ -429,10 +599,15 @@ async function loadDashboard() {
   renderRawMaterials(dashboard.rawMaterials);
   renderAudit(dashboard.admin.auditLogs);
   await loadAdminUsers();
-  parts = dashboard.inventory.parts.map((part) => ({ ...part, selected: true }));
-  source = null;
-  renderParts();
-  if (parts.length) setMessage(`Loaded ${parts.length} inventoried item${parts.length === 1 ? "" : "s"}.`, "ok");
+  renderSubsystemOptions();
+  if (!options.preserveParts) {
+    parts = dashboard.inventory.parts.map((part) => ({ ...part, selected: true }));
+    source = null;
+    renderParts();
+    if (!options.quiet && parts.length) setMessage(`Loaded ${parts.length} inventoried item${parts.length === 1 ? "" : "s"}.`, "ok");
+  } else {
+    renderCustomConfigurator();
+  }
 }
 
 async function loadAdminUsers() {
@@ -620,24 +795,58 @@ function renderFabrication(fabrication) {
     els.fabricationJobs.textContent = "No fabrication jobs yet.";
     return;
   }
-  els.fabricationJobs.innerHTML = fabrication.jobs.slice(0, 8).map((job) => {
-    const lines = Array.isArray(job.lines) ? job.lines : [];
-    const grouping = Array.isArray(job.grouping) ? job.grouping : [];
-    return `
-    <div class="queue-row">
-      <span>
-        <strong>${escapeHtml(job.id)}</strong>
-        <small>${lines.length} custom line${lines.length === 1 ? "" : "s"} · ${grouping.map((group) => `${group.key} (${group.count})`).join(", ") || "Ungrouped"}</small>
-      </span>
-      <label class="inline-select">
-        <span>Status</span>
-        <select data-job-id="${escapeAttr(job.id)}">
-          ${fabricationStatuses.map((status) => `<option value="${escapeAttr(status)}"${status === job.status ? " selected" : ""}>${escapeHtml(status)}</option>`).join("")}
-        </select>
-      </label>
+  const labels = {
+    draft: "Draft",
+    queued: "Queued",
+    in_progress: "Making",
+    sent_out: "Sent out",
+    completed: "Ready",
+    received: "Received",
+    installed: "Installed",
+    canceled: "Canceled"
+  };
+  els.fabricationJobs.innerHTML = `
+    <div class="kanban-board" aria-label="Fabrication kanban board">
+      ${fabricationStatuses.map((status) => {
+        const jobs = fabrication.jobs.filter((job) => job.status === status);
+        return `
+          <section class="kanban-column" aria-label="${escapeAttr(labels[status] || status)} fabrication jobs">
+            <div class="kanban-column-head">
+              <h4>${escapeHtml(labels[status] || status)}</h4>
+              <span>${jobs.length}</span>
+            </div>
+            <div class="kanban-cards">
+              ${jobs.length ? jobs.map(renderFabricationCard).join("") : `<p class="kanban-empty">No jobs</p>`}
+            </div>
+          </section>
+        `;
+      }).join("")}
     </div>
   `;
-  }).join("");
+}
+
+function renderFabricationCard(job) {
+  const lines = Array.isArray(job.lines) ? job.lines : [];
+  const grouping = Array.isArray(job.grouping) ? job.grouping : [];
+  return `
+    <article class="kanban-card">
+      <div>
+        <strong>${escapeHtml(job.id)}</strong>
+        <small>${lines.length} custom line${lines.length === 1 ? "" : "s"}</small>
+      </div>
+      <p>${escapeHtml(grouping.map((group) => `${group.key} (${group.count})`).join(", ") || "Ungrouped")}</p>
+      ${lines.slice(0, 3).map((line) => `
+        <span class="kanban-line">${escapeHtml(line.name)} · qty ${Number(line.quantityNeeded || 1)}</span>
+      `).join("")}
+      ${lines.length > 3 ? `<span class="kanban-line">+${lines.length - 3} more</span>` : ""}
+      <label class="inline-select">
+        <span>Move to</span>
+        <select data-job-id="${escapeAttr(job.id)}">
+          ${fabricationStatuses.map((status) => `<option value="${escapeAttr(status)}"${status === job.status ? " selected" : ""}>${escapeHtml(status.replaceAll("_", " "))}</option>`).join("")}
+        </select>
+      </label>
+    </article>
+  `;
 }
 
 function renderProcurement(procurement) {

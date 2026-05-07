@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=16">
+    <link rel="stylesheet" href="/styles.css?v=17">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -176,9 +176,70 @@
             <input name="configuration" autocomplete="off" placeholder="optional encoded config">
             <small>Use only for configured tabs; blank means default.</small>
           </label>
-          <button class="button" type="submit">Submit sync batch</button>
+          <button id="importSubmitButton" class="button" type="submit">Submit sync batch</button>
           <button id="demoButton" class="ghost" type="button">Load demo data</button>
         </form>
+
+        <div id="customConfigurator" class="configurator hidden">
+          <div class="configurator-head">
+            <div>
+              <h3>Configure selected custom part</h3>
+              <p>Material and thickness are read from Onshape. Add only the team-specific routing data before sending it to fabrication inventory.</p>
+            </div>
+            <span id="configDetectedStatus" class="status">No part loaded</span>
+          </div>
+          <label class="wide">
+            <span>Part</span>
+            <select id="configPartSelect" aria-label="Select Onshape part"></select>
+          </label>
+          <div class="detected-grid wide">
+            <div>
+              <span>Material from Onshape</span>
+              <strong id="configMaterialDetected">Unassigned</strong>
+            </div>
+            <div>
+              <span>Thickness from Onshape</span>
+              <strong id="configThicknessDetected">Not set</strong>
+            </div>
+          </div>
+          <label>
+            <span>Subsystem</span>
+            <select id="configSubsystem"></select>
+          </label>
+          <label>
+            <span>Stock</span>
+            <select id="configStock" required>
+              <option value="">Select stock</option>
+              <option>Tube 1x1</option>
+              <option>Tube 1x2</option>
+              <option>Tube 2x2</option>
+              <option>Spacer Stock</option>
+              <option>Churro</option>
+              <option>Rounded Hex</option>
+              <option>Sheet/Plate</option>
+            </select>
+          </label>
+          <label>
+            <span>Machine</span>
+            <select id="configMachine">
+              <option>Router</option>
+              <option>Fabworks</option>
+            </select>
+          </label>
+          <label>
+            <span>Quantity</span>
+            <input id="configQuantity" type="number" min="1" max="999" value="1">
+          </label>
+          <label class="wide">
+            <span>Part number</span>
+            <input id="configPartNumber" autocomplete="off">
+          </label>
+          <div class="config-actions wide">
+            <button id="autoPartNumberButton" class="ghost small" type="button">Auto-generate</button>
+            <button id="clearConfigButton" class="ghost small" type="button">Clear</button>
+            <button id="submitConfiguredPartButton" class="button small" type="button">Submit custom part</button>
+          </div>
+        </div>
 
         <div class="table-shell">
           <div class="table-toolbar">
@@ -344,6 +405,6 @@
       </div>
     </main>
 
-    <script src="/app.js?v=16"></script>
+    <script src="/app.js?v=17"></script>
   </body>
 </html>
