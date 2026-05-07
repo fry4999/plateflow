@@ -138,6 +138,16 @@ caption {
   font-size: 14px;
 }
 
+.nav a {
+  padding: 8px 0;
+  border-bottom: 2px solid transparent;
+}
+
+.nav a.active {
+  color: var(--ink);
+  border-bottom-color: var(--blue);
+}
+
 .auth {
   display: flex;
   align-items: center;
@@ -276,6 +286,15 @@ main {
 
 .app-shell {
   display: block;
+  min-height: calc(100vh - 74px);
+}
+
+.app-page[hidden] {
+  display: none !important;
+}
+
+.app-page.active-page {
+  display: grid;
 }
 
 body.locked .nav,
@@ -493,11 +512,12 @@ td {
 .dashboard {
   max-width: 1180px;
   margin: 0 auto;
-  padding: 72px 32px 0;
+  padding: 48px 32px 48px;
+  min-height: calc(100vh - 74px);
 }
 
 .dashboard {
-  padding-bottom: 0;
+  align-content: start;
 }
 
 .metrics {
@@ -894,10 +914,12 @@ td select {
 .queue-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
+  align-content: start;
   gap: 18px;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 72px 32px 0;
+  padding: 48px 32px 48px;
+  min-height: calc(100vh - 74px);
 }
 
 .queue-grid .section-heading {
@@ -1057,6 +1079,10 @@ td select {
 .embedded #raw-material,
 .embedded #admin {
   display: none;
+}
+
+.embedded .app-page[hidden] {
+  display: block !important;
 }
 
 .embedded .workspace {

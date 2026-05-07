@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=14">
+    <link rel="stylesheet" href="/styles.css?v=15">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -61,7 +61,7 @@
       </section>
 
       <div id="appShell" class="app-shell hidden">
-        <section id="dashboard" class="dashboard">
+        <section id="dashboard" class="dashboard app-page active-page" data-page>
           <div class="section-heading">
             <span class="eyebrow">Build Ops Overview</span>
             <h2>Team state</h2>
@@ -76,7 +76,7 @@
           </div>
         </section>
 
-      <section id="inventory" class="workspace">
+      <section id="inventory" class="workspace app-page" data-page hidden>
         <div class="section-heading split-heading">
           <div>
             <span class="eyebrow">Inventory</span>
@@ -113,7 +113,7 @@
         </div>
       </section>
 
-      <section id="robots" class="workspace">
+      <section id="robots" class="workspace app-page" data-page hidden>
         <div class="section-heading">
           <span class="eyebrow">Robots</span>
           <h2>Requirements and readiness</h2>
@@ -121,7 +121,7 @@
         <div id="robotList" class="ops-grid"></div>
       </section>
 
-      <section id="parts" class="workspace">
+      <section id="parts" class="workspace app-page" data-page hidden>
         <div class="section-heading">
           <span class="eyebrow">Onshape Sync</span>
           <h2 id="syncTitle">Part Studio custom sync</h2>
@@ -184,7 +184,7 @@
         </div>
       </section>
 
-      <section id="fabrication" class="queue-grid">
+      <section id="fabrication" class="queue-grid app-page" data-page hidden>
         <div class="section-heading">
           <span class="eyebrow">Fabrication</span>
           <h2>Custom part queue</h2>
@@ -203,7 +203,7 @@
         </article>
       </section>
 
-      <section id="procurement" class="queue-grid">
+      <section id="procurement" class="queue-grid app-page" data-page hidden>
         <div class="section-heading">
           <span class="eyebrow">Procurement</span>
           <h2>COTS purchasing queue</h2>
@@ -226,7 +226,7 @@
         </article>
       </section>
 
-      <section id="raw-material" class="workspace">
+      <section id="raw-material" class="workspace app-page" data-page hidden>
         <div class="section-heading">
           <span class="eyebrow">Raw Material</span>
           <h2>Sheet, tube, bar, remnants</h2>
@@ -272,7 +272,7 @@
         <div id="rawMaterialList" class="ops-grid"></div>
       </section>
 
-      <section class="inventory-layout">
+      <section id="selection" class="inventory-layout app-page" data-page hidden>
         <aside class="summary">
           <h3>Current selection</h3>
           <dl>
@@ -284,7 +284,7 @@
         </aside>
       </section>
 
-      <section id="admin" class="band security">
+      <section id="admin" class="band security app-page" data-page hidden>
         <div>
           <span class="eyebrow">Admin</span>
           <h2>Security and audit</h2>
@@ -322,6 +322,6 @@
       </div>
     </main>
 
-    <script src="/app.js?v=14"></script>
+    <script src="/app.js?v=15"></script>
   </body>
 </html>

@@ -19,6 +19,8 @@ const els = {
   loginLink: document.querySelector("#loginLink"),
   logoutLink: document.querySelector("#logoutLink"),
   appLogoutLink: document.querySelector("#appLogoutLink"),
+  navLinks: document.querySelectorAll(".nav a[href^='#']"),
+  pages: document.querySelectorAll("[data-page]"),
   importForm: document.querySelector("#importForm"),
   demoButton: document.querySelector("#demoButton"),
   partsBody: document.querySelector("#partsBody"),
@@ -76,6 +78,7 @@ async function init() {
   document.body.classList.toggle("embedded", embeddedMode);
   applyTheme(localStorage.getItem("plateflow-theme") || "dark");
   bindEvents();
+  syncPageFromHash();
 
   for (const [urlKey, formKey] of [
     ["did", "documentId"],
@@ -141,8 +144,28 @@ function bindEvents() {
   if (els.rawMaterialForm) els.rawMaterialForm.addEventListener("submit", onRawMaterialAdd);
   if (els.inventorySearch) els.inventorySearch.addEventListener("input", () => loadDashboard());
   if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", () => loadDashboard());
+  window.addEventListener("hashchange", syncPageFromHash);
   els.modeTabs.forEach((button) => button.addEventListener("click", () => setSyncMode(button.dataset.mode)));
   if (els.themeToggle) els.themeToggle.addEventListener("click", toggleTheme);
+}
+
+function syncPageFromHash() {
+  if (embeddedMode) return;
+  const visiblePages = [...els.pages].filter((page) => page.id !== "admin" || document.body.classList.contains("admin-user"));
+  if (!visiblePages.length) return;
+  const requested = (location.hash || "#dashboard").slice(1);
+  const fallback = visiblePages[0].id;
+  const active = visiblePages.some((page) => page.id === requested) ? requested : fallback;
+  els.pages.forEach((page) => {
+    const selected = page.id === active;
+    page.classList.toggle("active-page", selected);
+    page.toggleAttribute("hidden", !selected);
+  });
+  els.navLinks.forEach((link) => {
+    const selected = link.getAttribute("href") === `#${active}`;
+    link.classList.toggle("active", selected);
+    link.setAttribute("aria-current", selected ? "page" : "false");
+  });
 }
 
 function renderAuth(session) {
@@ -174,6 +197,10 @@ function renderAppAccess(session) {
     els.plateflowLoginForm.elements.inviteToken.value = inviteToken;
     if (inviteToken && !session.bootstrapRequired) els.nameField?.classList.remove("hidden");
   }
+  if ((!session.appUser || session.appUser.role !== "admin") && location.hash === "#admin") {
+    history.replaceState(null, "", "#dashboard");
+  }
+  syncPageFromHash();
   if (els.loginHelp) els.loginHelp.textContent = session.bootstrapRequired ? "Create the first admin account." : inviteToken ? "Create your invited PlateFlow account." : "Sign in to continue.";
   if (els.plateflowLoginButton) els.plateflowLoginButton.textContent = session.bootstrapRequired ? "Create admin" : inviteToken ? "Create account" : "Log in";
   if (els.appAuthStatus) {
