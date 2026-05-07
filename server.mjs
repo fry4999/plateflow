@@ -56,15 +56,18 @@ createServer(async (req, res) => {
     if (url.pathname === "/auth/logout") return logout(res, session);
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
     if (url.pathname === "/api/inventory") return withAppAccess(session, res, () => json(res, 200, inventorySnapshot()));
-    if (url.pathname === "/api/dashboard") return withAppAccess(session, res, () => json(res, 200, dashboardSnapshot()));
+    if (url.pathname === "/api/dashboard") return withAppAccess(session, res, (user) => json(res, 200, dashboardSnapshot(user)));
     if (url.pathname === "/api/sync-batches") return withAppAccess(session, res, () => json(res, 200, syncBatchSnapshot()));
     if (url.pathname === "/api/raw-materials" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, { rawMaterials: store.rawMaterials }));
     if (url.pathname === "/api/raw-materials" && req.method === "POST") return withAppAccess(session, res, () => addRawMaterial(req, res, session), ["admin", "mentor", "fabricator"]);
     if (url.pathname === "/api/robots") return withAppAccess(session, res, () => json(res, 200, { robots: robotSnapshot(inventorySnapshot().parts) }));
     if (url.pathname === "/api/audit-log") return withAppAccess(session, res, () => json(res, 200, { auditLogs: store.auditLogs.slice(0, 50) }), ["admin", "mentor"]);
-    if (url.pathname === "/api/admin/users") return withAppAccess(session, res, () => json(res, 200, adminUsersSnapshot()), ["admin"]);
+    if (url.pathname === "/api/admin/users" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, adminUsersSnapshot()), ["admin"]);
+    if (url.pathname.startsWith("/api/admin/users/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateAdminUser(req, res, session, user, pathId(url.pathname, "/api/admin/users/")), ["admin"]);
+    if (url.pathname.startsWith("/api/admin/users/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteAdminUser(req, res, session, user, pathId(url.pathname, "/api/admin/users/")), ["admin"]);
     if (url.pathname === "/api/admin/invites" && req.method === "POST") return withAppAccess(session, res, (user) => createInvite(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/admin/remove-placeholder-cots" && req.method === "POST") return withAppAccess(session, res, () => removePlaceholderCots(req, res, session), ["admin"]);
+    if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), ["admin", "mentor", "fabricator", "student"]);
     if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), ["admin", "mentor", "purchaser", "student"]);
     if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return withAppAccess(session, res, () => exportStep(req, res, session), ["admin", "mentor", "fabricator"]);
@@ -154,7 +157,9 @@ function loadFileStore() {
   const fallback = defaultStore();
   if (!existsSync(config.dataPath)) return fallback;
   try {
-    return mergeStore(JSON.parse(readFileSync(config.dataPath, "utf8")));
+    const raw = readFileSync(config.dataPath, "utf8").trim();
+    if (!raw) return fallback;
+    return mergeStore(JSON.parse(raw));
   } catch (error) {
     console.error("Could not read PlateFlow data file", error);
     return fallback;
@@ -451,6 +456,10 @@ async function loginPlateFlow(req, res, session) {
   return json(res, 200, { user: publicAppUser(user), session: publicSession(session) });
 }
 
+function pathId(pathname, prefix) {
+  return decodeURIComponent(pathname.slice(prefix.length));
+}
+
 function validateAuthInput(body, options = {}) {
   const email = String(body.email || "").trim().toLowerCase().slice(0, 160);
   const password = String(body.password || "");
@@ -608,7 +617,7 @@ async function importOnshape(req, res, session) {
 
   const parts = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}?${params}`);
   const normalized = (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input));
-  const saved = saveInventory(input, normalized, "custom", "Part Studio custom sync");
+  const saved = await saveInventory(input, normalized, "custom", "Part Studio custom sync");
   return json(res, 200, { parts: normalized, source: input, inventory: saved });
 }
 
@@ -623,11 +632,11 @@ async function importCots(req, res, session) {
     throw httpError(501, "Assembly BOM import is not connected yet. PlateFlow will not create placeholder COTS items.");
   }
   const normalized = rows.slice(0, 200).map((row, index) => normalizeCotsRow(row, input, index));
-  const saved = saveInventory(input, normalized, "cots", "Assembly BOM procurement sync");
+  const saved = await saveInventory(input, normalized, "cots", "Assembly BOM procurement sync");
   return json(res, 200, { parts: normalized, source: input, inventory: saved });
 }
 
-function saveInventory(input, parts, sourceType, label) {
+async function saveInventory(input, parts, sourceType, label) {
   const key = `${input.documentId}:${input.workspacePath}:${input.workspaceId}:${input.elementId}:${input.configuration || "default"}`;
   const batchId = `S-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex").toUpperCase()}`;
   const record = {
@@ -655,7 +664,7 @@ function saveInventory(input, parts, sourceType, label) {
   });
   store.syncBatches.splice(100);
   audit("sync.received", `${label}: ${parts.length} item${parts.length === 1 ? "" : "s"}`, "onshape");
-  void persistStore().catch((error) => console.error("Could not persist PlateFlow data", error));
+  await persistStore();
   return record;
 }
 
@@ -807,11 +816,12 @@ function groupCotsParts(parts) {
   }, {}));
 }
 
-function dashboardSnapshot() {
+function dashboardSnapshot(user = null) {
   const inventory = inventorySnapshot();
   const customParts = inventory.parts.filter((part) => part.sourceType === "custom");
   const cotsParts = inventory.parts.filter((part) => part.sourceType === "cots");
   const robots = robotSnapshot(inventory.parts);
+  const adminVisible = user?.role === "admin";
   return {
     overview: {
       partsMissing: inventory.parts.reduce((sum, part) => sum + Math.max(0, Number(part.quantity || 1) - Number(part.onHand || 0)), 0),
@@ -835,9 +845,9 @@ function dashboardSnapshot() {
     },
     rawMaterials: store.rawMaterials,
     admin: {
-      roles: ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"],
-      locations: store.inventoryLocations,
-      auditLogs: store.auditLogs.slice(0, 20)
+      roles: adminVisible ? ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"] : [],
+      locations: adminVisible ? store.inventoryLocations : [],
+      auditLogs: adminVisible ? store.auditLogs.slice(0, 20) : []
     }
   };
 }
@@ -1041,7 +1051,15 @@ async function removePlaceholderCots(req, res, session) {
 }
 
 function adminUsersSnapshot() {
+  const activeUsers = store.users.filter((user) => user.status === "active");
+  const pendingInvites = store.invites.filter((invite) => invite.status === "pending");
   return {
+    counts: {
+      users: store.users.length,
+      active: activeUsers.length,
+      admins: activeUsers.filter((user) => user.role === "admin").length,
+      pendingInvites: pendingInvites.length
+    },
     users: store.users.map(publicAppUser),
     invites: store.invites.slice(0, 50).map((invite) => ({
       id: invite.id,
@@ -1076,12 +1094,95 @@ async function createInvite(req, res, session, actor) {
   return json(res, 201, adminUsersSnapshot());
 }
 
+async function updateAdminUser(req, res, session, actor, userId) {
+  requireCsrf(req, session);
+  const target = store.users.find((user) => user.id === userId);
+  if (!target) throw httpError(404, "User not found");
+  const body = await readJson(req);
+  const nextName = String(body.name || "").trim().slice(0, 80);
+  const nextRole = validateRole(body.role || target.role);
+  const nextStatus = validateUserStatus(body.status || target.status);
+  if (!nextName) throw httpError(400, "Name is required");
+
+  const removingActiveAdmin = target.status === "active" && target.role === "admin" && (nextRole !== "admin" || nextStatus !== "active");
+  if (removingActiveAdmin && activeAdminCount() <= 1) throw httpError(400, "PlateFlow must keep at least one active admin");
+
+  target.name = nextName;
+  target.role = nextRole;
+  target.status = nextStatus;
+  target.updatedAt = new Date().toISOString();
+  if (nextStatus === "active" && !target.approvedAt) target.approvedAt = target.updatedAt;
+  for (const activeSession of sessions.values()) {
+    if (activeSession.appUserId === target.id && target.status !== "active") activeSession.appUserId = null;
+  }
+  audit("admin.user_updated", `Updated ${target.email} to ${target.role}/${target.status}`, actor.email);
+  await persistStore();
+  return json(res, 200, adminUsersSnapshot());
+}
+
+async function deleteAdminUser(req, res, session, actor, userId) {
+  requireCsrf(req, session);
+  const targetIndex = store.users.findIndex((user) => user.id === userId);
+  if (targetIndex === -1) throw httpError(404, "User not found");
+  const target = store.users[targetIndex];
+  if (target.id === actor.id) throw httpError(400, "You cannot delete your own account while signed in");
+  if (target.status === "active" && target.role === "admin" && activeAdminCount() <= 1) {
+    throw httpError(400, "PlateFlow must keep at least one active admin");
+  }
+  store.users.splice(targetIndex, 1);
+  for (const activeSession of sessions.values()) {
+    if (activeSession.appUserId === target.id) activeSession.appUserId = null;
+  }
+  audit("admin.user_deleted", `Deleted ${target.email}`, actor.email);
+  await persistStore();
+  return json(res, 200, adminUsersSnapshot());
+}
+
+async function updateFabricationJob(req, res, session, actor, jobId) {
+  requireCsrf(req, session);
+  const job = store.fabricationJobs.find((item) => item.id === jobId);
+  if (!job) throw httpError(404, "Fabrication job not found");
+  const body = await readJson(req);
+  const status = validateFabricationStatus(body.status || job.status);
+  job.status = status;
+  job.updatedAt = new Date().toISOString();
+  if (Array.isArray(job.lines) && ["completed", "received", "installed"].includes(status)) {
+    job.lines = job.lines.map((line) => ({ ...line, status }));
+  }
+  audit("fabrication.job_updated", `Updated ${job.id} to ${job.status}`, actor.email);
+  await persistStore();
+  return json(res, 200, { fabrication: dashboardSnapshot().fabrication });
+}
+
+function activeAdminCount() {
+  return store.users.filter((user) => user.role === "admin" && user.status === "active").length;
+}
+
+function validateRole(value) {
+  const role = String(value || "").trim();
+  const roles = new Set(["admin", "mentor", "purchaser", "fabricator", "student", "read_only"]);
+  if (!roles.has(role)) throw httpError(400, "Invalid role");
+  return role;
+}
+
+function validateUserStatus(value) {
+  const status = String(value || "").trim();
+  const statuses = new Set(["active", "disabled", "pending"]);
+  if (!statuses.has(status)) throw httpError(400, "Invalid user status");
+  return status;
+}
+
+function validateFabricationStatus(value) {
+  const status = String(value || "").trim();
+  const statuses = new Set(["draft", "queued", "in_progress", "sent_out", "completed", "received", "installed", "canceled"]);
+  if (!statuses.has(status)) throw httpError(400, "Invalid fabrication status");
+  return status;
+}
+
 function validateInvite(body) {
   const email = String(body.email || "").trim().toLowerCase().slice(0, 160);
-  const role = String(body.role || "student").trim();
-  const roles = new Set(["admin", "mentor", "purchaser", "fabricator", "student", "read_only"]);
+  const role = validateRole(body.role || "student");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw httpError(400, "Valid email is required");
-  if (!roles.has(role)) throw httpError(400, "Invalid role");
   return { email, role };
 }
 

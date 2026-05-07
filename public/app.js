@@ -61,6 +61,10 @@ const demoParts = [
   { id: "JRM", name: "battery-retainer", material: "304 Stainless Steel", thickness: "0.060 in", quantity: 2, finish: "Raw", selected: false }
 ];
 
+const roles = ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"];
+const userStatuses = ["active", "disabled", "pending"];
+const fabricationStatuses = ["draft", "queued", "in_progress", "sent_out", "completed", "received", "installed", "canceled"];
+
 init();
 
 async function init() {
@@ -121,6 +125,8 @@ function bindEvents() {
   els.importForm.addEventListener("submit", onImport);
   if (els.plateflowLoginForm) els.plateflowLoginForm.addEventListener("submit", onPlateFlowLogin);
   if (els.inviteForm) els.inviteForm.addEventListener("submit", onInviteCreate);
+  if (els.userList) els.userList.addEventListener("click", onAdminUserAction);
+  if (els.fabricationJobs) els.fabricationJobs.addEventListener("change", onFabricationJobChange);
   els.demoButton.addEventListener("click", loadDemo);
   els.partsBody.addEventListener("input", onPartEdit);
   els.partsBody.addEventListener("change", onPartEdit);
@@ -394,15 +400,39 @@ function renderAdminUsers(result) {
   if (!els.userList) return;
   const users = result.users || [];
   const invites = result.invites || [];
+  const counts = result.counts || {};
   els.userList.innerHTML = [
+    `
+      <div class="admin-counts">
+        <strong>${Number(counts.users || users.length)} account${Number(counts.users || users.length) === 1 ? "" : "s"}</strong>
+        <span>${Number(counts.active || 0)} active · ${Number(counts.admins || 0)} admin · ${Number(counts.pendingInvites || invites.filter((invite) => invite.status === "pending").length)} pending invite${Number(counts.pendingInvites || 0) === 1 ? "" : "s"}</span>
+      </div>
+    `,
     ...users.map((user) => `
-      <div>
-        <strong>${escapeHtml(user.name || user.email)} · ${escapeHtml(user.role)}</strong>
-        <span>${escapeHtml(user.email)} · ${escapeHtml(user.status)}</span>
+      <div class="user-row" data-user-id="${escapeAttr(user.id)}">
+        <label>
+          <span>Name</span>
+          <input class="user-name" value="${escapeAttr(user.name || user.email)}">
+        </label>
+        <label>
+          <span>Role</span>
+          <select class="user-role">
+            ${roles.map((role) => `<option value="${escapeAttr(role)}"${role === user.role ? " selected" : ""}>${escapeHtml(role)}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>Status</span>
+          <select class="user-status">
+            ${userStatuses.map((status) => `<option value="${escapeAttr(status)}"${status === user.status ? " selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+          </select>
+        </label>
+        <span class="user-email">${escapeHtml(user.email)}</span>
+        <button class="ghost small" type="button" data-action="save-user">Save</button>
+        <button class="ghost small danger" type="button" data-action="delete-user">Delete</button>
       </div>
     `),
     ...invites.map((invite) => `
-      <div>
+      <div class="invite-row">
         <strong>Invite · ${escapeHtml(invite.email)} · ${escapeHtml(invite.role)}</strong>
         <span>${escapeHtml(invite.status)} · ${escapeHtml(invite.inviteUrl)}</span>
       </div>
@@ -494,9 +524,17 @@ function renderFabrication(fabrication) {
     const lines = Array.isArray(job.lines) ? job.lines : [];
     const grouping = Array.isArray(job.grouping) ? job.grouping : [];
     return `
-    <div>
-      <strong>${escapeHtml(job.id)} · ${escapeHtml(job.status)}</strong>
-      <span>${lines.length} custom line${lines.length === 1 ? "" : "s"} · ${grouping.map((group) => `${group.key} (${group.count})`).join(", ") || "Ungrouped"}</span>
+    <div class="queue-row">
+      <span>
+        <strong>${escapeHtml(job.id)}</strong>
+        <small>${lines.length} custom line${lines.length === 1 ? "" : "s"} · ${grouping.map((group) => `${group.key} (${group.count})`).join(", ") || "Ungrouped"}</small>
+      </span>
+      <label class="inline-select">
+        <span>Status</span>
+        <select data-job-id="${escapeAttr(job.id)}">
+          ${fabricationStatuses.map((status) => `<option value="${escapeAttr(status)}"${status === job.status ? " selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+        </select>
+      </label>
     </div>
   `;
   }).join("");
@@ -586,6 +624,54 @@ async function onInviteCreate(event) {
     setMessage("Invite created. Copy the invite link from Admin.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
+  }
+}
+
+async function onAdminUserAction(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const row = button.closest("[data-user-id]");
+  if (!row) return;
+  const userId = row.dataset.userId;
+  const action = button.dataset.action;
+  try {
+    if (action === "delete-user") {
+      if (!window.confirm("Delete this PlateFlow account?")) return;
+      const result = await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+      renderAdminUsers(result);
+      setMessage("User deleted.", "ok");
+      return;
+    }
+    if (action === "save-user") {
+      const result = await api(`/api/admin/users/${encodeURIComponent(userId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: row.querySelector(".user-name")?.value || "",
+          role: row.querySelector(".user-role")?.value || "student",
+          status: row.querySelector(".user-status")?.value || "active"
+        })
+      });
+      renderAdminUsers(result);
+      setMessage("User updated.", "ok");
+    }
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function onFabricationJobChange(event) {
+  const select = event.target.closest("select[data-job-id]");
+  if (!select) return;
+  try {
+    const result = await api(`/api/fabrication/jobs/${encodeURIComponent(select.dataset.jobId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: select.value })
+    });
+    renderFabrication(result.fabrication);
+    setMessage("Fabrication job status updated.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+    await loadDashboard();
   }
 }
 
