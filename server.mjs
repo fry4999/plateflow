@@ -627,7 +627,13 @@ async function importOnshape(req, res, session) {
   if (input.configuration) params.set("configuration", input.configuration);
 
   const parts = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}?${params}`);
-  const normalizedParts = (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input));
+  const normalizedParts = await enrichPhysicalPartData(
+    accessToken,
+    base,
+    input,
+    (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input)),
+    configuredParts
+  );
   if (body.previewOnly) return json(res, 200, { parts: normalizedParts, source: input });
 
   const normalized = configuredParts.length ? applyConfiguredParts(normalizedParts, configuredParts, input) : normalizedParts;
@@ -640,12 +646,15 @@ function normalizeConfiguredParts(value) {
   if (!Array.isArray(value)) return [];
   return value.slice(0, 50).map((item) => {
     const id = String(item.id || item.partId || "").trim().slice(0, 100);
+    const partKey = String(item.partKey || item.id || item.partId || item.name || "").trim().slice(0, 140);
     const stock = String(item.stock || "").trim().slice(0, 80);
-    if (!id) throw httpError(400, "Configured part is missing an Onshape part id");
+    if (!partKey) throw httpError(400, "Configured part is missing an Onshape part selection");
     if (!stock) throw httpError(400, "Stock is required for custom parts");
     const quantity = Math.max(1, Math.min(999, Number(item.quantity || 1)));
     return {
       id,
+      partKey,
+      name: String(item.name || "").trim().slice(0, 140),
       subsystem: String(item.subsystem || "").trim().slice(0, 120),
       thickness: String(item.thickness || "").trim().slice(0, 40),
       materialType: String(item.materialType || item.material || "").trim().slice(0, 120),
@@ -658,11 +667,16 @@ function normalizeConfiguredParts(value) {
 }
 
 function applyConfiguredParts(parts, configuredParts, input) {
-  const byId = new Map(configuredParts.map((part) => [part.id, part]));
+  const byKey = new Map();
+  for (const part of configuredParts) {
+    if (part.id) byKey.set(part.id, part);
+    if (part.partKey) byKey.set(part.partKey, part);
+    if (part.name) byKey.set(part.name, part);
+  }
   return parts
-    .filter((part) => byId.has(part.id))
+    .filter((part) => byKey.has(part.id) || byKey.has(part.name))
     .map((part, index) => {
-      const config = byId.get(part.id);
+      const config = byKey.get(part.id) || byKey.get(part.name);
       return {
         ...part,
         partNumber: config.partNumber || generatePartNumber(input, part, config, index),
@@ -697,6 +711,161 @@ function stockCategory(stock) {
   if (text.includes("tube")) return "tube";
   if (text.includes("spacer") || text.includes("churro") || text.includes("hex")) return "stock";
   return "fabricated";
+}
+
+async function enrichPhysicalPartData(accessToken, base, input, parts, configuredParts = []) {
+  const wantedKeys = configuredParts.length
+    ? new Set(configuredParts.flatMap((part) => [part.id, part.partKey, part.name].filter(Boolean)))
+    : null;
+  const work = parts.filter((part) => {
+    if (part.thickness || !part.id) return false;
+    if (!wantedKeys) return true;
+    return wantedKeys.has(part.id) || wantedKeys.has(part.name);
+  });
+  if (!work.length) return parts;
+
+  const thicknessByPartId = new Map();
+  await mapWithConcurrency(work.slice(0, 80), 4, async (part) => {
+    const thickness = await inferPhysicalThickness(accessToken, base, input, part.id);
+    if (thickness) thicknessByPartId.set(part.id, thickness);
+  });
+
+  if (!thicknessByPartId.size) return parts;
+  return parts.map((part) => {
+    const thickness = thicknessByPartId.get(part.id);
+    return thickness ? { ...part, thickness, thicknessSource: "physical_bounding_box" } : part;
+  });
+}
+
+async function inferPhysicalThickness(accessToken, base, input, partId) {
+  const encodedPartId = encodeURIComponent(partId);
+  const params = new URLSearchParams({ includeHidden: "true" });
+  if (input.configuration) params.set("configuration", input.configuration);
+  try {
+    const data = await onshapeJson(accessToken, `${base}/api/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}/e/${input.elementId}/partid/${encodedPartId}/boundingboxes?${params}`);
+    const dimensions = boundingBoxDimensions(data);
+    if (!dimensions.length) return "";
+    const minMeters = Math.min(...dimensions.filter((value) => Number.isFinite(value) && value > 0));
+    if (!Number.isFinite(minMeters) || minMeters <= 0) return "";
+    return formatMetersAsInches(minMeters);
+  } catch (error) {
+    if (![400, 403, 404].includes(Number(error.status || 0))) console.warn(`Could not infer thickness for ${partId}`, error.message);
+    return "";
+  }
+}
+
+function boundingBoxDimensions(value) {
+  const box = findBoundingBox(value);
+  if (!box) return [];
+  const low = readPoint(box, ["low", "min", "minimum", "minCorner", "lowerLeft"]);
+  const high = readPoint(box, ["high", "max", "maximum", "maxCorner", "upperRight"]);
+  if (low && high) {
+    return [Math.abs(high.x - low.x), Math.abs(high.y - low.y), Math.abs(high.z - low.z)];
+  }
+  const values = {
+    lowX: numericField(box, ["lowX", "minX", "xmin", "xMin"]),
+    lowY: numericField(box, ["lowY", "minY", "ymin", "yMin"]),
+    lowZ: numericField(box, ["lowZ", "minZ", "zmin", "zMin"]),
+    highX: numericField(box, ["highX", "maxX", "xmax", "xMax"]),
+    highY: numericField(box, ["highY", "maxY", "ymax", "yMax"]),
+    highZ: numericField(box, ["highZ", "maxZ", "zmax", "zMax"])
+  };
+  if (Object.values(values).every((item) => item !== null)) {
+    return [
+      Math.abs(values.highX - values.lowX),
+      Math.abs(values.highY - values.lowY),
+      Math.abs(values.highZ - values.lowZ)
+    ];
+  }
+  return [
+    numericField(box, ["xLength", "lengthX", "width"]),
+    numericField(box, ["yLength", "lengthY", "height"]),
+    numericField(box, ["zLength", "lengthZ", "depth"])
+  ].filter((item) => item !== null);
+}
+
+function findBoundingBox(value) {
+  if (!value || typeof value !== "object") return null;
+  if (hasBoundingBoxFields(value)) return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findBoundingBox(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  for (const key of ["boundingBox", "box", "bounds", "boundingBoxes"]) {
+    const found = findBoundingBox(value[key]);
+    if (found) return found;
+  }
+  for (const item of Object.values(value)) {
+    const found = findBoundingBox(item);
+    if (found) return found;
+  }
+  return null;
+}
+
+function hasBoundingBoxFields(value) {
+  return (
+    numericField(value, ["lowX", "minX", "xmin", "xMin"]) !== null &&
+    numericField(value, ["highX", "maxX", "xmax", "xMax"]) !== null
+  ) || Boolean(readPoint(value, ["low", "min", "minimum", "minCorner"]) && readPoint(value, ["high", "max", "maximum", "maxCorner"]));
+}
+
+function readPoint(value, keys) {
+  for (const key of keys) {
+    const point = value?.[key];
+    if (!point) continue;
+    if (Array.isArray(point) && point.length >= 3) {
+      const [x, y, z] = point.map(Number);
+      if ([x, y, z].every(Number.isFinite)) return { x, y, z };
+    }
+    if (typeof point === "object") {
+      const x = numericField(point, ["x", "X", "0"]);
+      const y = numericField(point, ["y", "Y", "1"]);
+      const z = numericField(point, ["z", "Z", "2"]);
+      if ([x, y, z].every((item) => item !== null)) return { x, y, z };
+    }
+  }
+  return null;
+}
+
+function numericField(value, keys) {
+  for (const key of keys) {
+    const raw = value?.[key];
+    if (raw === undefined || raw === null || raw === "") continue;
+    const number = Number(raw);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function formatMetersAsInches(meters) {
+  const inches = meters * 39.37007874015748;
+  const common = [
+    { value: 0.0625, label: "1/16 in" },
+    { value: 0.09375, label: "3/32 in" },
+    { value: 0.125, label: "1/8 in" },
+    { value: 0.1875, label: "3/16 in" },
+    { value: 0.25, label: "1/4 in" },
+    { value: 0.375, label: "3/8 in" },
+    { value: 0.5, label: "1/2 in" }
+  ];
+  const match = common.find((item) => Math.abs(item.value - inches) <= 0.01);
+  if (match) return match.label;
+  return `${Number(inches.toFixed(inches < 1 ? 3 : 2))} in`;
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  let index = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (index < items.length) {
+      const item = items[index];
+      index += 1;
+      await worker(item);
+    }
+  });
+  await Promise.all(runners);
 }
 
 async function importCots(req, res, session) {
@@ -1101,6 +1270,7 @@ function publicRequirement(requirement) {
 }
 
 function normalizePart(part, input) {
+  const partId = String(part.partId || part.id || part.partid || "").trim();
   const material = part.material || {};
   const materialName = material.displayName || material.name || material.id || partCustomProperty(part, ["material"]) || "Unassigned";
   const thickness = partCustomProperty(part, ["thickness", "plate thickness", "sheet thickness"]);
@@ -1111,8 +1281,8 @@ function normalizePart(part, input) {
   const category = partCustomProperty(part, ["category", "part category"]);
   const fabricationIntent = partCustomProperty(part, ["fabrication intent", "fab intent"]);
   return {
-    id: part.partId,
-    name: part.name || part.partId,
+    id: partId,
+    name: part.name || partId,
     type: "custom",
     category: category || "fabricated",
     material: materialName,
@@ -1134,7 +1304,7 @@ function normalizePart(part, input) {
       documentId: input.documentId,
       workspaceId: input.workspaceId,
       elementId: input.elementId,
-      partId: part.partId,
+      partId,
       sourceTag: input.sourceTag,
       documentName: input.documentName || "",
       configuration: input.configuration || ""

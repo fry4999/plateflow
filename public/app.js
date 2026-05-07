@@ -464,10 +464,10 @@ function fillConfigFromSelectedPart(options = {}) {
   const part = selectedConfigPart();
   if (!part) return;
   const material = part.material && part.material !== "Unassigned" ? part.material : "Not assigned in Onshape";
-  const thickness = part.thickness || "Not set in Onshape";
+  const thickness = part.thicknessSource === "physical_bounding_box" ? `${part.thickness} (physical)` : part.thickness || "Not set in Onshape";
   els.configMaterialDetected.textContent = material;
   els.configThicknessDetected.textContent = thickness;
-  els.configDetectedStatus.textContent = part.thickness ? "Onshape data loaded" : "Missing thickness";
+  els.configDetectedStatus.textContent = part.thickness ? "Onshape data loaded" : "Could not infer thickness";
   els.configDetectedStatus.classList.toggle("warn", !part.thickness);
   if (els.configQuantity) els.configQuantity.value = Math.max(1, Number(part.quantity || 1));
   if (!options.preservePartNumber || !els.configPartNumber?.value) onGeneratePartNumber();
@@ -513,7 +513,9 @@ async function onSubmitConfiguredPart() {
     return;
   }
   const configuredPart = {
-    id: part.id,
+    id: part.id || "",
+    partKey: part.id || part.name || "",
+    name: part.name || "",
     subsystem: els.configSubsystem?.value || "",
     thickness: part.thickness || "",
     materialType: part.material || "",
