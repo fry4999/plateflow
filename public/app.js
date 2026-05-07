@@ -162,7 +162,7 @@ function renderAppAccess(session) {
 }
 
 function canLoadDashboard(session) {
-  return Boolean(session.bootstrapRequired || session.appAuthenticated);
+  return Boolean(session.appAuthenticated);
 }
 
 async function onPlateFlowLogin(event) {
