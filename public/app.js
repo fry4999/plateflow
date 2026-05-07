@@ -14,9 +14,18 @@ const els = {
   exportButton: document.querySelector("#exportButton"),
   selectAll: document.querySelector("#selectAll"),
   orderForm: document.querySelector("#orderForm"),
+  themeToggle: document.querySelector("#themeToggle"),
+  syncTitle: document.querySelector("#syncTitle"),
+  modeTabs: document.querySelectorAll(".mode-tab"),
   metricImports: document.querySelector("#metricImports"),
   metricParts: document.querySelector("#metricParts"),
-  metricMaterials: document.querySelector("#metricMaterials"),
+  metricCustom: document.querySelector("#metricCustom"),
+  metricCots: document.querySelector("#metricCots"),
+  metricFabrication: document.querySelector("#metricFabrication"),
+  metricProcurement: document.querySelector("#metricProcurement"),
+  fabQueueCount: document.querySelector("#fabQueueCount"),
+  procQueueCount: document.querySelector("#procQueueCount"),
+  batchList: document.querySelector("#batchList"),
   summaryParts: document.querySelector("#summaryParts"),
   summaryQty: document.querySelector("#summaryQty"),
   summaryMaterials: document.querySelector("#summaryMaterials"),
@@ -36,6 +45,7 @@ async function init() {
   const params = new URLSearchParams(location.search);
   embeddedMode = location.pathname.startsWith("/onshape") || params.get("embedded") === "1";
   document.body.classList.toggle("embedded", embeddedMode);
+  applyTheme(localStorage.getItem("plateflow-theme") || "dark");
 
   for (const [urlKey, formKey] of [
     ["did", "documentId"],
@@ -57,6 +67,7 @@ async function init() {
   if (params.get("workspaceOrVersion")) {
     els.importForm.dataset.workspaceOrVersion = params.get("workspaceOrVersion");
   }
+  setSyncMode(params.get("mode") === "assembly" || params.get("mode") === "cots" ? "cots" : "custom");
 
   try {
     const session = await api("/api/session");
@@ -82,6 +93,8 @@ async function init() {
   els.selectAll.addEventListener("change", toggleAll);
   els.exportButton.addEventListener("click", onExport);
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
+  els.modeTabs.forEach((button) => button.addEventListener("click", () => setSyncMode(button.dataset.mode)));
+  if (els.themeToggle) els.themeToggle.addEventListener("click", toggleTheme);
   renderParts();
 }
 
@@ -105,12 +118,13 @@ async function onImport(event) {
   event.preventDefault();
   const form = new FormData(els.importForm);
   source = Object.fromEntries(form.entries());
+  const mode = source.syncMode === "cots" ? "cots" : "custom";
   source.configuration = isUnresolvedMacro(source.configuration) ? "" : source.configuration;
   if (els.importForm.dataset.baseUrl) source.baseUrl = els.importForm.dataset.baseUrl;
   if (els.importForm.dataset.workspaceOrVersion) source.workspaceOrVersion = els.importForm.dataset.workspaceOrVersion;
-  setMessage("Reading parts and assigned materials from Onshape...");
+  setMessage(mode === "cots" ? "Submitting Assembly BOM rows to procurement..." : "Reading custom parts and assigned materials from Onshape...");
   try {
-    const result = await api("/api/onshape/import", {
+    const result = await api(mode === "cots" ? "/api/onshape/import-cots" : "/api/onshape/import", {
       method: "POST",
       body: JSON.stringify(source)
     });
@@ -127,10 +141,31 @@ async function onImport(event) {
       }
     } : null);
     const noun = parts.length === 1 ? "part" : "parts";
-    setMessage(embeddedMode ? `Sent ${parts.length} ${noun} to the PlateFlow dashboard.` : `Imported ${parts.length} ${noun} into inventory.`, "ok");
+    setMessage(embeddedMode ? `Sent ${parts.length} ${noun} to the PlateFlow dashboard.` : `Imported ${parts.length} ${noun} into ${mode === "cots" ? "procurement" : "fabrication"} inventory.`, "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
+}
+
+function setSyncMode(mode) {
+  const selected = mode === "cots" ? "cots" : "custom";
+  els.importForm.elements.syncMode.value = selected;
+  els.modeTabs.forEach((button) => button.classList.toggle("active", button.dataset.mode === selected));
+  if (els.syncTitle) els.syncTitle.textContent = selected === "cots" ? "Assembly BOM COTS sync" : "Part Studio custom sync";
+  if (embeddedMode) {
+    setMessage(selected === "cots" ? "Assembly mode: submit purchased BOM rows to procurement." : "Part Studio mode: submit custom parts to fabrication inventory.", "");
+  }
+}
+
+function applyTheme(theme) {
+  document.body.dataset.theme = theme === "light" ? "light" : "dark";
+  if (els.themeToggle) els.themeToggle.textContent = document.body.dataset.theme === "dark" ? "Light" : "Dark";
+}
+
+function toggleTheme() {
+  const next = document.body.dataset.theme === "dark" ? "light" : "dark";
+  localStorage.setItem("plateflow-theme", next);
+  applyTheme(next);
 }
 
 function hasOnshapeContext() {
@@ -154,7 +189,7 @@ function renderParts() {
   els.partCount.textContent = parts.length ? `${parts.length} part${parts.length === 1 ? "" : "s"} loaded` : "No parts loaded";
 
   if (!parts.length) {
-    els.partsBody.innerHTML = `<tr><td colspan="6" class="empty">Import from Onshape to populate inventory.</td></tr>`;
+    els.partsBody.innerHTML = `<tr><td colspan="7" class="empty">Import from Onshape to populate inventory.</td></tr>`;
     updateSummary();
     return;
   }
@@ -162,15 +197,12 @@ function renderParts() {
   els.partsBody.innerHTML = parts.map((part, index) => `
     <tr>
       <td><input type="checkbox" data-index="${index}" data-field="selected" ${part.selected ? "checked" : ""} aria-label="select ${escapeHtml(part.name)}"></td>
+      <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
       <td><span class="part-name">${escapeHtml(part.name)}</span><br><small>${escapeHtml(part.bodyType || part.id || "")}</small></td>
       <td><input data-index="${index}" data-field="material" value="${escapeAttr(part.material || "Unassigned")}"></td>
-      <td><input data-index="${index}" data-field="thickness" value="${escapeAttr(part.thickness || "")}" placeholder="0.125 in"></td>
+      <td>${escapeHtml(part.vendor || part.process || part.thickness || "review")}</td>
       <td><input data-index="${index}" data-field="quantity" type="number" min="1" max="999" value="${Number(part.quantity || 1)}"></td>
-      <td>
-        <select data-index="${index}" data-field="finish">
-          ${["Deburred", "Tumbled", "Raw", "Powder coat"].map((finish) => `<option ${finish === part.finish ? "selected" : ""}>${finish}</option>`).join("")}
-        </select>
-      </td>
+      <td><span class="status">${escapeHtml(part.status || part.procurementStatus || "needed")}</span></td>
     </tr>
   `).join("");
   els.selectAll.checked = parts.every((part) => part.selected);
@@ -241,7 +273,32 @@ function renderInventory(inventory) {
   if (!inventory || !els.metricImports) return;
   els.metricImports.textContent = String(inventory.totals.records);
   els.metricParts.textContent = String(inventory.totals.parts);
-  els.metricMaterials.textContent = String(inventory.totals.materials);
+  els.metricCustom.textContent = String(inventory.totals.custom || 0);
+  els.metricCots.textContent = String(inventory.totals.cots || 0);
+  els.metricFabrication.textContent = String(inventory.totals.fabrication || 0);
+  els.metricProcurement.textContent = String(inventory.totals.procurement || 0);
+  if (els.fabQueueCount) els.fabQueueCount.textContent = inventory.totals.fabrication ? `${inventory.totals.fabrication} custom part${inventory.totals.fabrication === 1 ? "" : "s"} awaiting fabrication review.` : "No custom parts queued.";
+  if (els.procQueueCount) els.procQueueCount.textContent = inventory.totals.procurement ? `${inventory.totals.procurement} COTS item${inventory.totals.procurement === 1 ? "" : "s"} awaiting procurement review.` : "No COTS parts queued.";
+  loadBatches();
+}
+
+async function loadBatches() {
+  if (!els.batchList) return;
+  try {
+    const result = await api("/api/sync-batches");
+    if (!result.batches.length) {
+      els.batchList.textContent = "No sync batches yet.";
+      return;
+    }
+    els.batchList.innerHTML = result.batches.slice(0, 6).map((batch) => `
+      <div>
+        <strong>${escapeHtml(batch.id)}</strong>
+        <span>${escapeHtml(batch.sourceType)} · ${Number(batch.partCount)} item${Number(batch.partCount) === 1 ? "" : "s"}</span>
+      </div>
+    `).join("");
+  } catch {
+    els.batchList.textContent = "Could not load sync batches.";
+  }
 }
 
 function updateSummary() {

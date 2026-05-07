@@ -4,9 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=3">
+    <link rel="stylesheet" href="/styles.css?v=4">
   </head>
-  <body>
+  <body data-theme="dark">
     <header class="topbar">
       <a class="brand" href="/">
         <span class="brand-mark">PF</span>
@@ -16,14 +16,16 @@
         </span>
       </a>
       <nav class="nav">
-        <a href="#dashboard">Dashboard</a>
-        <a href="#parts">Import</a>
+        <a href="#dashboard">Overview</a>
+        <a href="#parts">Sync</a>
+        <a href="#queues">Queues</a>
         <a href="#security">Security</a>
       </nav>
       <div class="auth">
         <span id="authStatus" class="status-pill">Checking</span>
         <a id="loginLink" class="button small" href="/auth/onshape">Log in with Onshape</a>
         <a id="logoutLink" class="ghost small hidden" href="/auth/logout">Log out</a>
+        <button id="themeToggle" class="ghost small" type="button">Light</button>
       </div>
     </header>
 
@@ -31,8 +33,8 @@
       <section class="hero">
         <div class="hero-copy">
           <p class="eyebrow">Built for FRC teams tracking belly pans, gussets, brackets, and spares.</p>
-          <h1>Keep your robot plate inventory synced from Onshape.</h1>
-          <p class="lede">Use the Onshape side panel to import Part Studio plates, assigned materials, thickness fields, and source links. Review everything here as an inventory dashboard.</p>
+          <h1>CAD-to-inventory build ops for FRC robots.</h1>
+          <p class="lede">Sync custom parts from Part Studios, sync COTS items from Assembly BOMs, then track inventory, fabrication, procurement, and subsystem readiness in one operational workspace.</p>
           <div class="hero-actions">
             <a class="button" href="/auth/onshape">Connect Onshape</a>
             <a class="ghost" href="#dashboard">View inventory</a>
@@ -58,38 +60,46 @@
         <article>
           <span class="icon">1</span>
           <h2>Read</h2>
-          <p>Pull Part Studio parts, names, body types, custom properties, and assigned materials through the server.</p>
+          <p>Part Studios feed the custom fabrication pipeline. Assembly BOMs feed the purchased/COTS procurement pipeline.</p>
         </article>
         <article>
           <span class="icon">2</span>
           <h2>Send</h2>
-          <p>The Onshape panel posts those parts into PlateFlow inventory without making the CAD workspace feel crowded.</p>
+          <p>The embedded Onshape app submits small sync batches; heavier matching, exports, and inventory updates stay on the backend.</p>
         </article>
         <article>
           <span class="icon">3</span>
           <h2>Track</h2>
-          <p>The dashboard shows what parts exist, which materials are assigned, and when the list was last refreshed.</p>
+          <p>The dashboard merges normalized parts into global inventory, robot requirements, procurement, and fabrication queues.</p>
         </article>
       </section>
 
       <section id="dashboard" class="dashboard">
         <div class="section-heading">
-          <span class="eyebrow">Inventory Dashboard</span>
-          <h2>Plate library</h2>
+          <span class="eyebrow">Build Ops Overview</span>
+          <h2>Team state</h2>
         </div>
         <div class="metrics">
           <article><span>Imports</span><strong id="metricImports">0</strong></article>
           <article><span>Parts</span><strong id="metricParts">0</strong></article>
-          <article><span>Materials</span><strong id="metricMaterials">0</strong></article>
+          <article><span>Custom</span><strong id="metricCustom">0</strong></article>
+          <article><span>COTS</span><strong id="metricCots">0</strong></article>
+          <article><span>Fabrication</span><strong id="metricFabrication">0</strong></article>
+          <article><span>Procurement</span><strong id="metricProcurement">0</strong></article>
         </div>
       </section>
 
       <section id="parts" class="workspace">
         <div class="section-heading">
-          <span class="eyebrow">Onshape Import</span>
-          <h2>Send Part Studio to inventory</h2>
+          <span class="eyebrow">Onshape Sync</span>
+          <h2 id="syncTitle">Part Studio custom sync</h2>
+        </div>
+        <div class="mode-tabs" role="tablist" aria-label="sync mode">
+          <button class="mode-tab active" type="button" data-mode="custom">Part Studio → Custom</button>
+          <button class="mode-tab" type="button" data-mode="cots">Assembly BOM → COTS</button>
         </div>
         <form id="importForm" class="tool-surface import-panel">
+          <input name="syncMode" type="hidden" value="custom">
           <label>
             <span>Document ID</span>
             <input name="documentId" autocomplete="off" placeholder="did">
@@ -106,8 +116,8 @@
             <span>Configuration</span>
             <input name="configuration" autocomplete="off" placeholder="optional encoded config">
           </label>
-          <button class="button" type="submit">Send to inventory</button>
-          <button id="demoButton" class="ghost" type="button">Load demo plates</button>
+          <button class="button" type="submit">Submit sync batch</button>
+          <button id="demoButton" class="ghost" type="button">Load demo data</button>
         </form>
 
         <div class="table-shell">
@@ -120,19 +130,47 @@
               <thead>
                 <tr>
                   <th><input id="selectAll" type="checkbox" aria-label="select all parts"></th>
+                  <th>Type</th>
                   <th>Part</th>
                   <th>Material</th>
-                  <th>Thickness</th>
+                  <th>Vendor/Process</th>
                   <th>Qty</th>
-                  <th>Finish</th>
+                  <th>Status</th>
                 </tr>
               </thead>
               <tbody id="partsBody">
-                <tr><td colspan="6" class="empty">Import from Onshape to populate inventory.</td></tr>
+                <tr><td colspan="7" class="empty">Import from Onshape to populate inventory.</td></tr>
               </tbody>
             </table>
           </div>
         </div>
+      </section>
+
+      <section id="queues" class="queue-grid">
+        <div class="section-heading">
+          <span class="eyebrow">Queues</span>
+          <h2>Operational handoff</h2>
+        </div>
+        <article>
+          <h3>Fabrication queue</h3>
+          <p id="fabQueueCount">No custom parts queued.</p>
+          <ul>
+            <li>Group by material, thickness, process, and destination.</li>
+            <li>Track extracted, queued, making, sent out, ready, received, installed.</li>
+          </ul>
+        </article>
+        <article>
+          <h3>Procurement queue</h3>
+          <p id="procQueueCount">No COTS parts queued.</p>
+          <ul>
+            <li>Group by vendor, subsystem, robot, and sourcing status.</li>
+            <li>Track needed, sourcing, ordered, partially received, received.</li>
+          </ul>
+        </article>
+        <article>
+          <h3>Recent sync batches</h3>
+          <div id="batchList" class="batch-list">No sync batches yet.</div>
+        </article>
       </section>
 
       <section class="inventory-layout">
@@ -161,6 +199,6 @@
       </section>
     </main>
 
-    <script src="/app.js?v=3"></script>
+    <script src="/app.js?v=4"></script>
   </body>
 </html>

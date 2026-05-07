@@ -25,6 +25,7 @@ const config = {
 const sessions = new Map();
 const orders = new Map();
 const inventory = new Map();
+const syncBatches = [];
 const rateBuckets = new Map();
 
 const mime = {
@@ -49,7 +50,9 @@ createServer(async (req, res) => {
     if (url.pathname === "/auth/logout") return logout(res, session);
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
     if (url.pathname === "/api/inventory") return json(res, 200, inventorySnapshot());
+    if (url.pathname === "/api/sync-batches") return json(res, 200, syncBatchSnapshot());
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return await importOnshape(req, res, session);
+    if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return await importCots(req, res, session);
     if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return await exportStep(req, res, session);
     if (url.pathname === "/api/orders" && req.method === "POST") return await createOrder(req, res, session);
     if (url.pathname.startsWith("/api/downloads/")) return downloadBlob(res, session, url.pathname.split("/").pop());
@@ -135,7 +138,7 @@ function getSession(req, res) {
   sessions.set(newSid, session);
   res.setHeader("Set-Cookie", cookie("sid", sign(newSid), {
     httpOnly: true,
-    sameSite: "Lax",
+    sameSite: config.prod ? "None" : "Lax",
     secure: config.prod,
     path: "/",
     maxAge: 60 * 60 * 8
@@ -226,11 +229,11 @@ async function onshapeCallback(_req, res, session, url) {
     session.token = normalizeToken(token);
     session.oauthState = null;
     session.user = { provider: "onshape", label: "Onshape connected" };
-    return redirect(res, session.returnTo || "/?auth=ok");
+    return redirect(res, addQuery(session.returnTo || "/", "auth", "ok"));
   } catch (error) {
     console.error("Onshape OAuth callback failed", error);
     const detail = encodeURIComponent(error.expose ? error.message : "Token exchange failed. Check Render environment variables and Onshape redirect URLs.");
-    return redirect(res, `/?auth=callback-failed&detail=${detail}`);
+    return redirect(res, `${addQuery(session.returnTo || "/", "auth", "callback-failed")}&detail=${detail}`);
   }
 }
 
@@ -238,7 +241,7 @@ function logout(res, session) {
   sessions.delete(session.id);
   res.setHeader("Set-Cookie", cookie("sid", "", {
     httpOnly: true,
-    sameSite: "Lax",
+    sameSite: config.prod ? "None" : "Lax",
     secure: config.prod,
     path: "/",
     maxAge: 0
@@ -249,6 +252,12 @@ function logout(res, session) {
 function sanitizeReturnTo(value) {
   if (!value.startsWith("/") || value.startsWith("//")) return "/";
   return value.slice(0, 300);
+}
+
+function addQuery(path, key, value) {
+  const url = new URL(path, config.appBaseUrl);
+  url.searchParams.set(key, value);
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function normalizeToken(token) {
@@ -295,19 +304,44 @@ async function importOnshape(req, res, session) {
 
   const parts = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}?${params}`);
   const normalized = (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input));
-  const saved = saveInventory(input, normalized);
+  const saved = saveInventory(input, normalized, "custom", "Part Studio custom sync");
   return json(res, 200, { parts: normalized, source: input, inventory: saved });
 }
 
-function saveInventory(input, parts) {
+async function importCots(req, res, session) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const input = validateImport(body);
+  await ensureAccessToken(session);
+
+  const rows = Array.isArray(body.rows) && body.rows.length ? body.rows : demoCotsRows();
+  const normalized = rows.slice(0, 200).map((row, index) => normalizeCotsRow(row, input, index));
+  const saved = saveInventory(input, normalized, "cots", "Assembly BOM procurement sync");
+  return json(res, 200, { parts: normalized, source: input, inventory: saved });
+}
+
+function saveInventory(input, parts, sourceType, label) {
   const key = `${input.documentId}:${input.workspacePath}:${input.workspaceId}:${input.elementId}:${input.configuration || "default"}`;
+  const batchId = `S-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex").toUpperCase()}`;
   const record = {
     id: key,
+    batchId,
+    sourceType,
     updatedAt: new Date().toISOString(),
     source: input,
     parts
   };
   inventory.set(key, record);
+  syncBatches.unshift({
+    id: batchId,
+    label,
+    sourceType,
+    status: "received",
+    partCount: parts.length,
+    createdAt: record.updatedAt,
+    source: input
+  });
+  syncBatches.splice(25);
   return record;
 }
 
@@ -316,7 +350,8 @@ function inventorySnapshot() {
   const parts = records.flatMap((record) => record.parts.map((part) => ({
     ...part,
     inventoryId: record.id,
-    importedAt: record.updatedAt
+    importedAt: record.updatedAt,
+    sourceType: record.sourceType
   })));
   return {
     records,
@@ -324,9 +359,17 @@ function inventorySnapshot() {
     totals: {
       records: records.length,
       parts: parts.length,
-      materials: new Set(parts.map((part) => part.material || "Unassigned")).size
+      custom: parts.filter((part) => part.sourceType === "custom").length,
+      cots: parts.filter((part) => part.sourceType === "cots").length,
+      materials: new Set(parts.map((part) => part.material || "Unassigned")).size,
+      procurement: parts.filter((part) => part.sourceType === "cots").length,
+      fabrication: parts.filter((part) => part.sourceType === "custom").length
     }
   };
+}
+
+function syncBatchSnapshot() {
+  return { batches: syncBatches };
 }
 
 function normalizePart(part, input) {
@@ -336,11 +379,16 @@ function normalizePart(part, input) {
   return {
     id: part.partId,
     name: part.name || part.partId,
+    type: "custom",
+    category: part.customProperties?.Category || part.customProperties?.category || "fabricated",
     material: materialName,
     materialLibrary: material.libraryName || material.libraryId || "",
     bodyType: part.bodyType || "",
     thickness,
     quantity: 1,
+    status: "extracted",
+    process: part.customProperties?.Process || "unknown",
+    fabricationIntent: part.customProperties?.FabricationIntent || "review_needed",
     finish: "Deburred",
     source: {
       documentId: input.documentId,
@@ -350,6 +398,52 @@ function normalizePart(part, input) {
       configuration: input.configuration || ""
     }
   };
+}
+
+function normalizeCotsRow(row, input, index) {
+  const vendor = String(row.vendor || row.supplier || "").trim();
+  const vendorSku = String(row.vendorSku || row.partNumber || row.sku || "").trim();
+  return {
+    id: String(row.id || row.rowId || `bom-${index + 1}`).slice(0, 80),
+    name: String(row.name || row.title || row.partName || "Purchased item").slice(0, 120),
+    type: "cots",
+    category: String(row.category || "purchased").slice(0, 80),
+    vendor: vendor || "Unassigned",
+    vendorSku,
+    manufacturer: String(row.manufacturer || "").slice(0, 120),
+    manufacturerSku: String(row.manufacturerSku || row.mpn || "").slice(0, 120),
+    material: "Purchased",
+    thickness: "",
+    quantity: Math.min(999, Math.max(1, Number(row.quantity || 1))),
+    status: "needed",
+    procurementStatus: "needed",
+    vendorUrl: vendorLink(vendor, vendorSku, row.name || row.title || ""),
+    source: {
+      documentId: input.documentId,
+      workspaceId: input.workspaceId,
+      elementId: input.elementId,
+      bomRowKey: String(row.id || row.rowId || `bom-${index + 1}`),
+      configuration: input.configuration || ""
+    }
+  };
+}
+
+function vendorLink(vendor, sku, name) {
+  const query = encodeURIComponent(sku || name || "");
+  const normalized = String(vendor || "").toLowerCase();
+  if (normalized.includes("rev")) return `https://www.revrobotics.com/search?q=${query}`;
+  if (normalized.includes("wcp") || normalized.includes("west coast")) return `https://wcproducts.com/search?q=${query}`;
+  if (normalized.includes("andymark")) return `https://andymark.com/search?q=${query}`;
+  if (normalized.includes("ttb") || normalized.includes("thrifty")) return `https://www.thethriftybot.com/search?q=${query}`;
+  return query ? `https://www.google.com/search?q=${query}` : "";
+}
+
+function demoCotsRows() {
+  return [
+    { name: "NEO V1.1 Brushless Motor", vendor: "REV", vendorSku: "REV-21-1650", quantity: 4, category: "motors" },
+    { name: "1/2 in Hex Bearing", vendor: "WCP", vendorSku: "WCP-0132", quantity: 12, category: "bearings" },
+    { name: "HTD 5mm Belt 60T", vendor: "WCP", vendorSku: "WCP-0158", quantity: 6, category: "belts" }
+  ];
 }
 
 async function exportStep(req, res, session) {
