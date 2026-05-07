@@ -60,7 +60,11 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/sync-batches") return withAppAccess(session, res, () => json(res, 200, syncBatchSnapshot()));
     if (url.pathname === "/api/raw-materials" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, { rawMaterials: store.rawMaterials }));
     if (url.pathname === "/api/raw-materials" && req.method === "POST") return withAppAccess(session, res, () => addRawMaterial(req, res, session), ["admin", "mentor", "fabricator"]);
-    if (url.pathname === "/api/robots") return withAppAccess(session, res, () => json(res, 200, { robots: robotSnapshot(inventorySnapshot().parts) }));
+    if (url.pathname === "/api/robots" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() }));
+    if (url.pathname === "/api/robots" && req.method === "POST") return withAppAccess(session, res, (user) => createRobot(req, res, session, user), ["admin", "mentor"]);
+    if (url.pathname.startsWith("/api/robots/") && url.pathname.endsWith("/requirements") && req.method === "POST") return withAppAccess(session, res, (user) => attachRobotRequirements(req, res, session, user, pathId(url.pathname, "/api/robots/").replace(/\/requirements$/, "")), ["admin", "mentor", "student"]);
+    if (url.pathname.startsWith("/api/robots/") && url.pathname.includes("/requirements/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateRobotRequirement(req, res, session, user, robotRequirementPath(url.pathname)), ["admin", "mentor", "student"]);
+    if (url.pathname.startsWith("/api/robots/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteRobot(req, res, session, user, pathId(url.pathname, "/api/robots/")), ["admin", "mentor"]);
     if (url.pathname === "/api/audit-log") return withAppAccess(session, res, () => json(res, 200, { auditLogs: store.auditLogs.slice(0, 50) }), ["admin", "mentor"]);
     if (url.pathname === "/api/admin/users" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, adminUsersSnapshot()), ["admin"]);
     if (url.pathname.startsWith("/api/admin/users/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateAdminUser(req, res, session, user, pathId(url.pathname, "/api/admin/users/")), ["admin"]);
@@ -405,11 +409,15 @@ function logoutPlateFlow(res, session) {
 }
 
 function withAppAccess(session, res, handler, roles = []) {
-  if (!store.users.length) return handler();
+  const run = (user) => Promise.resolve(handler(user)).catch((error) => {
+    console.error(error);
+    return json(res, error.status || 500, { error: error.message || "Unexpected server error" });
+  });
+  if (!store.users.length) return run();
   const user = store.users.find((item) => item.id === session.appUserId && item.status === "active");
   if (!user) return json(res, 401, { error: "Sign in to PlateFlow first" });
   if (roles.length && !roles.includes(user.role)) return json(res, 403, { error: "Your role cannot do that" });
-  return handler(user);
+  return run(user);
 }
 
 async function registerPlateFlow(req, res, session) {
@@ -627,11 +635,18 @@ async function importCots(req, res, session) {
   requireCsrf(req, session);
   const body = await readJson(req);
   const input = validateImport(body);
-  const accessToken = await ensureAccessToken(session);
   const base = normalizeOnshapeBase(input.baseUrl);
-  await enrichSourceInfo(accessToken, base, input);
+  const suppliedRows = Array.isArray(body.rows) && body.rows.length ? body.rows : null;
+  let accessToken = "";
+  if (suppliedRows) {
+    input.documentName = input.sourceTag || shortDocumentId(input.documentId);
+    input.sourceTag = input.sourceTag || input.documentName;
+  } else {
+    accessToken = await ensureAccessToken(session);
+    await enrichSourceInfo(accessToken, base, input);
+  }
 
-  const rows = Array.isArray(body.rows) && body.rows.length ? body.rows : await fetchAssemblyBomRows(accessToken, base, input);
+  const rows = suppliedRows || await fetchAssemblyBomRows(accessToken, base, input);
   if (!rows.length) {
     throw httpError(404, "No Assembly BOM rows were returned by Onshape for this tab.");
   }
@@ -888,7 +903,7 @@ function dashboardSnapshot(user = null) {
   const inventory = inventorySnapshot();
   const customParts = inventory.parts.filter((part) => part.sourceType === "custom");
   const cotsParts = inventory.parts.filter((part) => part.sourceType === "cots");
-  const robots = robotSnapshot(inventory.parts);
+  const robots = robotSnapshot();
   const adminVisible = user?.role === "admin";
   return {
     overview: {
@@ -914,6 +929,7 @@ function dashboardSnapshot(user = null) {
       orders: store.procurementOrders.slice(0, 20),
       items: cotsParts
     },
+    robotSources: robotSourceSnapshot(),
     rawMaterials: store.rawMaterials,
     admin: {
       roles: adminVisible ? ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"] : [],
@@ -923,41 +939,81 @@ function dashboardSnapshot(user = null) {
   };
 }
 
-function robotSnapshot(parts) {
-  const customCount = parts.filter((part) => part.sourceType === "custom").length;
-  const cotsCount = parts.filter((part) => part.sourceType === "cots").length;
+function robotSnapshot() {
   return store.robots.map((robot) => {
-    const procurementProgress = cotsCount ? 15 : 0;
-    const fabricationProgress = customCount ? 20 : 0;
-    const receiveInstallProgress = parts.length ? 5 : 0;
-    const readiness = Math.min(100, procurementProgress + fabricationProgress + receiveInstallProgress);
+    const requirements = store.requirements.filter((requirement) => requirement.robotId === robot.id);
+    const customRequirements = requirements.filter((requirement) => requirement.sourceType === "custom");
+    const cotsRequirements = requirements.filter((requirement) => requirement.sourceType === "cots");
+    const procurementProgress = requirements.length && !cotsRequirements.length ? 100 : percentComplete(cotsRequirements, (requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1));
+    const fabricationProgress = requirements.length && !customRequirements.length ? 100 : percentComplete(customRequirements, (requirement) => ["received", "installed"].includes(requirement.status));
+    const receiveInstallProgress = percentComplete(requirements, (requirement) => Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1));
+    const readiness = Math.round(procurementProgress * 0.4 + fabricationProgress * 0.35 + receiveInstallProgress * 0.25);
     return {
       ...robot,
       readiness,
       counts: {
-        requirements: parts.length,
-        custom: customCount,
-        cots: cotsCount,
-        missing: parts.length,
-        inFabrication: customCount,
-        onOrder: 0,
-        ready: 0
+        requirements: requirements.length,
+        custom: customRequirements.length,
+        cots: cotsRequirements.length,
+        missing: requirements.filter((requirement) => Number(requirement.quantityReceived || 0) < Number(requirement.quantityNeeded || 1)).length,
+        inFabrication: customRequirements.filter((requirement) => !["received", "installed"].includes(requirement.status)).length,
+        onOrder: cotsRequirements.filter((requirement) => ["ordered", "partially_received", "backordered"].includes(requirement.status)).length,
+        ready: requirements.filter((requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1)).length
       },
       progress: {
         procurement: procurementProgress,
         fabrication: fabricationProgress,
         receivedInstalled: receiveInstallProgress
       },
+      requirements: requirements.map(publicRequirement),
       subsystems: robot.subsystems.map((subsystem, index) => ({
         ...subsystem,
         readiness: Math.max(0, readiness - index * 4),
-        partsNeeded: Math.ceil(parts.length / Math.max(1, robot.subsystems.length)),
+        partsNeeded: Math.ceil(requirements.length / Math.max(1, robot.subsystems.length)),
         procurementProgress,
         fabricationProgress,
         receivedInstalledProgress: receiveInstallProgress
       }))
     };
   });
+}
+
+function percentComplete(items, complete) {
+  if (!items.length) return 0;
+  return Math.round((items.filter(complete).length / items.length) * 100);
+}
+
+function robotSourceSnapshot() {
+  return store.inventoryRecords
+    .filter((record) => record.sourceType === "cots")
+    .map((record) => ({
+      id: record.id,
+      batchId: record.batchId,
+      label: record.source?.sourceTag || record.source?.documentName || shortDocumentId(record.source?.documentId),
+      documentName: record.source?.documentName || "",
+      documentId: record.source?.documentId || "",
+      partCount: record.parts.length,
+      updatedAt: record.updatedAt
+    }))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function publicRequirement(requirement) {
+  return {
+    id: requirement.id,
+    robotId: requirement.robotId,
+    inventoryRecordId: requirement.inventoryRecordId,
+    name: requirement.name,
+    sourceType: requirement.sourceType,
+    sourceDocument: requirement.sourceDocument,
+    vendor: requirement.vendor,
+    vendorSku: requirement.vendorSku,
+    material: requirement.material,
+    quantityNeeded: Number(requirement.quantityNeeded || 1),
+    quantityReceived: Number(requirement.quantityReceived || 0),
+    quantityInstalled: Number(requirement.quantityInstalled || 0),
+    status: requirement.status || "needed"
+  };
 }
 
 function normalizePart(part, input) {
@@ -1136,6 +1192,109 @@ async function pollTranslation(accessToken, base, idOrHref) {
     await new Promise((resolve) => setTimeout(resolve, 1200));
   }
   throw httpError(504, "STEP export is still running. Try again in a moment.");
+}
+
+async function createRobot(req, res, session, actor) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const name = String(body.name || "").trim().slice(0, 80);
+  const season = String(body.season || new Date().getFullYear()).replace(/[^0-9]/g, "").slice(0, 4);
+  if (!name) throw httpError(400, "Robot name is required");
+  if (!season) throw httpError(400, "Season is required");
+  const robot = {
+    id: `robot-${season}-${randomBytes(4).toString("hex")}`,
+    season,
+    name,
+    status: "active",
+    subsystems: [
+      { id: `drive-${randomBytes(2).toString("hex")}`, name: "Drive", lead: "", status: "designing" },
+      { id: `intake-${randomBytes(2).toString("hex")}`, name: "Intake", lead: "", status: "designing" },
+      { id: `shooter-${randomBytes(2).toString("hex")}`, name: "Shooter", lead: "", status: "designing" }
+    ],
+    createdAt: new Date().toISOString()
+  };
+  store.robots.unshift(robot);
+  audit("robot.created", `Created robot ${robot.name}`, actor.email);
+  await persistStore();
+  return json(res, 201, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
+}
+
+async function deleteRobot(req, res, session, actor, robotId) {
+  requireCsrf(req, session);
+  const index = store.robots.findIndex((robot) => robot.id === robotId);
+  if (index === -1) throw httpError(404, "Robot not found");
+  const [robot] = store.robots.splice(index, 1);
+  store.requirements = store.requirements.filter((requirement) => requirement.robotId !== robotId);
+  audit("robot.deleted", `Deleted robot ${robot.name}`, actor.email);
+  await persistStore();
+  return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
+}
+
+async function attachRobotRequirements(req, res, session, actor, robotId) {
+  requireCsrf(req, session);
+  const robot = store.robots.find((item) => item.id === robotId);
+  if (!robot) throw httpError(404, "Robot not found");
+  const body = await readJson(req);
+  const inventoryRecordId = String(body.inventoryRecordId || "").trim();
+  const record = store.inventoryRecords.find((item) => item.id === inventoryRecordId && item.sourceType === "cots");
+  if (!record) throw httpError(404, "Select a synced Assembly BOM source first");
+  const now = new Date().toISOString();
+  let added = 0;
+  for (const part of record.parts) {
+    const key = `${robotId}:${record.id}:${part.id || part.name}`;
+    if (store.requirements.some((requirement) => requirement.key === key)) continue;
+    store.requirements.push({
+      id: `req-${randomBytes(6).toString("hex")}`,
+      key,
+      robotId,
+      inventoryRecordId: record.id,
+      sourceType: record.sourceType,
+      sourceDocument: part.sourceDocument || record.source?.sourceTag || record.source?.documentName || shortDocumentId(record.source?.documentId),
+      name: part.name,
+      vendor: part.vendor || "",
+      vendorSku: part.vendorSku || "",
+      material: part.material || "",
+      quantityNeeded: Math.max(1, Number(part.quantity || 1)),
+      quantityReceived: 0,
+      quantityInstalled: 0,
+      status: "needed",
+      createdAt: now,
+      updatedAt: now
+    });
+    added += 1;
+  }
+  audit("robot.requirements_attached", `Attached ${added} BOM item${added === 1 ? "" : "s"} to ${robot.name}`, actor.email);
+  await persistStore();
+  return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot(), added });
+}
+
+async function updateRobotRequirement(req, res, session, actor, ids) {
+  requireCsrf(req, session);
+  const robot = store.robots.find((item) => item.id === ids.robotId);
+  if (!robot) throw httpError(404, "Robot not found");
+  const requirement = store.requirements.find((item) => item.id === ids.requirementId && item.robotId === ids.robotId);
+  if (!requirement) throw httpError(404, "Requirement not found");
+  const body = await readJson(req);
+  const quantityNeeded = Math.max(1, Number(requirement.quantityNeeded || 1));
+  if (body.received !== undefined) requirement.quantityReceived = body.received ? quantityNeeded : 0;
+  if (body.installed !== undefined) {
+    requirement.quantityInstalled = body.installed ? quantityNeeded : 0;
+    if (body.installed) requirement.quantityReceived = quantityNeeded;
+  }
+  requirement.status = requirement.quantityInstalled >= quantityNeeded ? "installed" : requirement.quantityReceived >= quantityNeeded ? "received" : "needed";
+  requirement.updatedAt = new Date().toISOString();
+  audit("robot.requirement_updated", `Updated ${requirement.name} on ${robot.name} to ${requirement.status}`, actor.email);
+  await persistStore();
+  return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
+}
+
+function robotRequirementPath(pathname) {
+  const match = pathname.match(/^\/api\/robots\/([^/]+)\/requirements\/([^/]+)$/);
+  if (!match) throw httpError(404, "Requirement not found");
+  return {
+    robotId: decodeURIComponent(match[1]),
+    requirementId: decodeURIComponent(match[2])
+  };
 }
 
 async function createOrder(req, res, session) {

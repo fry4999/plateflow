@@ -4,6 +4,8 @@ let parts = [];
 let embeddedMode = false;
 let bootstrapRequired = false;
 let inviteToken = "";
+let dashboardState = null;
+let selectedRobotId = "";
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -40,7 +42,15 @@ const els = {
   inventorySearch: document.querySelector("#inventorySearch"),
   inventoryDocumentFilter: document.querySelector("#inventoryDocumentFilter"),
   inventoryBody: document.querySelector("#inventoryBody"),
+  robotForm: document.querySelector("#robotForm"),
   robotList: document.querySelector("#robotList"),
+  robotWorkspace: document.querySelector("#robotWorkspace"),
+  robotWorkspaceTitle: document.querySelector("#robotWorkspaceTitle"),
+  robotWorkspaceMeta: document.querySelector("#robotWorkspaceMeta"),
+  robotAssemblySelect: document.querySelector("#robotAssemblySelect"),
+  attachAssemblyButton: document.querySelector("#attachAssemblyButton"),
+  deleteRobotButton: document.querySelector("#deleteRobotButton"),
+  robotRequirementList: document.querySelector("#robotRequirementList"),
   fabQueueCount: document.querySelector("#fabQueueCount"),
   procQueueCount: document.querySelector("#procQueueCount"),
   fabricationJobs: document.querySelector("#fabricationJobs"),
@@ -142,6 +152,11 @@ function bindEvents() {
   els.exportButton.addEventListener("click", onExport);
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
   if (els.rawMaterialForm) els.rawMaterialForm.addEventListener("submit", onRawMaterialAdd);
+  if (els.robotForm) els.robotForm.addEventListener("submit", onRobotCreate);
+  if (els.robotList) els.robotList.addEventListener("click", onRobotSelect);
+  if (els.attachAssemblyButton) els.attachAssemblyButton.addEventListener("click", onRobotAttachAssembly);
+  if (els.deleteRobotButton) els.deleteRobotButton.addEventListener("click", onRobotDelete);
+  if (els.robotRequirementList) els.robotRequirementList.addEventListener("change", onRobotRequirementChange);
   if (els.inventorySearch) els.inventorySearch.addEventListener("input", () => loadDashboard());
   if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", () => loadDashboard());
   window.addEventListener("hashchange", syncPageFromHash);
@@ -405,6 +420,7 @@ async function loadInventory() {
 
 async function loadDashboard() {
   const dashboard = await api("/api/dashboard");
+  dashboardState = dashboard;
   renderInventory(dashboard.inventory);
   renderInventoryTable(dashboard.inventory.parts);
   renderRobots(dashboard.robots);
@@ -537,10 +553,12 @@ function renderRobots(robots) {
   if (!els.robotList) return;
   if (!robots.length) {
     els.robotList.innerHTML = `<article><p>No robots configured.</p></article>`;
+    renderRobotWorkspace(null);
     return;
   }
+  if (!selectedRobotId || !robots.some((robot) => robot.id === selectedRobotId)) selectedRobotId = robots[0].id;
   els.robotList.innerHTML = robots.map((robot) => `
-    <article>
+    <article class="robot-card ${robot.id === selectedRobotId ? "selected" : ""}" data-robot-id="${escapeAttr(robot.id)}" tabindex="0">
       <div class="card-head">
         <div>
           <h3>${escapeHtml(robot.name)}</h3>
@@ -561,6 +579,39 @@ function renderRobots(robots) {
       </div>
     </article>
   `).join("");
+  renderRobotWorkspace(robots.find((robot) => robot.id === selectedRobotId) || robots[0]);
+}
+
+function renderRobotWorkspace(robot) {
+  if (!els.robotWorkspace) return;
+  els.robotWorkspace.classList.toggle("hidden", !robot);
+  if (!robot) return;
+  const sources = dashboardState?.robotSources || [];
+  els.robotWorkspaceTitle.textContent = robot.name;
+  els.robotWorkspaceMeta.textContent = `${robot.season} season · ${Number(robot.counts.requirements)} requirement${Number(robot.counts.requirements) === 1 ? "" : "s"} · ${Number(robot.readiness)}% ready`;
+  els.robotAssemblySelect.innerHTML = [
+    `<option value="">Select synced Assembly BOM</option>`,
+    ...sources.map((sourceItem) => `<option value="${escapeAttr(sourceItem.id)}">${escapeHtml(sourceItem.label)} · ${Number(sourceItem.partCount)} items</option>`)
+  ].join("");
+  const requirements = robot.requirements || [];
+  if (!requirements.length) {
+    els.robotRequirementList.innerHTML = `<p class="empty">No requirements yet. Select a synced Assembly BOM source above.</p>`;
+    return;
+  }
+  els.robotRequirementList.innerHTML = requirements.map((requirement) => {
+    const received = Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1);
+    const installed = Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1);
+    return `
+      <div class="requirement-row" data-requirement-id="${escapeAttr(requirement.id)}">
+        <div>
+          <strong>${escapeHtml(requirement.name)}</strong>
+          <span>${escapeHtml(requirement.sourceDocument || "Assembly BOM")} · ${escapeHtml([requirement.vendor, requirement.vendorSku].filter(Boolean).join(" ") || "No vendor")} · qty ${Number(requirement.quantityNeeded || 1)}</span>
+        </div>
+        <label><input type="checkbox" data-field="received" ${received ? "checked" : ""}> Received</label>
+        <label><input type="checkbox" data-field="installed" ${installed ? "checked" : ""}> Installed</label>
+      </div>
+    `;
+  }).join("");
 }
 
 function renderFabrication(fabrication) {
@@ -665,6 +716,81 @@ async function onRawMaterialAdd(event) {
     setMessage("Raw stock added to inventory.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
+  }
+}
+
+function onRobotSelect(event) {
+  const card = event.target.closest("[data-robot-id]");
+  if (!card) return;
+  selectedRobotId = card.dataset.robotId;
+  renderRobots(dashboardState?.robots || []);
+}
+
+async function onRobotCreate(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(els.robotForm).entries());
+  try {
+    const result = await api("/api/robots", {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
+    selectedRobotId = result.robots[0]?.id || "";
+    els.robotForm.reset();
+    await loadDashboard();
+    location.hash = "#robots";
+    setMessage("Robot added.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function onRobotDelete() {
+  if (!selectedRobotId) return;
+  const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
+  if (!robot || !window.confirm(`Remove ${robot.name}?`)) return;
+  try {
+    const result = await api(`/api/robots/${encodeURIComponent(selectedRobotId)}`, { method: "DELETE" });
+    dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
+    selectedRobotId = result.robots[0]?.id || "";
+    await loadDashboard();
+    setMessage("Robot removed.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function onRobotAttachAssembly() {
+  if (!selectedRobotId) return;
+  const inventoryRecordId = els.robotAssemblySelect?.value || "";
+  try {
+    const result = await api(`/api/robots/${encodeURIComponent(selectedRobotId)}/requirements`, {
+      method: "POST",
+      body: JSON.stringify({ inventoryRecordId })
+    });
+    dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
+    await loadDashboard();
+    setMessage(`Added ${Number(result.added || 0)} robot requirement${Number(result.added || 0) === 1 ? "" : "s"}.`, "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function onRobotRequirementChange(event) {
+  const checkbox = event.target.closest("input[type='checkbox'][data-field]");
+  const row = event.target.closest("[data-requirement-id]");
+  if (!checkbox || !row || !selectedRobotId) return;
+  try {
+    const result = await api(`/api/robots/${encodeURIComponent(selectedRobotId)}/requirements/${encodeURIComponent(row.dataset.requirementId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ [checkbox.dataset.field]: checkbox.checked })
+    });
+    dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
+    renderRobots(result.robots);
+    setMessage("Robot requirement updated.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+    await loadDashboard();
   }
 }
 

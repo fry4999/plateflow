@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=15">
+    <link rel="stylesheet" href="/styles.css?v=16">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -61,6 +61,7 @@
       </section>
 
       <div id="appShell" class="app-shell hidden">
+        <p id="message" class="message global-message" role="status" aria-live="polite">Ready when your CAD is.</p>
         <section id="dashboard" class="dashboard app-page active-page" data-page>
           <div class="section-heading">
             <span class="eyebrow">Build Ops Overview</span>
@@ -118,7 +119,38 @@
           <span class="eyebrow">Robots</span>
           <h2>Requirements and readiness</h2>
         </div>
+        <form id="robotForm" class="tool-surface robot-form">
+          <label>
+            <span>Season</span>
+            <input name="season" inputmode="numeric" placeholder="2026">
+          </label>
+          <label>
+            <span>Robot name</span>
+            <input name="name" placeholder="Competition robot">
+          </label>
+          <button class="button" type="submit">Add robot</button>
+        </form>
         <div id="robotList" class="ops-grid"></div>
+        <div id="robotWorkspace" class="robot-workspace hidden">
+          <div class="card-head">
+            <div>
+              <span class="eyebrow">Robot Workspace</span>
+              <h3 id="robotWorkspaceTitle">Select a robot</h3>
+              <p id="robotWorkspaceMeta"></p>
+            </div>
+            <button id="deleteRobotButton" class="ghost danger" type="button">Remove robot</button>
+          </div>
+          <div class="robot-source-row">
+            <label>
+              <span>Assembly BOM source</span>
+              <select id="robotAssemblySelect">
+                <option value="">No Assembly BOM syncs yet</option>
+              </select>
+            </label>
+            <button id="attachAssemblyButton" class="button" type="button">Add BOM requirements</button>
+          </div>
+          <div id="robotRequirementList" class="requirement-list">Select a robot to view requirements.</div>
+        </div>
       </section>
 
       <section id="parts" class="workspace app-page" data-page hidden>
@@ -132,18 +164,9 @@
         </div>
         <form id="importForm" class="tool-surface import-panel">
           <input name="syncMode" type="hidden" value="custom">
-          <label>
-            <span>Document ID</span>
-            <input name="documentId" autocomplete="off" placeholder="did" aria-describedby="message">
-          </label>
-          <label>
-            <span>Workspace ID</span>
-            <input name="workspaceId" autocomplete="off" placeholder="wid">
-          </label>
-          <label>
-            <span>Element ID</span>
-            <input name="elementId" autocomplete="off" placeholder="eid">
-          </label>
+          <input name="documentId" type="hidden">
+          <input name="workspaceId" type="hidden">
+          <input name="elementId" type="hidden">
           <label>
             <span>Source tag</span>
             <input name="sourceTag" autocomplete="off" placeholder="ex: 2026 drive">
@@ -280,7 +303,6 @@
             <div><dt>Total quantity</dt><dd id="summaryQty">0</dd></div>
             <div><dt>Materials</dt><dd id="summaryMaterials">None</dd></div>
           </dl>
-          <p id="message" class="message" role="status" aria-live="polite">Ready when your CAD is.</p>
         </aside>
       </section>
 
@@ -322,6 +344,6 @@
       </div>
     </main>
 
-    <script src="/app.js?v=15"></script>
+    <script src="/app.js?v=16"></script>
   </body>
 </html>

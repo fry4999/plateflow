@@ -587,6 +587,83 @@ td {
   padding: 18px;
 }
 
+.robot-form {
+  grid-template-columns: 160px minmax(220px, 1fr) auto;
+  margin-bottom: 18px;
+}
+
+.robot-card {
+  cursor: pointer;
+}
+
+.robot-card.selected {
+  border-color: rgba(96, 165, 250, .7);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, .4);
+}
+
+.robot-workspace {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.robot-workspace h3,
+.robot-workspace p {
+  margin: 0;
+}
+
+.robot-source-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.requirement-list {
+  display: grid;
+  gap: 10px;
+}
+
+.requirement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.requirement-row strong,
+.requirement-row span {
+  display: block;
+}
+
+.requirement-row span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.requirement-row label {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.requirement-row input {
+  width: auto;
+  min-height: auto;
+}
+
 .card-head {
   display: flex;
   align-items: start;
@@ -669,6 +746,11 @@ td {
   grid-template-columns: repeat(4, 1fr);
   gap: 14px;
   padding: 18px;
+}
+
+.tool-surface.robot-form {
+  grid-template-columns: 160px minmax(220px, 1fr) auto;
+  margin-bottom: 18px;
 }
 
 label span {
@@ -889,6 +971,11 @@ td select {
   padding: 12px;
   border-radius: 8px;
   background: var(--soft);
+}
+
+.global-message {
+  max-width: 1180px;
+  margin: 18px auto 0;
 }
 
 .message.ok {
@@ -1166,6 +1253,9 @@ td select {
   .ops-grid,
   .queue-grid,
   .tool-surface,
+  .robot-form,
+  .robot-source-row,
+  .requirement-row,
   .inventory-layout,
   .security {
     grid-template-columns: 1fr;
