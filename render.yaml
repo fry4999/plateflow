@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: plateflow
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.mjs
+    healthCheckPath: /api/session
+    autoDeployTrigger: commit
+    domains:
+      - teknik-engineering.com
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_BASE_URL
+        value: https://teknik-engineering.com
+      - key: TRUST_PROXY
+        value: "true"
+      - key: ONSHAPE_OAUTH_BASE
+        value: https://oauth.onshape.com
+      - key: ONSHAPE_API_BASE
+        value: https://cad.onshape.com
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: ONSHAPE_CLIENT_ID
+        sync: false
+      - key: ONSHAPE_CLIENT_SECRET
+        sync: false
+      - key: ONSHAPE_OAUTH_SCOPE
+        sync: false
