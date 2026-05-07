@@ -24,6 +24,7 @@ const config = {
 
 const sessions = new Map();
 const orders = new Map();
+const inventory = new Map();
 const rateBuckets = new Map();
 
 const mime = {
@@ -47,6 +48,7 @@ createServer(async (req, res) => {
     if (url.pathname === "/auth/onshape/callback") return await onshapeCallback(req, res, session, url);
     if (url.pathname === "/auth/logout") return logout(res, session);
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
+    if (url.pathname === "/api/inventory") return json(res, 200, inventorySnapshot());
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return await importOnshape(req, res, session);
     if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return await exportStep(req, res, session);
     if (url.pathname === "/api/orders" && req.method === "POST") return await createOrder(req, res, session);
@@ -56,7 +58,7 @@ createServer(async (req, res) => {
     return await serveStatic(res, url.pathname);
   } catch (error) {
     console.error(error);
-    return json(res, error.status || 500, { error: error.expose ? error.message : "Unexpected server error" });
+    return json(res, error.status || 500, { error: error.message || "Unexpected server error" });
   }
 }).listen(config.port, () => {
   console.log(`FRC PlateFlow listening on ${config.appBaseUrl}`);
@@ -291,9 +293,40 @@ async function importOnshape(req, res, session) {
   });
   if (input.configuration) params.set("configuration", input.configuration);
 
-  const parts = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/w/${input.workspaceId}?${params}`);
+  const parts = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}?${params}`);
   const normalized = (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input));
-  return json(res, 200, { parts: normalized, source: input });
+  const saved = saveInventory(input, normalized);
+  return json(res, 200, { parts: normalized, source: input, inventory: saved });
+}
+
+function saveInventory(input, parts) {
+  const key = `${input.documentId}:${input.workspacePath}:${input.workspaceId}:${input.elementId}:${input.configuration || "default"}`;
+  const record = {
+    id: key,
+    updatedAt: new Date().toISOString(),
+    source: input,
+    parts
+  };
+  inventory.set(key, record);
+  return record;
+}
+
+function inventorySnapshot() {
+  const records = [...inventory.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const parts = records.flatMap((record) => record.parts.map((part) => ({
+    ...part,
+    inventoryId: record.id,
+    importedAt: record.updatedAt
+  })));
+  return {
+    records,
+    parts,
+    totals: {
+      records: records.length,
+      parts: parts.length,
+      materials: new Set(parts.map((part) => part.material || "Unassigned")).size
+    }
+  };
 }
 
 function normalizePart(part, input) {
@@ -326,6 +359,7 @@ async function exportStep(req, res, session) {
   const accessToken = await ensureAccessToken(session);
   const base = normalizeOnshapeBase(input.baseUrl);
 
+  if (input.workspacePath !== "w") throw httpError(400, "STEP export requires a workspace, not a version");
   const exportUrl = `${base}/api/v11/partstudios/d/${input.documentId}/w/${input.workspaceId}/e/${input.elementId}/export/step`;
   const translation = await onshapeJson(accessToken, exportUrl, {
     method: "POST",
@@ -390,6 +424,7 @@ function validateImport(body) {
   const input = {
     documentId: String(body.documentId || body.did || "").trim(),
     workspaceId: String(body.workspaceId || body.wid || "").trim(),
+    workspaceOrVersion: String(body.workspaceOrVersion || "w").trim().toLowerCase(),
     elementId: String(body.elementId || body.eid || "").trim(),
     configuration: String(body.configuration || "").trim(),
     baseUrl: String(body.baseUrl || config.onshapeApiBase).trim()
@@ -398,6 +433,7 @@ function validateImport(body) {
   if (!id.test(input.workspaceId)) throw httpError(400, "Invalid workspace ID");
   if (!id.test(input.elementId)) throw httpError(400, "Invalid element ID");
   if (input.configuration.length > 1000) throw httpError(400, "Configuration is too long");
+  input.workspacePath = input.workspaceOrVersion === "v" || input.workspaceOrVersion === "version" ? "v" : "w";
   return input;
 }
 
