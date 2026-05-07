@@ -54,6 +54,7 @@ async function init() {
   embeddedMode = location.pathname.startsWith("/onshape") || params.get("embedded") === "1";
   document.body.classList.toggle("embedded", embeddedMode);
   applyTheme(localStorage.getItem("plateflow-theme") || "dark");
+  bindEvents();
 
   for (const [urlKey, formKey] of [
     ["did", "documentId"],
@@ -82,18 +83,22 @@ async function init() {
     csrfToken = session.csrfToken;
     renderAuth(session);
     if (embeddedMode && session.authenticated && hasOnshapeContext()) {
-      els.importForm.requestSubmit();
+      setMessage("Onshape connected. Press Submit sync batch when you are ready.", "ok");
     } else if (embeddedMode && !session.authenticated) {
-      setMessage("Log in with Onshape, then PlateFlow will send this Part Studio to inventory.", "");
+      setMessage("Log in with Onshape, then submit this tab to PlateFlow inventory.", "");
     } else if (embeddedMode) {
       setMessage("PlateFlow is missing document context. Check the Onshape extension action URL.", "error");
     } else if (!embeddedMode) {
       await loadDashboard();
     }
-  } catch {
-    setMessage("Could not initialize the session.", "error");
+  } catch (error) {
+    setMessage(`Could not initialize the session: ${error.message}`, "error");
   }
 
+  renderParts();
+}
+
+function bindEvents() {
   els.importForm.addEventListener("submit", onImport);
   els.demoButton.addEventListener("click", loadDemo);
   els.partsBody.addEventListener("input", onPartEdit);
@@ -105,7 +110,6 @@ async function init() {
   if (els.inventorySearch) els.inventorySearch.addEventListener("input", () => loadDashboard());
   els.modeTabs.forEach((button) => button.addEventListener("click", () => setSyncMode(button.dataset.mode)));
   if (els.themeToggle) els.themeToggle.addEventListener("click", toggleTheme);
-  renderParts();
 }
 
 function renderAuth(session) {
