@@ -70,8 +70,8 @@ async function init() {
     const value = params.get(urlKey);
     if (value && !isUnresolvedMacro(value)) els.importForm.elements[formKey].value = value;
   }
-  if (params.get("server")) {
-    els.importForm.dataset.baseUrl = params.get("server");
+  if (params.get("server") && !isUnresolvedMacro(params.get("server"))) {
+    els.importForm.dataset.baseUrl = normalizeOnshapeServer(params.get("server"));
   }
   if (params.get("workspaceOrVersion")) {
     els.importForm.dataset.workspaceOrVersion = params.get("workspaceOrVersion");
@@ -181,6 +181,12 @@ function hasOnshapeContext() {
 function isUnresolvedMacro(value) {
   const text = String(value || "").trim();
   return text.includes("$") || text.includes("{") || text.includes("}");
+}
+
+function normalizeOnshapeServer(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return /^https?:\/\//i.test(text) ? text : `https://${text}`;
 }
 
 function loadDemo() {

@@ -961,7 +961,14 @@ function validateRawMaterial(body) {
 }
 
 function normalizeOnshapeBase(value) {
-  const url = new URL(value);
+  const raw = String(value || config.onshapeApiBase).trim();
+  const normalized = raw ? (/^https?:\/\//i.test(raw) ? raw : `https://${raw}`) : config.onshapeApiBase;
+  let url;
+  try {
+    url = new URL(normalized);
+  } catch {
+    throw httpError(400, "Invalid Onshape server URL");
+  }
   if (!/\.onshape\.com$/.test(url.hostname)) throw httpError(400, "Onshape base URL must be an onshape.com host");
   return `${url.protocol}//${url.hostname}`;
 }
