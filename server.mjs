@@ -24,6 +24,7 @@ const config = {
   prod: process.env.NODE_ENV === "production"
 };
 
+let storageInitError = "";
 const storage = await createStorage();
 const store = await storage.load();
 const sessions = new Map();
@@ -131,6 +132,7 @@ async function createStorage() {
         }
       };
     } catch (error) {
+      storageInitError = String(error.message || error).slice(0, 180);
       console.error("Could not initialize Postgres storage, falling back to local file", error);
     }
   }
@@ -382,7 +384,9 @@ function publicSession(session) {
     appBaseUrl: config.appBaseUrl,
     storage: {
       kind: storage.kind,
-      persistent: storage.persistent
+      persistent: storage.persistent,
+      databaseUrlConfigured: Boolean(config.databaseUrl),
+      error: storageInitError
     }
   };
 }
