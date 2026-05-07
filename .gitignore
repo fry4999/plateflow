@@ -1,0 +1,8 @@
+.env
+.env.local
+.env.production
+.plateflow.log
+.plateflow.pid
+node_modules/
+.DS_Store
+npm-debug.log*
