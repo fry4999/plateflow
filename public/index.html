@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=9">
+    <link rel="stylesheet" href="/styles.css?v=10">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -30,7 +30,8 @@
         <span id="appAuthStatus" class="status-pill">Checking</span>
         <span id="authStatus" class="status-pill">Onshape checking</span>
         <a id="loginLink" class="button small" href="/auth/onshape">Connect Onshape</a>
-        <a id="logoutLink" class="ghost small hidden" href="/auth/logout">Log out</a>
+        <a id="appLogoutLink" class="ghost small hidden" href="/auth/plateflow/logout">Log out</a>
+        <a id="logoutLink" class="ghost small hidden" href="/auth/logout">Disconnect Onshape</a>
         <button id="themeToggle" class="ghost small" type="button" aria-label="Switch color theme">Light</button>
       </div>
     </header>
@@ -44,6 +45,7 @@
             <span>Name</span>
             <input name="name" autocomplete="name">
           </label>
+          <input name="inviteToken" type="hidden">
           <label>
             <span>Email</span>
             <input name="email" type="email" autocomplete="email" required>
@@ -283,12 +285,31 @@
             <li>Browser code never calls Onshape directly.</li>
             <li>Roles planned: admin, mentor, purchaser, fabricator, student, read_only.</li>
           </ul>
+          <form id="inviteForm" class="invite-form">
+            <label>
+              <span>Email</span>
+              <input name="email" type="email" autocomplete="off" placeholder="student@example.com">
+            </label>
+            <label>
+              <span>Role</span>
+              <select name="role">
+                <option value="student">student</option>
+                <option value="mentor">mentor</option>
+                <option value="fabricator">fabricator</option>
+                <option value="purchaser">purchaser</option>
+                <option value="read_only">read_only</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+            <button class="button" type="submit">Create invite</button>
+          </form>
+          <div id="userList" class="batch-list audit-list">No users loaded.</div>
           <div id="auditLog" class="batch-list audit-list">No audit activity yet.</div>
         </div>
       </section>
       </div>
     </main>
 
-    <script src="/app.js?v=9"></script>
+    <script src="/app.js?v=10"></script>
   </body>
 </html>

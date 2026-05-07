@@ -2,6 +2,8 @@ let csrfToken = "";
 let source = null;
 let parts = [];
 let embeddedMode = false;
+let bootstrapRequired = false;
+let inviteToken = "";
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -15,6 +17,7 @@ const els = {
   authStatus: document.querySelector("#authStatus"),
   loginLink: document.querySelector("#loginLink"),
   logoutLink: document.querySelector("#logoutLink"),
+  appLogoutLink: document.querySelector("#appLogoutLink"),
   importForm: document.querySelector("#importForm"),
   demoButton: document.querySelector("#demoButton"),
   partsBody: document.querySelector("#partsBody"),
@@ -41,6 +44,8 @@ const els = {
   batchList: document.querySelector("#batchList"),
   rawMaterialForm: document.querySelector("#rawMaterialForm"),
   rawMaterialList: document.querySelector("#rawMaterialList"),
+  inviteForm: document.querySelector("#inviteForm"),
+  userList: document.querySelector("#userList"),
   auditLog: document.querySelector("#auditLog"),
   summaryParts: document.querySelector("#summaryParts"),
   summaryQty: document.querySelector("#summaryQty"),
@@ -60,6 +65,7 @@ init();
 async function init() {
   const params = new URLSearchParams(location.search);
   embeddedMode = location.pathname.startsWith("/onshape") || params.get("embedded") === "1";
+  inviteToken = params.get("invite") || "";
   document.body.classList.toggle("embedded", embeddedMode);
   applyTheme(localStorage.getItem("plateflow-theme") || "dark");
   bindEvents();
@@ -89,9 +95,12 @@ async function init() {
   try {
     const session = await api("/api/session", {}, { skipCsrfRetry: true });
     csrfToken = session.csrfToken;
+    bootstrapRequired = Boolean(session.bootstrapRequired);
     renderAuth(session);
     renderAppAccess(session);
-    if (embeddedMode && session.authenticated && hasOnshapeContext()) {
+    if (!session.appAuthenticated && !session.bootstrapRequired) {
+      if (els.loginMessage) els.loginMessage.textContent = embeddedMode ? "Sign in to your PlateFlow account before syncing from Onshape." : "";
+    } else if (embeddedMode && session.authenticated && hasOnshapeContext()) {
       setMessage("Onshape connected. Press Submit sync batch when you are ready.", "ok");
     } else if (embeddedMode && !session.authenticated) {
       setMessage("Log in with Onshape, then submit this tab to PlateFlow inventory.", "");
@@ -110,6 +119,7 @@ async function init() {
 function bindEvents() {
   els.importForm.addEventListener("submit", onImport);
   if (els.plateflowLoginForm) els.plateflowLoginForm.addEventListener("submit", onPlateFlowLogin);
+  if (els.inviteForm) els.inviteForm.addEventListener("submit", onInviteCreate);
   els.demoButton.addEventListener("click", loadDemo);
   els.partsBody.addEventListener("input", onPartEdit);
   els.partsBody.addEventListener("change", onPartEdit);
@@ -139,14 +149,20 @@ function renderAuth(session) {
 }
 
 function renderAppAccess(session) {
-  const allowApp = embeddedMode || canLoadDashboard(session);
+  bootstrapRequired = Boolean(session.bootstrapRequired);
+  const allowApp = canLoadDashboard(session);
   els.loginScreen?.classList.toggle("hidden", allowApp);
   els.appShell?.classList.toggle("hidden", !allowApp);
   document.body.classList.toggle("locked", !allowApp);
   document.body.classList.toggle("bootstrap", Boolean(session.bootstrapRequired));
+  document.body.classList.toggle("admin-user", session.appUser?.role === "admin");
   if (els.nameField) els.nameField.classList.toggle("hidden", !session.bootstrapRequired);
-  if (els.loginHelp) els.loginHelp.textContent = session.bootstrapRequired ? "Create the first admin account." : "Sign in to continue.";
-  if (els.plateflowLoginButton) els.plateflowLoginButton.textContent = session.bootstrapRequired ? "Create admin" : "Log in";
+  if (els.plateflowLoginForm?.elements.inviteToken) {
+    els.plateflowLoginForm.elements.inviteToken.value = inviteToken;
+    if (inviteToken && !session.bootstrapRequired) els.nameField?.classList.remove("hidden");
+  }
+  if (els.loginHelp) els.loginHelp.textContent = session.bootstrapRequired ? "Create the first admin account." : inviteToken ? "Create your invited PlateFlow account." : "Sign in to continue.";
+  if (els.plateflowLoginButton) els.plateflowLoginButton.textContent = session.bootstrapRequired ? "Create admin" : inviteToken ? "Create account" : "Log in";
   if (els.appAuthStatus) {
     if (session.bootstrapRequired) {
       els.appAuthStatus.textContent = "Setup required";
@@ -159,6 +175,7 @@ function renderAppAccess(session) {
       els.appAuthStatus.classList.remove("ok");
     }
   }
+  if (els.appLogoutLink) els.appLogoutLink.classList.toggle("hidden", !session.appAuthenticated);
 }
 
 function canLoadDashboard(session) {
@@ -169,7 +186,8 @@ async function onPlateFlowLogin(event) {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(els.plateflowLoginForm).entries());
   try {
-    const session = await api(body.name ? "/auth/plateflow/register" : "/auth/plateflow/login", {
+    const createAccount = bootstrapRequired || Boolean(body.inviteToken);
+    const session = await api(createAccount ? "/auth/plateflow/register" : "/auth/plateflow/login", {
       method: "POST",
       body: JSON.stringify(body)
     });
@@ -348,10 +366,41 @@ async function loadDashboard() {
   renderProcurement(dashboard.procurement);
   renderRawMaterials(dashboard.rawMaterials);
   renderAudit(dashboard.admin.auditLogs);
+  await loadAdminUsers();
   parts = dashboard.inventory.parts.map((part) => ({ ...part, selected: true }));
   source = null;
   renderParts();
   if (parts.length) setMessage(`Loaded ${parts.length} inventoried item${parts.length === 1 ? "" : "s"}.`, "ok");
+}
+
+async function loadAdminUsers() {
+  if (!els.userList) return;
+  try {
+    const result = await api("/api/admin/users");
+    renderAdminUsers(result);
+  } catch {
+    els.userList.textContent = "Admin user management is available to admin accounts.";
+  }
+}
+
+function renderAdminUsers(result) {
+  if (!els.userList) return;
+  const users = result.users || [];
+  const invites = result.invites || [];
+  els.userList.innerHTML = [
+    ...users.map((user) => `
+      <div>
+        <strong>${escapeHtml(user.name || user.email)} · ${escapeHtml(user.role)}</strong>
+        <span>${escapeHtml(user.email)} · ${escapeHtml(user.status)}</span>
+      </div>
+    `),
+    ...invites.map((invite) => `
+      <div>
+        <strong>Invite · ${escapeHtml(invite.email)} · ${escapeHtml(invite.role)}</strong>
+        <span>${escapeHtml(invite.status)} · ${escapeHtml(invite.inviteUrl)}</span>
+      </div>
+    `)
+  ].join("") || "No users loaded.";
 }
 
 function renderInventory(inventory) {
@@ -512,6 +561,22 @@ async function onRawMaterialAdd(event) {
     els.rawMaterialForm.reset();
     await loadDashboard();
     setMessage("Raw stock added to inventory.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function onInviteCreate(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(els.inviteForm).entries());
+  try {
+    const result = await api("/api/admin/invites", {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    els.inviteForm.reset();
+    renderAdminUsers(result);
+    setMessage("Invite created. Copy the invite link from Admin.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }

@@ -48,6 +48,7 @@ createServer(async (req, res) => {
 
     if (url.pathname === "/auth/plateflow/register" && req.method === "POST") return await registerPlateFlow(req, res, session);
     if (url.pathname === "/auth/plateflow/login" && req.method === "POST") return await loginPlateFlow(req, res, session);
+    if (url.pathname === "/auth/plateflow/logout") return logoutPlateFlow(res, session);
     if (url.pathname === "/auth/onshape") return onshapeStart(req, res, session, url);
     if (url.pathname === "/auth/onshape/callback") return await onshapeCallback(req, res, session, url);
     if (url.pathname === "/auth/logout") return logout(res, session);
@@ -57,13 +58,15 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/sync-batches") return withAppAccess(session, res, () => json(res, 200, syncBatchSnapshot()));
     if (url.pathname === "/api/raw-materials" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, { rawMaterials: store.rawMaterials }));
     if (url.pathname === "/api/raw-materials" && req.method === "POST") return withAppAccess(session, res, () => addRawMaterial(req, res, session), ["admin", "mentor", "fabricator"]);
-    if (url.pathname === "/api/robots") return json(res, 200, { robots: robotSnapshot(inventorySnapshot().parts) });
-    if (url.pathname === "/api/audit-log") return json(res, 200, { auditLogs: store.auditLogs.slice(0, 50) });
+    if (url.pathname === "/api/robots") return withAppAccess(session, res, () => json(res, 200, { robots: robotSnapshot(inventorySnapshot().parts) }));
+    if (url.pathname === "/api/audit-log") return withAppAccess(session, res, () => json(res, 200, { auditLogs: store.auditLogs.slice(0, 50) }), ["admin", "mentor"]);
+    if (url.pathname === "/api/admin/users") return withAppAccess(session, res, () => json(res, 200, adminUsersSnapshot()), ["admin"]);
+    if (url.pathname === "/api/admin/invites" && req.method === "POST") return withAppAccess(session, res, (user) => createInvite(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/admin/remove-placeholder-cots" && req.method === "POST") return withAppAccess(session, res, () => removePlaceholderCots(req, res, session), ["admin"]);
-    if (url.pathname === "/api/onshape/import" && req.method === "POST") return await importOnshape(req, res, session);
-    if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return await importCots(req, res, session);
-    if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return await exportStep(req, res, session);
-    if (url.pathname === "/api/orders" && req.method === "POST") return await createOrder(req, res, session);
+    if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), ["admin", "mentor", "fabricator", "student"]);
+    if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), ["admin", "mentor", "purchaser", "student"]);
+    if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return withAppAccess(session, res, () => exportStep(req, res, session), ["admin", "mentor", "fabricator"]);
+    if (url.pathname === "/api/orders" && req.method === "POST") return withAppAccess(session, res, () => createOrder(req, res, session), ["admin", "mentor", "purchaser"]);
     if (url.pathname.startsWith("/api/downloads/")) return downloadBlob(res, session, url.pathname.split("/").pop());
     if (url.pathname.startsWith("/api/")) return json(res, 404, { error: "Not found" });
 
@@ -369,6 +372,12 @@ function publicSession(session) {
   };
 }
 
+function logoutPlateFlow(res, session) {
+  session.appUserId = null;
+  audit("auth.logout", "PlateFlow logout", "user");
+  return redirect(res, "/");
+}
+
 function withAppAccess(session, res, handler, roles = []) {
   if (!store.users.length) return handler();
   const user = store.users.find((item) => item.id === session.appUserId && item.status === "active");
@@ -385,21 +394,27 @@ async function registerPlateFlow(req, res, session) {
   if (existing) throw httpError(409, "A PlateFlow account already exists for that email");
 
   const bootstrap = !store.users.length;
-  if (!bootstrap) throw httpError(403, "Invite-only registration is not enabled yet");
+  const invite = bootstrap ? null : findUsableInvite(input.email, body.inviteToken);
+  if (!bootstrap && !invite) throw httpError(403, "Valid invite required");
 
   const user = {
     id: `user-${randomBytes(6).toString("hex")}`,
     email: input.email,
     name: input.name || input.email.split("@")[0],
-    role: "admin",
+    role: bootstrap ? "admin" : invite.role,
     status: "active",
     passwordHash: hashPassword(input.password),
     createdAt: new Date().toISOString(),
     approvedAt: new Date().toISOString()
   };
   store.users.unshift(user);
+  if (invite) {
+    invite.status = "accepted";
+    invite.acceptedAt = new Date().toISOString();
+    invite.acceptedBy = user.id;
+  }
   session.appUserId = user.id;
-  audit("auth.bootstrap_admin", `Created first PlateFlow admin ${user.email}`, user.email);
+  audit(bootstrap ? "auth.bootstrap_admin" : "auth.invite_accepted", `Created PlateFlow ${user.role} ${user.email}`, user.email);
   await persistStore();
   return json(res, 201, { user: publicAppUser(user), session: publicSession(session) });
 }
@@ -424,6 +439,17 @@ function validateAuthInput(body, options = {}) {
   if (password.length < 10 || password.length > 200) throw httpError(400, "Password must be at least 10 characters");
   if (options.requireName && !name) throw httpError(400, "Name is required");
   return { email, password, name };
+}
+
+function findUsableInvite(email, token) {
+  const normalizedToken = String(token || "").trim();
+  if (!normalizedToken) return null;
+  return store.invites.find((invite) => (
+    invite.email === email &&
+    invite.token === normalizedToken &&
+    invite.status === "pending" &&
+    new Date(invite.expiresAt).getTime() > Date.now()
+  ));
 }
 
 function hashPassword(password) {
@@ -501,14 +527,9 @@ async function onshapeCallback(_req, res, session, url) {
 }
 
 function logout(res, session) {
-  sessions.delete(session.id);
-  res.setHeader("Set-Cookie", cookie("sid", "", {
-    httpOnly: true,
-    sameSite: config.prod ? "None" : "Lax",
-    secure: config.prod,
-    path: "/",
-    maxAge: 0
-  }));
+  session.token = null;
+  session.user = null;
+  session.oauthState = null;
   return redirect(res, "/");
 }
 
@@ -997,6 +1018,51 @@ async function removePlaceholderCots(req, res, session) {
   audit("admin.cleanup_placeholder_cots", `Removed placeholder COTS data: ${JSON.stringify(removed)}`, session.user?.label || "user");
   await persistStore();
   return json(res, 200, { removed });
+}
+
+function adminUsersSnapshot() {
+  return {
+    users: store.users.map(publicAppUser),
+    invites: store.invites.slice(0, 50).map((invite) => ({
+      id: invite.id,
+      email: invite.email,
+      role: invite.role,
+      status: invite.status,
+      inviteUrl: `${config.appBaseUrl}/?invite=${invite.token}`,
+      createdAt: invite.createdAt,
+      expiresAt: invite.expiresAt
+    }))
+  };
+}
+
+async function createInvite(req, res, session, actor) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const invite = validateInvite(body);
+  if (store.users.some((user) => user.email === invite.email)) throw httpError(409, "That user already has an account");
+  store.invites = store.invites.filter((item) => !(item.email === invite.email && item.status === "pending"));
+  store.invites.unshift({
+    id: `invite-${randomBytes(6).toString("hex")}`,
+    token: randomBytes(24).toString("base64url"),
+    email: invite.email,
+    role: invite.role,
+    status: "pending",
+    createdBy: actor.id,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24 * 14).toISOString()
+  });
+  audit("admin.invite_created", `Invited ${invite.email} as ${invite.role}`, actor.email);
+  await persistStore();
+  return json(res, 201, adminUsersSnapshot());
+}
+
+function validateInvite(body) {
+  const email = String(body.email || "").trim().toLowerCase().slice(0, 160);
+  const role = String(body.role || "student").trim();
+  const roles = new Set(["admin", "mentor", "purchaser", "fabricator", "student", "read_only"]);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw httpError(400, "Valid email is required");
+  if (!roles.has(role)) throw httpError(400, "Invalid role");
+  return { email, role };
 }
 
 function downloadBlob(res, session, id) {

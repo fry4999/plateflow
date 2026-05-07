@@ -919,6 +919,22 @@ td select {
   margin-top: 18px;
 }
 
+.invite-form {
+  display: none;
+  grid-template-columns: minmax(220px, 1fr) 180px auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.admin-user .invite-form {
+  display: grid;
+}
+
 .security {
   display: grid;
   grid-template-columns: 1fr 1.4fr;
@@ -950,7 +966,6 @@ td select {
 
 .embedded .brand small,
 .embedded .nav,
-.embedded #loginScreen,
 .embedded .hero,
 .embedded .steps,
 .embedded #dashboard,
@@ -1086,6 +1101,10 @@ td select {
 
   .queue-grid .wide-card {
     grid-column: auto;
+  }
+
+  .admin-user .invite-form {
+    grid-template-columns: 1fr;
   }
 }
 
