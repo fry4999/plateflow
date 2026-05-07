@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FRC PlateFlow</title>
+    <link rel="stylesheet" href="/styles.css?v=2">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="brand-mark">PF</span>
+        <span>
+          <strong>PlateFlow</strong>
+          <small>Onshape to FRC laser quotes</small>
+        </span>
+      </a>
+      <nav class="nav">
+        <a href="#parts">Parts</a>
+        <a href="#order">Order</a>
+        <a href="#security">Security</a>
+      </nav>
+      <div class="auth">
+        <span id="authStatus" class="status-pill">Checking</span>
+        <a id="loginLink" class="button small" href="/auth/onshape">Log in with Onshape</a>
+        <a id="logoutLink" class="ghost small hidden" href="/auth/logout">Log out</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Built for FRC teams cutting belly pans, gussets, brackets, and sponsor-night miracles.</p>
+          <h1>Order laser-cut plates straight from Onshape materials and STEP exports.</h1>
+          <p class="lede">Connect an Onshape Part Studio, pull every part with its assigned material, tune quantities and finishes, export a STEP bundle, then send a quote request.</p>
+          <div class="hero-actions">
+            <a class="button" href="/auth/onshape">Connect Onshape</a>
+            <a class="ghost" href="#parts">Enter document IDs</a>
+          </div>
+        </div>
+        <div class="machine-panel" aria-label="laser cutting status">
+          <div class="machine-head">
+            <span></span><span></span><span></span>
+          </div>
+          <div class="plate-preview">
+            <i></i><i></i><i></i><i></i><i></i><i></i>
+            <b></b>
+          </div>
+          <div class="machine-stats">
+            <div><strong>6061</strong><small>Aluminum</small></div>
+            <div><strong>.125"</strong><small>Plate</small></div>
+            <div><strong>STEP</strong><small>AP242</small></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="band steps">
+        <article>
+          <span class="icon">1</span>
+          <h2>Read</h2>
+          <p>Pull Part Studio parts, names, body types, custom properties, and assigned materials through the server.</p>
+        </article>
+        <article>
+          <span class="icon">2</span>
+          <h2>Quote</h2>
+          <p>Clean up quantities, thickness, finish, and notes without re-uploading the same robot plates manually.</p>
+        </article>
+        <article>
+          <span class="icon">3</span>
+          <h2>Export</h2>
+          <p>Generate a STEP bundle through Onshape translations and attach it to the manufacturing request.</p>
+        </article>
+      </section>
+
+      <section id="parts" class="workspace">
+        <div class="section-heading">
+          <span class="eyebrow">Onshape Import</span>
+          <h2>Part Studio source</h2>
+        </div>
+        <form id="importForm" class="tool-surface">
+          <label>
+            <span>Document ID</span>
+            <input name="documentId" autocomplete="off" placeholder="did">
+          </label>
+          <label>
+            <span>Workspace ID</span>
+            <input name="workspaceId" autocomplete="off" placeholder="wid">
+          </label>
+          <label>
+            <span>Element ID</span>
+            <input name="elementId" autocomplete="off" placeholder="eid">
+          </label>
+          <label>
+            <span>Configuration</span>
+            <input name="configuration" autocomplete="off" placeholder="optional encoded config">
+          </label>
+          <button class="button" type="submit">Import parts</button>
+          <button id="demoButton" class="ghost" type="button">Load demo plates</button>
+        </form>
+
+        <div class="table-shell">
+          <div class="table-toolbar">
+            <strong id="partCount">No parts loaded</strong>
+            <button id="exportButton" class="button small" type="button" disabled>Export STEP bundle</button>
+          </div>
+          <div class="responsive-table">
+            <table>
+              <thead>
+                <tr>
+                  <th><input id="selectAll" type="checkbox" aria-label="select all parts"></th>
+                  <th>Part</th>
+                  <th>Material</th>
+                  <th>Thickness</th>
+                  <th>Qty</th>
+                  <th>Finish</th>
+                </tr>
+              </thead>
+              <tbody id="partsBody">
+                <tr><td colspan="6" class="empty">Connect Onshape or load demo plates to start a quote.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="order" class="order-layout">
+        <div class="section-heading">
+          <span class="eyebrow">FRC Ordering</span>
+          <h2>Send quote request</h2>
+        </div>
+        <form id="orderForm" class="order-form">
+          <label><span>FRC team number</span><input name="teamNumber" inputmode="numeric" placeholder="1678"></label>
+          <label><span>Contact name</span><input name="contactName" placeholder="Drive team CAD lead"></label>
+          <label><span>Email</span><input name="email" type="email" placeholder="cad@team.org"></label>
+          <label><span>Need by</span><input name="needBy" placeholder="Before Week 1"></label>
+          <label class="wide"><span>Notes</span><textarea name="notes" placeholder="Material substitutions, sponsor PO, deburr preferences, spare quantities..."></textarea></label>
+          <button class="button" type="submit">Submit quote</button>
+        </form>
+        <aside class="summary">
+          <h3>Quote summary</h3>
+          <dl>
+            <div><dt>Selected parts</dt><dd id="summaryParts">0</dd></div>
+            <div><dt>Total quantity</dt><dd id="summaryQty">0</dd></div>
+            <div><dt>Materials</dt><dd id="summaryMaterials">None</dd></div>
+          </dl>
+          <p id="message" class="message">Ready when your CAD is.</p>
+        </aside>
+      </section>
+
+      <section id="security" class="band security">
+        <div>
+          <span class="eyebrow">Security</span>
+          <h2>Built for App Store review</h2>
+        </div>
+        <ul>
+          <li>Onshape OAuth2 login with state verification.</li>
+          <li>Tokens stay on the server behind an HTTP-only session cookie.</li>
+          <li>Mutating requests require CSRF tokens and validated input.</li>
+          <li>Browser code never calls Onshape directly.</li>
+        </ul>
+      </section>
+    </main>
+
+    <script src="/app.js?v=2"></script>
+  </body>
+</html>
