@@ -608,6 +608,7 @@ async function importOnshape(req, res, session) {
   const input = validateImport(body);
   const accessToken = await ensureAccessToken(session);
   const base = normalizeOnshapeBase(input.baseUrl);
+  await enrichSourceInfo(accessToken, base, input);
 
   const params = new URLSearchParams({
     elementId: input.elementId,
@@ -628,6 +629,7 @@ async function importCots(req, res, session) {
   const input = validateImport(body);
   const accessToken = await ensureAccessToken(session);
   const base = normalizeOnshapeBase(input.baseUrl);
+  await enrichSourceInfo(accessToken, base, input);
 
   const rows = Array.isArray(body.rows) && body.rows.length ? body.rows : await fetchAssemblyBomRows(accessToken, base, input);
   if (!rows.length) {
@@ -668,6 +670,21 @@ function extractBomRows(data) {
   if (Array.isArray(data.bomTable?.rows)) return data.bomTable.rows;
   if (Array.isArray(data.table?.items)) return data.table.items;
   return [];
+}
+
+async function enrichSourceInfo(accessToken, base, input) {
+  const fallback = input.sourceTag || shortDocumentId(input.documentId);
+  try {
+    const document = await onshapeJson(accessToken, `${base}/api/documents/${input.documentId}`);
+    input.documentName = String(document.name || document.document?.name || "").trim().slice(0, 120);
+  } catch {
+    input.documentName = "";
+  }
+  input.sourceTag = String(input.sourceTag || input.documentName || fallback).trim().slice(0, 80) || fallback;
+}
+
+function shortDocumentId(documentId) {
+  return `doc-${String(documentId || "").slice(0, 6)}`;
 }
 
 async function saveInventory(input, parts, sourceType, label) {
@@ -719,8 +736,11 @@ function inventorySnapshot() {
     ...part,
     inventoryId: record.id,
     importedAt: record.updatedAt,
-    sourceType: record.sourceType
-  })));
+    sourceType: record.sourceType,
+    sourceDocument: part.sourceDocument || part.source?.sourceTag || record.source?.sourceTag || record.source?.documentName || shortDocumentId(record.source?.documentId),
+    sourceDocumentName: part.sourceDocumentName || part.source?.documentName || record.source?.documentName || "",
+    sourceDocumentId: part.source?.documentId || record.source?.documentId || ""
+  }))).sort((a, b) => `${a.sourceDocument || ""}:${a.name || ""}`.localeCompare(`${b.sourceDocument || ""}:${b.name || ""}`));
   return {
     records,
     parts,
@@ -734,7 +754,8 @@ function inventorySnapshot() {
       procurement: parts.filter((part) => part.sourceType === "cots").length,
       fabrication: parts.filter((part) => part.sourceType === "custom").length,
       lowStock: store.rawMaterials.filter((stock) => Number(stock.remainingQuantity || 0) <= 1).length
-    }
+    },
+    documents: [...new Set(parts.map((part) => part.sourceDocument || "Unassigned"))].sort()
   };
 }
 
@@ -760,6 +781,8 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     vendorSku: part.vendorSku || "",
     manufacturer: part.manufacturer || "",
     manufacturerSku: part.manufacturerSku || "",
+    sourceDocument: part.sourceDocument || part.source?.sourceTag || "",
+    sourceDocumentName: part.sourceDocumentName || part.source?.documentName || "",
     process: part.process || "",
     fabricationIntent: part.fabricationIntent || "",
     status: part.status || (sourceType === "custom" ? "extracted" : "needed"),
@@ -955,11 +978,15 @@ function normalizePart(part, input) {
     process: part.customProperties?.Process || "unknown",
     fabricationIntent: part.customProperties?.FabricationIntent || "review_needed",
     finish: "Deburred",
+    sourceDocument: input.sourceTag,
+    sourceDocumentName: input.documentName || input.sourceTag,
     source: {
       documentId: input.documentId,
       workspaceId: input.workspaceId,
       elementId: input.elementId,
       partId: part.partId,
+      sourceTag: input.sourceTag,
+      documentName: input.documentName || "",
       configuration: input.configuration || ""
     }
   };
@@ -988,11 +1015,15 @@ function normalizeCotsRow(row, input, index) {
     status: "needed",
     procurementStatus: "needed",
     vendorUrl: vendorLink(vendor, vendorSku || manufacturerSku, name),
+    sourceDocument: input.sourceTag,
+    sourceDocumentName: input.documentName || input.sourceTag,
     source: {
       documentId: input.documentId,
       workspaceId: input.workspaceId,
       elementId: input.elementId,
       bomRowKey: String(rowKey),
+      sourceTag: input.sourceTag,
+      documentName: input.documentName || "",
       configuration: input.configuration || ""
     }
   };
@@ -1334,6 +1365,7 @@ function validateImport(body) {
     workspaceOrVersion: String(body.workspaceOrVersion || "w").trim().toLowerCase(),
     elementId: String(body.elementId || body.eid || "").trim(),
     configuration: String(body.configuration || "").trim(),
+    sourceTag: String(body.sourceTag || body.documentTag || "").trim().slice(0, 80),
     baseUrl: String(body.baseUrl || config.onshapeApiBase).trim()
   };
   if (!id.test(input.documentId)) throw httpError(400, "Invalid document ID");

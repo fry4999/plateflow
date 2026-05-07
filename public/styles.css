@@ -551,6 +551,12 @@ td {
   max-width: 360px;
 }
 
+.inventory-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(220px, 360px);
+  gap: 10px;
+}
+
 .ops-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -651,6 +657,14 @@ label span {
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
+}
+
+label small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
 }
 
 input,
@@ -1072,6 +1086,7 @@ td select {
   display: none;
 }
 
+.embedded .tool-surface label:has(input[name="sourceTag"]),
 .embedded .tool-surface label:has(input[name="configuration"]) {
   display: block;
 }
@@ -1164,6 +1179,10 @@ td select {
   .search-input {
     max-width: none;
     margin-bottom: 18px;
+  }
+
+  .inventory-controls {
+    grid-template-columns: 1fr;
   }
 
   .queue-grid .wide-card {

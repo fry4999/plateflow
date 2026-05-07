@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=13">
+    <link rel="stylesheet" href="/styles.css?v=14">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -82,7 +82,12 @@
             <span class="eyebrow">Inventory</span>
             <h2>Global catalog</h2>
           </div>
-          <input id="inventorySearch" class="search-input" placeholder="Search parts, materials, vendors">
+          <div class="inventory-controls">
+            <select id="inventoryDocumentFilter" aria-label="Filter inventory by source document">
+              <option value="">All documents</option>
+            </select>
+            <input id="inventorySearch" class="search-input" placeholder="Search parts, materials, vendors">
+          </div>
         </div>
         <div class="table-shell">
           <div class="responsive-table">
@@ -91,6 +96,7 @@
               <thead>
                 <tr>
                   <th>Type</th>
+                  <th>Source</th>
                   <th>Part</th>
                   <th>Category</th>
                   <th>Material/Vendor</th>
@@ -100,7 +106,7 @@
                 </tr>
               </thead>
               <tbody id="inventoryBody">
-                <tr><td colspan="7" class="empty">No inventory yet.</td></tr>
+                <tr><td colspan="8" class="empty">No inventory yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -139,8 +145,13 @@
             <input name="elementId" autocomplete="off" placeholder="eid">
           </label>
           <label>
+            <span>Source tag</span>
+            <input name="sourceTag" autocomplete="off" placeholder="ex: 2026 drive">
+          </label>
+          <label>
             <span>Configuration</span>
             <input name="configuration" autocomplete="off" placeholder="optional encoded config">
+            <small>Use only for configured tabs; blank means default.</small>
           </label>
           <button class="button" type="submit">Submit sync batch</button>
           <button id="demoButton" class="ghost" type="button">Load demo data</button>
@@ -311,6 +322,6 @@
       </div>
     </main>
 
-    <script src="/app.js?v=13"></script>
+    <script src="/app.js?v=14"></script>
   </body>
 </html>

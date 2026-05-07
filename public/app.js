@@ -36,6 +36,7 @@ const els = {
   metricFabrication: document.querySelector("#metricFabrication"),
   metricProcurement: document.querySelector("#metricProcurement"),
   inventorySearch: document.querySelector("#inventorySearch"),
+  inventoryDocumentFilter: document.querySelector("#inventoryDocumentFilter"),
   inventoryBody: document.querySelector("#inventoryBody"),
   robotList: document.querySelector("#robotList"),
   fabQueueCount: document.querySelector("#fabQueueCount"),
@@ -85,6 +86,8 @@ async function init() {
     ["eid", "elementId"],
     ["elementId", "elementId"],
     ["tabElementId", "elementId"],
+    ["documentName", "sourceTag"],
+    ["sourceTag", "sourceTag"],
     ["configuration", "configuration"]
   ]) {
     const value = params.get(urlKey);
@@ -137,6 +140,7 @@ function bindEvents() {
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
   if (els.rawMaterialForm) els.rawMaterialForm.addEventListener("submit", onRawMaterialAdd);
   if (els.inventorySearch) els.inventorySearch.addEventListener("input", () => loadDashboard());
+  if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", () => loadDashboard());
   els.modeTabs.forEach((button) => button.addEventListener("click", () => setSyncMode(button.dataset.mode)));
   if (els.themeToggle) els.themeToggle.addEventListener("click", toggleTheme);
 }
@@ -444,6 +448,7 @@ function renderAdminUsers(result) {
 
 function renderInventory(inventory) {
   if (!inventory || !els.metricImports) return;
+  renderDocumentFilter(inventory);
   els.metricImports.textContent = String(inventory.totals.records);
   els.metricParts.textContent = String(inventory.totals.parts);
   els.metricCustom.textContent = String(inventory.totals.custom || 0);
@@ -455,27 +460,42 @@ function renderInventory(inventory) {
   loadBatches();
 }
 
+function renderDocumentFilter(inventory) {
+  if (!els.inventoryDocumentFilter) return;
+  const current = els.inventoryDocumentFilter.value;
+  const documents = inventory.documents || [...new Set((inventory.parts || []).map((part) => part.sourceDocument || "Unassigned"))].sort();
+  els.inventoryDocumentFilter.innerHTML = [
+    `<option value="">All documents</option>`,
+    ...documents.map((documentName) => `<option value="${escapeAttr(documentName)}"${documentName === current ? " selected" : ""}>${escapeHtml(documentName)}</option>`)
+  ].join("");
+  if (current && !documents.includes(current)) els.inventoryDocumentFilter.value = "";
+}
+
 function renderInventoryTable(items) {
   if (!els.inventoryBody) return;
   const query = (els.inventorySearch?.value || "").trim().toLowerCase();
-  const visible = items.filter((part) => [
+  const documentFilter = els.inventoryDocumentFilter?.value || "";
+  const visible = items.filter((part) => (!documentFilter || (part.sourceDocument || "Unassigned") === documentFilter)).filter((part) => [
     part.name,
     part.category,
     part.material,
     part.vendor,
     part.vendorSku,
     part.process,
-    part.status
+    part.status,
+    part.sourceDocument,
+    part.sourceDocumentName
   ].join(" ").toLowerCase().includes(query)).slice(0, 200);
 
   if (!visible.length) {
-    els.inventoryBody.innerHTML = `<tr><td colspan="7" class="empty">No matching inventory.</td></tr>`;
+    els.inventoryBody.innerHTML = `<tr><td colspan="8" class="empty">No matching inventory.</td></tr>`;
     return;
   }
 
   els.inventoryBody.innerHTML = visible.map((part) => `
     <tr>
       <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
+      <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span></td>
       <td><span class="part-name">${escapeHtml(part.name)}</span><br><small>${escapeHtml(part.vendorSku || part.id || "")}</small></td>
       <td>${escapeHtml(part.category || "uncategorized")}</td>
       <td>${escapeHtml(part.sourceType === "cots" ? [part.vendor, part.vendorSku].filter(Boolean).join(" ") || "Unassigned" : [part.material, part.thickness].filter(Boolean).join(" ") || "Unassigned")}</td>
