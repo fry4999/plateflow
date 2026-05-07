@@ -7,7 +7,7 @@ Railway is the current recommended host for PlateFlow if Render cold starts are 
 1. Go to Railway and create a new project.
 2. Choose **Deploy from GitHub repo**.
 3. Select `fry4999/plateflow`.
-4. Railway will use `railway.json`, install with `npm install`, and start with `node server.mjs`.
+4. Railway will use `railway.json`, install with `npm ci`, and start with `node server.mjs`.
 
 ## 2. Add Postgres
 
