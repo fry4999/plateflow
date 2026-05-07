@@ -2,7 +2,7 @@
 
 Production domain:
 
-`https://teknik-engineering.com`
+`https://plateflow.teknik-engineering.com`
 
 ## Required App URLs
 
@@ -10,24 +10,24 @@ Use these in the Onshape Developer Portal.
 
 OAuth/login URL:
 
-`https://teknik-engineering.com/auth/onshape`
+`https://plateflow.teknik-engineering.com/auth/onshape`
 
 OAuth redirect URL:
 
-`https://teknik-engineering.com/auth/onshape/callback`
+`https://plateflow.teknik-engineering.com/auth/onshape/callback`
 
 Standalone app URL:
 
-`https://teknik-engineering.com/`
+`https://plateflow.teknik-engineering.com/`
 
 Embedded Onshape URL:
 
-`https://teknik-engineering.com/onshape?embedded=1`
+`https://plateflow.teknik-engineering.com/onshape?embedded=1`
 
 Element right-panel action URL:
 
 ```text
-https://teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
+https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
 ```
 
 ## Onshape Developer Portal Steps
@@ -42,8 +42,8 @@ https://teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&works
 
    - Name: `PlateFlow`
    - Company/Publisher: `Teknik Engineering`
-   - Website: `https://teknik-engineering.com`
-   - Redirect URL: `https://teknik-engineering.com/auth/onshape/callback`
+   - Website: `https://plateflow.teknik-engineering.com`
+   - Redirect URL: `https://plateflow.teknik-engineering.com/auth/onshape/callback`
 
 4. Choose OAuth scopes/permissions with least privilege:
 
@@ -67,10 +67,10 @@ https://teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&works
 
 ## Server Deployment Checklist
 
-- Point DNS for `teknik-engineering.com` to your hosting provider.
+- Point DNS for `plateflow.teknik-engineering.com` to your hosting provider.
 - Serve HTTPS with a valid TLS certificate.
 - Run the app with `NODE_ENV=production`.
-- Set `APP_BASE_URL=https://teknik-engineering.com`.
+- Set `APP_BASE_URL=https://plateflow.teknik-engineering.com`.
 - Set a long random `SESSION_SECRET`.
 - Put the Node app behind a reverse proxy that forwards HTTPS traffic to the app port.
 - Keep the app response header `Content-Security-Policy: frame-ancestors 'self' https://*.onshape.com`.
@@ -81,14 +81,14 @@ https://teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&works
 
 Standalone:
 
-`https://teknik-engineering.com/`
+`https://plateflow.teknik-engineering.com/`
 
 Embedded test:
 
 ```text
-https://teknik-engineering.com/onshape?embedded=1&documentId=abc123456789&workspaceOrVersionId=def123456789&elementId=ghi123456789&server=https://cad.onshape.com
+https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId=abc123456789&workspaceOrVersionId=def123456789&elementId=ghi123456789&server=https://cad.onshape.com
 ```
 
 OAuth test:
 
-`https://teknik-engineering.com/auth/onshape`
+`https://plateflow.teknik-engineering.com/auth/onshape`
