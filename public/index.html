@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=18">
+    <link rel="stylesheet" href="/styles.css?v=19">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -268,23 +268,13 @@
         </div>
       </section>
 
-      <section id="fabrication" class="queue-grid app-page" data-page hidden>
+      <section id="fabrication" class="queue-grid fabrication-page app-page" data-page hidden>
         <div class="section-heading">
           <span class="eyebrow">Fabrication</span>
           <h2>Custom part queue</h2>
         </div>
-        <article>
-          <h3>Review queue</h3>
-          <p id="fabQueueCount">No custom parts queued.</p>
-          <ul>
-            <li>Group by material, thickness, process, and destination.</li>
-            <li>Track extracted, queued, making, sent out, ready, received, installed.</li>
-          </ul>
-        </article>
-        <article class="wide-card">
-          <h3>Fabrication jobs</h3>
-          <div id="fabricationJobs" class="batch-list">No fabrication jobs yet.</div>
-        </article>
+        <p id="fabQueueCount" class="page-kicker">No custom parts queued.</p>
+        <div id="fabricationJobs" class="fabrication-board">No fabrication jobs yet.</div>
       </section>
 
       <section id="procurement" class="queue-grid app-page" data-page hidden>
@@ -405,6 +395,6 @@
       </div>
     </main>
 
-    <script src="/app.js?v=18"></script>
+    <script src="/app.js?v=19"></script>
   </body>
 </html>

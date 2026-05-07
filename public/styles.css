@@ -1080,8 +1080,20 @@ td select {
   min-height: calc(100vh - 74px);
 }
 
+.fabrication-page {
+  grid-template-columns: 1fr;
+  max-width: none;
+  padding: 42px 40px 56px;
+}
+
 .queue-grid .section-heading {
   grid-column: 1 / -1;
+}
+
+.page-kicker {
+  margin-top: -12px;
+  color: var(--muted);
+  font-weight: 800;
 }
 
 .queue-grid article {
@@ -1132,23 +1144,38 @@ td select {
   color: var(--ink);
 }
 
+.fabrication-board {
+  min-width: 0;
+}
+
 .kanban-board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(190px, 1fr));
-  gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 4px;
+  grid-template-columns: repeat(3, minmax(260px, 1fr));
+  gap: 18px;
+  min-height: calc(100vh - 220px);
 }
 
 .kanban-column {
   display: grid;
   align-content: start;
-  gap: 10px;
-  min-width: 190px;
-  padding: 10px;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--soft);
+  background: color-mix(in srgb, var(--soft) 82%, transparent);
+}
+
+.kanban-column.red {
+  border-top: 4px solid #ef4444;
+}
+
+.kanban-column.yellow {
+  border-top: 4px solid #f59e0b;
+}
+
+.kanban-column.green {
+  border-top: 4px solid #22c55e;
 }
 
 .kanban-column-head {
@@ -1160,7 +1187,7 @@ td select {
 
 .kanban-column-head h4 {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .kanban-column-head span {
@@ -1183,10 +1210,23 @@ td select {
 .kanban-card {
   display: grid;
   gap: 10px;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid var(--line);
+  border-left: 5px solid var(--blue);
   border-radius: 8px;
   background: var(--panel);
+}
+
+.kanban-card.todo {
+  border-left-color: #ef4444;
+}
+
+.kanban-card.in_progress {
+  border-left-color: #f59e0b;
+}
+
+.kanban-card.completed {
+  border-left-color: #22c55e;
 }
 
 .kanban-card strong,
@@ -1210,10 +1250,18 @@ td select {
   margin: 0;
 }
 
+.kanban-card strong {
+  font-size: 16px;
+}
+
 .kanban-line {
   padding: 6px 8px;
   border-radius: 6px;
   background: var(--soft);
+}
+
+.kanban-card .danger {
+  justify-self: start;
 }
 
 .inline-select {

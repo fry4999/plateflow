@@ -72,6 +72,7 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/admin/invites" && req.method === "POST") return withAppAccess(session, res, (user) => createInvite(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/admin/remove-placeholder-cots" && req.method === "POST") return withAppAccess(session, res, () => removePlaceholderCots(req, res, session), ["admin"]);
     if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
+    if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
     if (url.pathname.startsWith("/api/procurement/orders/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementOrder(req, res, session, user, pathId(url.pathname, "/api/procurement/orders/")), ["admin", "mentor", "purchaser"]);
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), ["admin", "mentor", "fabricator", "student"]);
     if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), ["admin", "mentor", "purchaser", "student"]);
@@ -957,9 +958,10 @@ async function saveInventory(input, parts, sourceType, label, options = {}) {
   if (existingIndex >= 0) store.inventoryRecords.splice(existingIndex, 1, record);
   else store.inventoryRecords.unshift(record);
 
+  const previousFabStatus = sourceType === "custom" && replacedBatchId ? fabricationStatusByCatalogPart(replacedBatchId) : new Map();
   const normalizedParts = recordParts.map((part) => upsertCatalogPart(part, sourceType, batchId));
   if (replacedBatchId) removeOperationalQueue(replacedBatchId, sourceType);
-  upsertOperationalQueue(batchId, sourceType, normalizedParts);
+  upsertOperationalQueue(batchId, sourceType, normalizedParts, previousFabStatus);
   store.syncBatches.unshift({
     id: batchId,
     label,
@@ -989,6 +991,16 @@ function removeOperationalQueue(batchId, sourceType) {
     store.procurementOrders = store.procurementOrders.filter((order) => order.syncBatchId !== batchId);
   }
   store.syncBatches = store.syncBatches.filter((batch) => batch.id !== batchId);
+}
+
+function fabricationStatusByCatalogPart(batchId) {
+  ensureIndividualFabricationJobs();
+  const statuses = new Map();
+  for (const job of store.fabricationJobs.filter((item) => item.syncBatchId === batchId)) {
+    const line = Array.isArray(job.lines) ? job.lines[0] : null;
+    if (line?.catalogPartId) statuses.set(line.catalogPartId, canonicalFabricationStatus(job.status));
+  }
+  return statuses;
 }
 
 function inventorySnapshot() {
@@ -1083,33 +1095,36 @@ function normalizeKey(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown";
 }
 
-function upsertOperationalQueue(batchId, sourceType, catalogParts) {
+function upsertOperationalQueue(batchId, sourceType, catalogParts, previousFabStatus = new Map()) {
   const now = new Date().toISOString();
   if (sourceType === "custom") {
-    store.fabricationJobs.unshift({
-      id: `F-${batchId.slice(2)}`,
+    const jobs = catalogParts.map((part, index) => ({
+      id: `F-${batchId.slice(2)}-${String(index + 1).padStart(2, "0")}`,
       syncBatchId: batchId,
-      status: "queued",
-      grouping: groupCustomParts(catalogParts),
-      lines: catalogParts.map((part) => ({
-        catalogPartId: part.id,
-        name: part.name,
-        material: part.material,
-        thickness: part.thickness,
-        subsystem: part.subsystem,
-        stock: part.stock,
-        process: part.process || "unknown",
-        machine: part.machine || part.process || "unknown",
-        fabricationIntent: part.fabricationIntent || "review_needed",
-        quantityNeeded: part.quantityNeeded,
-        quantityMade: 0,
-        quantityReceived: 0,
-        quantityInstalled: 0
-      })),
+      status: previousFabStatus.get(part.id) || "todo",
+      grouping: groupCustomParts([part]),
+      lines: [
+        {
+          catalogPartId: part.id,
+          name: part.name,
+          material: part.material,
+          thickness: part.thickness,
+          subsystem: part.subsystem,
+          stock: part.stock,
+          process: part.process || "unknown",
+          machine: part.machine || part.process || "unknown",
+          fabricationIntent: part.fabricationIntent || "review_needed",
+          quantityNeeded: part.quantityNeeded,
+          quantityMade: 0,
+          quantityReceived: 0,
+          quantityInstalled: 0
+        }
+      ],
       createdAt: now,
       updatedAt: now
-    });
-    store.fabricationJobs.splice(100);
+    }));
+    store.fabricationJobs.unshift(...jobs);
+    store.fabricationJobs.splice(200);
     return;
   }
 
@@ -1143,6 +1158,45 @@ function groupCustomParts(parts) {
   }, {}));
 }
 
+function ensureIndividualFabricationJobs() {
+  let changed = false;
+  const next = [];
+  for (const job of store.fabricationJobs) {
+    if (job.status === "canceled") {
+      changed = true;
+      continue;
+    }
+    const lines = Array.isArray(job.lines) ? job.lines : [];
+    const status = canonicalFabricationStatus(job.status);
+    if (lines.length <= 1) {
+      if (job.status !== status) {
+        job.status = status;
+        changed = true;
+      }
+      next.push(job);
+      continue;
+    }
+    changed = true;
+    lines.forEach((line, index) => {
+      next.push({
+        ...job,
+        id: `${job.id}-${String(index + 1).padStart(2, "0")}`,
+        status,
+        grouping: groupCustomParts([line]),
+        lines: [line]
+      });
+    });
+  }
+  if (changed) store.fabricationJobs = next.slice(0, 200);
+  return changed;
+}
+
+function canonicalFabricationStatus(status) {
+  if (status === "in_progress") return "in_progress";
+  if (["completed", "received", "installed"].includes(status)) return "completed";
+  return "todo";
+}
+
 function groupCotsParts(parts) {
   return Object.values(parts.reduce((groups, part) => {
     const key = part.vendor || "Unassigned";
@@ -1153,6 +1207,7 @@ function groupCotsParts(parts) {
 }
 
 function dashboardSnapshot(user = null) {
+  ensureIndividualFabricationJobs();
   const inventory = inventorySnapshot();
   const customParts = inventory.parts.filter((part) => part.sourceType === "custom");
   const cotsParts = inventory.parts.filter((part) => part.sourceType === "cots");
@@ -1175,7 +1230,7 @@ function dashboardSnapshot(user = null) {
     inventory,
     robots,
     fabrication: {
-      jobs: store.fabricationJobs.slice(0, 20),
+      jobs: store.fabricationJobs.filter((job) => job.status !== "canceled").slice(0, 200),
       items: customParts
     },
     procurement: {
@@ -1709,16 +1764,32 @@ async function deleteAdminUser(req, res, session, actor, userId) {
 
 async function updateFabricationJob(req, res, session, actor, jobId) {
   requireCsrf(req, session);
+  ensureIndividualFabricationJobs();
   const job = store.fabricationJobs.find((item) => item.id === jobId);
   if (!job) throw httpError(404, "Fabrication job not found");
   const body = await readJson(req);
+  if (body.status === "canceled" || body.status === "delete") {
+    return deleteFabricationJob(req, res, session, actor, jobId, { csrfChecked: true });
+  }
   const status = validateFabricationStatus(body.status || job.status);
   job.status = status;
   job.updatedAt = new Date().toISOString();
-  if (Array.isArray(job.lines) && ["completed", "received", "installed"].includes(status)) {
+  if (Array.isArray(job.lines)) {
     job.lines = job.lines.map((line) => ({ ...line, status }));
   }
   audit("fabrication.job_updated", `Updated ${job.id} to ${job.status}`, actor.email);
+  await persistStore();
+  return json(res, 200, { fabrication: dashboardSnapshot().fabrication });
+}
+
+async function deleteFabricationJob(req, res, session, actor, jobId, options = {}) {
+  if (!options.csrfChecked) requireCsrf(req, session);
+  ensureIndividualFabricationJobs();
+  const index = store.fabricationJobs.findIndex((item) => item.id === jobId);
+  if (index === -1) throw httpError(404, "Fabrication job not found");
+  const [job] = store.fabricationJobs.splice(index, 1);
+  const line = Array.isArray(job.lines) ? job.lines[0] : null;
+  audit("fabrication.job_deleted", `Deleted ${line?.name || job.id}`, actor.email);
   await persistStore();
   return json(res, 200, { fabrication: dashboardSnapshot().fabrication });
 }
@@ -1759,7 +1830,7 @@ function validateUserStatus(value) {
 
 function validateFabricationStatus(value) {
   const status = String(value || "").trim();
-  const statuses = new Set(["draft", "queued", "in_progress", "sent_out", "completed", "received", "installed", "canceled"]);
+  const statuses = new Set(["todo", "in_progress", "completed"]);
   if (!statuses.has(status)) throw httpError(400, "Invalid fabrication status");
   return status;
 }

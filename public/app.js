@@ -90,7 +90,7 @@ const demoParts = [
 
 const roles = ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"];
 const userStatuses = ["active", "disabled", "pending"];
-const fabricationStatuses = ["draft", "queued", "in_progress", "sent_out", "completed", "received", "installed", "canceled"];
+const fabricationStatuses = ["todo", "in_progress", "completed"];
 const procurementStatuses = ["needed", "sourcing", "ready_to_order", "ordered", "partially_received", "received", "backordered", "canceled"];
 
 init();
@@ -160,6 +160,7 @@ function bindEvents() {
   if (els.inviteForm) els.inviteForm.addEventListener("submit", onInviteCreate);
   if (els.userList) els.userList.addEventListener("click", onAdminUserAction);
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("change", onFabricationJobChange);
+  if (els.fabricationJobs) els.fabricationJobs.addEventListener("click", onFabricationJobAction);
   if (els.procurementOrders) els.procurementOrders.addEventListener("change", onProcurementOrderChange);
   els.demoButton.addEventListener("click", loadDemo);
   els.configPartSelect?.addEventListener("change", onConfigPartChange);
@@ -675,7 +676,7 @@ function renderInventory(inventory) {
   els.metricCots.textContent = String(inventory.totals.cots || 0);
   els.metricFabrication.textContent = String(inventory.totals.fabrication || 0);
   els.metricProcurement.textContent = String(inventory.totals.procurement || 0);
-  if (els.fabQueueCount) els.fabQueueCount.textContent = inventory.totals.fabrication ? `${inventory.totals.fabrication} custom part${inventory.totals.fabrication === 1 ? "" : "s"} awaiting fabrication review.` : "No custom parts queued.";
+  if (els.fabQueueCount) els.fabQueueCount.textContent = inventory.totals.fabrication ? `${inventory.totals.fabrication} custom part${inventory.totals.fabrication === 1 ? "" : "s"} on the fabrication board.` : "No custom parts queued.";
   if (els.procQueueCount) els.procQueueCount.textContent = inventory.totals.procurement ? `${inventory.totals.procurement} COTS item${inventory.totals.procurement === 1 ? "" : "s"} awaiting procurement review.` : "No COTS parts queued.";
   loadBatches();
 }
@@ -797,24 +798,19 @@ function renderFabrication(fabrication) {
     els.fabricationJobs.textContent = "No fabrication jobs yet.";
     return;
   }
-  const labels = {
-    draft: "Draft",
-    queued: "Queued",
-    in_progress: "Making",
-    sent_out: "Sent out",
-    completed: "Ready",
-    received: "Received",
-    installed: "Installed",
-    canceled: "Canceled"
-  };
+  const columns = [
+    { status: "todo", label: "To make", tone: "red" },
+    { status: "in_progress", label: "Making", tone: "yellow" },
+    { status: "completed", label: "Ready", tone: "green" }
+  ];
   els.fabricationJobs.innerHTML = `
     <div class="kanban-board" aria-label="Fabrication kanban board">
-      ${fabricationStatuses.map((status) => {
-        const jobs = fabrication.jobs.filter((job) => job.status === status);
+      ${columns.map(({ status, label, tone }) => {
+        const jobs = fabrication.jobs.filter((job) => displayFabricationStatus(job.status) === status);
         return `
-          <section class="kanban-column" aria-label="${escapeAttr(labels[status] || status)} fabrication jobs">
+          <section class="kanban-column ${escapeAttr(tone)}" aria-label="${escapeAttr(label)} fabrication parts">
             <div class="kanban-column-head">
-              <h4>${escapeHtml(labels[status] || status)}</h4>
+              <h4>${escapeHtml(label)}</h4>
               <span>${jobs.length}</span>
             </div>
             <div class="kanban-cards">
@@ -829,26 +825,36 @@ function renderFabrication(fabrication) {
 
 function renderFabricationCard(job) {
   const lines = Array.isArray(job.lines) ? job.lines : [];
+  const line = lines[0] || {};
   const grouping = Array.isArray(job.grouping) ? job.grouping : [];
+  const status = displayFabricationStatus(job.status);
+  const material = [line.material, line.thickness].filter(Boolean).join(" / ") || grouping[0]?.key || "Material unknown";
+  const route = [line.stock, line.machine || line.process].filter(Boolean).join(" · ") || "Route not set";
   return `
-    <article class="kanban-card">
+    <article class="kanban-card ${escapeAttr(status)}">
       <div>
-        <strong>${escapeHtml(job.id)}</strong>
-        <small>${lines.length} custom line${lines.length === 1 ? "" : "s"}</small>
+        <strong>${escapeHtml(line.name || job.name || job.id)}</strong>
+        <small>${escapeHtml(material)}</small>
       </div>
-      <p>${escapeHtml(grouping.map((group) => `${group.key} (${group.count})`).join(", ") || "Ungrouped")}</p>
-      ${lines.slice(0, 3).map((line) => `
-        <span class="kanban-line">${escapeHtml(line.name)} · qty ${Number(line.quantityNeeded || 1)}</span>
-      `).join("")}
-      ${lines.length > 3 ? `<span class="kanban-line">+${lines.length - 3} more</span>` : ""}
+      <p>${escapeHtml(route)}</p>
+      <span class="kanban-line">${escapeHtml(line.subsystem || "No subsystem")} · qty ${Number(line.quantityNeeded || 1)}</span>
       <label class="inline-select">
         <span>Move to</span>
         <select data-job-id="${escapeAttr(job.id)}">
-          ${fabricationStatuses.map((status) => `<option value="${escapeAttr(status)}"${status === job.status ? " selected" : ""}>${escapeHtml(status.replaceAll("_", " "))}</option>`).join("")}
+          <option value="todo"${status === "todo" ? " selected" : ""}>To make</option>
+          <option value="in_progress"${status === "in_progress" ? " selected" : ""}>Making</option>
+          <option value="completed"${status === "completed" ? " selected" : ""}>Ready</option>
         </select>
       </label>
+      <button class="ghost small danger" type="button" data-action="delete-fab-job" data-job-id="${escapeAttr(job.id)}">Delete</button>
     </article>
   `;
+}
+
+function displayFabricationStatus(status) {
+  if (status === "in_progress") return "in_progress";
+  if (["completed", "received", "installed"].includes(status)) return "completed";
+  return "todo";
 }
 
 function renderProcurement(procurement) {
@@ -1063,6 +1069,21 @@ async function onFabricationJobChange(event) {
     });
     renderFabrication(result.fabrication);
     setMessage("Fabrication job status updated.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+    await loadDashboard();
+  }
+}
+
+async function onFabricationJobAction(event) {
+  const button = event.target.closest("button[data-action='delete-fab-job']");
+  if (!button) return;
+  const jobId = button.dataset.jobId;
+  if (!jobId || !window.confirm("Delete this fabrication card?")) return;
+  try {
+    const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+    renderFabrication(result.fabrication);
+    setMessage("Fabrication card deleted.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();
