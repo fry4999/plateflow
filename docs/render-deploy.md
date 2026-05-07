@@ -30,7 +30,7 @@ Option B, manual web service:
 Set these in Render:
 
 ```env
-APP_BASE_URL=https://teknik-engineering.com
+APP_BASE_URL=https://plateflow.teknik-engineering.com
 NODE_ENV=production
 TRUST_PROXY=true
 SESSION_SECRET=<generate a long random value>
@@ -47,13 +47,11 @@ In Render:
 
 - Open the `plateflow` service
 - Go to Settings -> Custom Domains
-- Add `teknik-engineering.com`
-- Add `www.teknik-engineering.com` if you want it too
+- Add `plateflow.teknik-engineering.com`
 
 Render will show the DNS records to create. Usually:
 
-- `www` uses a `CNAME` to your Render hostname.
-- The root/apex domain uses the DNS record Render gives you. If your DNS provider supports CNAME flattening or ALIAS/ANAME, use that; otherwise use Render's provided A records.
+- `plateflow` uses a `CNAME` to your Render hostname.
 
 Wait for Render to issue the HTTPS certificate before using the domain in Onshape.
 
@@ -63,18 +61,18 @@ After HTTPS works, configure Onshape with:
 
 OAuth redirect URL:
 
-`https://teknik-engineering.com/auth/onshape/callback`
+`https://plateflow.teknik-engineering.com/auth/onshape/callback`
 
 Element right-panel action URL:
 
 ```text
-https://teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
+https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
 ```
 
 ## 6. Smoke Test
 
 Open:
 
-`https://teknik-engineering.com/api/session`
+`https://plateflow.teknik-engineering.com/api/session`
 
 You should see JSON with `configured: true` after adding Onshape credentials.
