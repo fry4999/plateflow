@@ -1,6 +1,7 @@
 let csrfToken = "";
 let source = null;
 let parts = [];
+let embeddedMode = false;
 
 const els = {
   authStatus: document.querySelector("#authStatus"),
@@ -13,6 +14,9 @@ const els = {
   exportButton: document.querySelector("#exportButton"),
   selectAll: document.querySelector("#selectAll"),
   orderForm: document.querySelector("#orderForm"),
+  metricImports: document.querySelector("#metricImports"),
+  metricParts: document.querySelector("#metricParts"),
+  metricMaterials: document.querySelector("#metricMaterials"),
   summaryParts: document.querySelector("#summaryParts"),
   summaryQty: document.querySelector("#summaryQty"),
   summaryMaterials: document.querySelector("#summaryMaterials"),
@@ -30,8 +34,8 @@ init();
 
 async function init() {
   const params = new URLSearchParams(location.search);
-  const embedded = location.pathname.startsWith("/onshape") || params.get("embedded") === "1";
-  document.body.classList.toggle("embedded", embedded);
+  embeddedMode = location.pathname.startsWith("/onshape") || params.get("embedded") === "1";
+  document.body.classList.toggle("embedded", embeddedMode);
 
   for (const [urlKey, formKey] of [
     ["did", "documentId"],
@@ -50,13 +54,18 @@ async function init() {
   if (params.get("server")) {
     els.importForm.dataset.baseUrl = params.get("server");
   }
+  if (params.get("workspaceOrVersion")) {
+    els.importForm.dataset.workspaceOrVersion = params.get("workspaceOrVersion");
+  }
 
   try {
     const session = await api("/api/session");
     csrfToken = session.csrfToken;
     renderAuth(session);
-    if (embedded && session.authenticated && hasOnshapeContext()) {
+    if (embeddedMode && session.authenticated && hasOnshapeContext()) {
       els.importForm.requestSubmit();
+    } else if (!embeddedMode) {
+      await loadInventory();
     }
   } catch {
     setMessage("Could not initialize the session.", "error");
@@ -68,7 +77,7 @@ async function init() {
   els.partsBody.addEventListener("change", onPartEdit);
   els.selectAll.addEventListener("change", toggleAll);
   els.exportButton.addEventListener("click", onExport);
-  els.orderForm.addEventListener("submit", onOrder);
+  if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
   renderParts();
 }
 
@@ -93,6 +102,7 @@ async function onImport(event) {
   const form = new FormData(els.importForm);
   source = Object.fromEntries(form.entries());
   if (els.importForm.dataset.baseUrl) source.baseUrl = els.importForm.dataset.baseUrl;
+  if (els.importForm.dataset.workspaceOrVersion) source.workspaceOrVersion = els.importForm.dataset.workspaceOrVersion;
   setMessage("Reading parts and assigned materials from Onshape...");
   try {
     const result = await api("/api/onshape/import", {
@@ -102,7 +112,17 @@ async function onImport(event) {
     parts = result.parts.map((part) => ({ ...part, selected: true }));
     source = result.source;
     renderParts();
-    setMessage(`Imported ${parts.length} part${parts.length === 1 ? "" : "s"} from Onshape.`, "ok");
+    renderInventory(result.inventory ? {
+      records: [result.inventory],
+      parts: result.parts,
+      totals: {
+        records: 1,
+        parts: result.parts.length,
+        materials: new Set(result.parts.map((part) => part.material || "Unassigned")).size
+      }
+    } : null);
+    const noun = parts.length === 1 ? "part" : "parts";
+    setMessage(embeddedMode ? `Sent ${parts.length} ${noun} to the PlateFlow dashboard.` : `Imported ${parts.length} ${noun} into inventory.`, "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -124,7 +144,7 @@ function renderParts() {
   els.partCount.textContent = parts.length ? `${parts.length} part${parts.length === 1 ? "" : "s"} loaded` : "No parts loaded";
 
   if (!parts.length) {
-    els.partsBody.innerHTML = `<tr><td colspan="6" class="empty">Connect Onshape or load demo plates to start a quote.</td></tr>`;
+    els.partsBody.innerHTML = `<tr><td colspan="6" class="empty">Import from Onshape to populate inventory.</td></tr>`;
     updateSummary();
     return;
   }
@@ -196,6 +216,22 @@ async function onOrder(event) {
   } catch (error) {
     setMessage(error.message, "error");
   }
+}
+
+async function loadInventory() {
+  const inventory = await api("/api/inventory");
+  renderInventory(inventory);
+  parts = inventory.parts.map((part) => ({ ...part, selected: true }));
+  source = null;
+  renderParts();
+  if (parts.length) setMessage(`Loaded ${parts.length} inventoried part${parts.length === 1 ? "" : "s"}.`, "ok");
+}
+
+function renderInventory(inventory) {
+  if (!inventory || !els.metricImports) return;
+  els.metricImports.textContent = String(inventory.totals.records);
+  els.metricParts.textContent = String(inventory.totals.parts);
+  els.metricMaterials.textContent = String(inventory.totals.materials);
 }
 
 function updateSummary() {
