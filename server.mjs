@@ -404,7 +404,7 @@ async function onshapeCallback(_req, res, session, url) {
     return redirect(res, addQuery(session.returnTo || "/", "auth", "ok"));
   } catch (error) {
     console.error("Onshape OAuth callback failed", error);
-    const detail = encodeURIComponent(error.expose ? error.message : "Token exchange failed. Check Render environment variables and Onshape redirect URLs.");
+    const detail = encodeURIComponent(error.expose ? error.message : "Token exchange failed. Check hosting environment variables and Onshape redirect URLs.");
     return redirect(res, `${addQuery(session.returnTo || "/", "auth", "callback-failed")}&detail=${detail}`);
   }
 }

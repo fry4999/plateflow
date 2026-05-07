@@ -1,6 +1,6 @@
-# FRC PlateFlow for Onshape
+# PlateFlow for Onshape
 
-An Onshape App Store-ready starter app for FRC teams ordering laser-cut plates from Part Studios. It logs users in with Onshape OAuth2, reads part/material data through the Onshape API, creates STEP export jobs, and collects a manufacturing order request on a Fabworks-inspired quote page.
+An Onshape App Store-ready FRC build-ops platform. PlateFlow syncs custom parts from Part Studios into a fabrication pipeline, syncs purchased/COTS items from Assembly BOMs into a procurement pipeline, and tracks shared inventory, raw material, robot readiness, and audit history.
 
 ## Run Locally
 
@@ -46,9 +46,9 @@ See [docs/onshape-app-store-checklist.md](docs/onshape-app-store-checklist.md) f
 
 For the Teknik Engineering domain, use [docs/teknik-engineering-onshape-setup.md](docs/teknik-engineering-onshape-setup.md).
 
-For Render hosting, use [docs/render-deploy.md](docs/render-deploy.md).
+For Railway hosting, use [docs/railway-deploy.md](docs/railway-deploy.md).
 
-For Cloudflare DNS in front of Render, use [docs/cloudflare-render-dns.md](docs/cloudflare-render-dns.md).
+For storage and hosting tradeoffs, use [docs/storage-hosting.md](docs/storage-hosting.md).
 
 ## Security Model
 
@@ -59,5 +59,6 @@ For Cloudflare DNS in front of Render, use [docs/cloudflare-render-dns.md](docs/
 - Strict security headers and a conservative CSP.
 - Rate limiting on auth and API routes.
 - Input validation on all API request bodies.
+- Durable Postgres storage when `DATABASE_URL` is configured.
 
-For production, move the in-memory stores to Redis/Postgres and encrypt refresh tokens at rest.
+For production, use Railway Postgres or another managed Postgres database and rotate any secret that was ever pasted outside the hosting provider's secret manager.

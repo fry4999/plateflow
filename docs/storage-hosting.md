@@ -2,36 +2,35 @@
 
 PlateFlow uses `DATABASE_URL` when it is set. If it is not set, it falls back to a local JSON file for development.
 
-## Cheapest recommended setup
+## Current recommendation
 
-Use Render Free for the web service and a managed Postgres database for durable data.
+Use Railway Hobby with Railway Postgres.
 
-Good first choice:
+Why:
 
-- Neon Free Postgres
-- Render Free web service
-- Render env var: `DATABASE_URL=<your Neon pooled connection string>`
+- one service for the Node app
+- one managed Postgres database in the same project
+- no Render-style 50 second cold start if serverless/app sleeping is disabled
+- simple GitHub deploys
+- usually around the Hobby minimum for a small FRC team tool
 
-This avoids Render's 50 second cold start only for storage, not for compute. Your data survives Render sleeping, redeploying, or restarting.
+Set `DATABASE_URL` on Railway and PlateFlow will use Postgres automatically.
 
-## If cold starts are unacceptable
+## Cheapest possible setup
 
-The embedded Onshape panel should feel immediate. If Render's free cold starts get in the way, these are better options:
+Cloudflare Workers + D1 is probably the cheapest and fastest long-term target because the domain already lives on Cloudflare and D1 has a generous free tier. It requires porting the Node server to a Worker-compatible server, so it is not the fastest immediate move.
 
-1. Cloudflare Workers + D1
-   - Usually the cheapest fast path.
-   - No traditional server sleep.
-   - Great fit because the domain is already on Cloudflare.
-   - Requires porting the Node server to a Worker/Hono-style app.
+## Other options
 
-2. Fly.io small Machine
+1. Fly.io small Machine
    - Can run an always-on Node service for a few dollars per month.
-   - More ops work than Render.
+   - More ops work than Railway.
 
-3. Railway Hobby
-   - Simpler than Fly, but starts around $5/month.
+2. Render Free + Neon Free Postgres
+   - Cheapest low-effort option.
+   - Data survives, but Render compute can still cold start.
 
-4. Hetzner VPS
+3. Hetzner VPS
    - Very cheap for always-on compute.
    - More server maintenance.
 
