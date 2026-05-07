@@ -332,10 +332,46 @@ td {
 }
 
 .workspace,
-.order-layout {
+.inventory-layout,
+.dashboard {
   max-width: 1180px;
   margin: 0 auto;
   padding: 72px 32px 0;
+}
+
+.dashboard {
+  padding-bottom: 0;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.metrics article {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+}
+
+.metrics span,
+.metrics strong {
+  display: block;
+}
+
+.metrics span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.metrics strong {
+  margin-top: 8px;
+  font-size: 42px;
+  line-height: 1;
 }
 
 .section-heading h2 {
@@ -434,14 +470,14 @@ td select {
   text-align: center;
 }
 
-.order-layout {
+.inventory-layout {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: minmax(0, 1fr) 340px;
   gap: 24px;
   padding-bottom: 72px;
 }
 
-.order-layout .section-heading {
+.inventory-layout .section-heading {
   grid-column: 1 / -1;
 }
 
@@ -542,6 +578,7 @@ td select {
 .embedded .nav,
 .embedded .hero,
 .embedded .steps,
+.embedded #dashboard,
 .embedded #security {
   display: none;
 }
@@ -550,15 +587,34 @@ td select {
   padding-top: 22px;
 }
 
+.embedded .section-heading .eyebrow {
+  display: none;
+}
+
 .embedded .section-heading h2 {
-  font-size: 24px;
+  margin-bottom: 12px;
+  font-size: 20px;
 }
 
 .embedded .tool-surface {
   grid-template-columns: 1fr;
+  padding: 12px;
 }
 
-.embedded .order-layout {
+.embedded .tool-surface label {
+  display: none;
+}
+
+.embedded .tool-surface label:has(input[name="configuration"]) {
+  display: block;
+}
+
+.embedded .table-shell,
+.embedded .inventory-layout {
+  display: none;
+}
+
+.embedded .inventory-layout {
   grid-template-columns: 1fr;
   padding-top: 36px;
 }
@@ -580,8 +636,9 @@ td select {
 
   .hero,
   .steps,
+  .metrics,
   .tool-surface,
-  .order-layout,
+  .inventory-layout,
   .security {
     grid-template-columns: 1fr;
   }
@@ -597,7 +654,8 @@ td select {
   }
 
   .workspace,
-  .order-layout,
+  .inventory-layout,
+  .dashboard,
   .band {
     padding-left: 18px;
     padding-right: 18px;
