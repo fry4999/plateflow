@@ -14,6 +14,7 @@ const els = {
   loginMessage: document.querySelector("#loginMessage"),
   nameField: document.querySelector("#nameField"),
   appAuthStatus: document.querySelector("#appAuthStatus"),
+  storageStatus: document.querySelector("#storageStatus"),
   authStatus: document.querySelector("#authStatus"),
   loginLink: document.querySelector("#loginLink"),
   logoutLink: document.querySelector("#logoutLink"),
@@ -174,6 +175,12 @@ function renderAppAccess(session) {
       els.appAuthStatus.textContent = "Not signed in";
       els.appAuthStatus.classList.remove("ok");
     }
+  }
+  if (els.storageStatus) {
+    const postgres = session.storage?.kind === "postgres";
+    els.storageStatus.textContent = postgres ? "Postgres connected" : "Local storage";
+    els.storageStatus.classList.toggle("ok", postgres);
+    els.storageStatus.classList.toggle("warn", !postgres);
   }
   if (els.appLogoutLink) els.appLogoutLink.classList.toggle("hidden", !session.appAuthenticated);
 }

@@ -45,6 +45,7 @@ createServer(async (req, res) => {
 
     const url = new URL(req.url || "/", config.appBaseUrl);
     const session = getSession(req, res);
+    if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/auth/plateflow")) await refreshStore();
 
     if (url.pathname === "/auth/plateflow/register" && req.method === "POST") return await registerPlateFlow(req, res, session);
     if (url.pathname === "/auth/plateflow/login" && req.method === "POST") return await loginPlateFlow(req, res, session);
@@ -109,6 +110,8 @@ async function createStorage() {
         )
       `);
       return {
+        kind: "postgres",
+        persistent: true,
         async load() {
           const result = await pool.query("select data from plateflow_store where id = $1", ["default"]);
           if (!result.rows.length) {
@@ -133,6 +136,8 @@ async function createStorage() {
   }
 
   return {
+    kind: "file",
+    persistent: false,
     async load() {
       return loadFileStore();
     },
@@ -248,6 +253,12 @@ function defaultStore() {
 
 async function persistStore() {
   await storage.save(store);
+}
+
+async function refreshStore() {
+  const latest = await storage.load();
+  for (const key of Object.keys(store)) delete store[key];
+  Object.assign(store, latest);
 }
 
 function audit(action, detail, actor = "system") {
@@ -368,7 +379,11 @@ function publicSession(session) {
     user: session.user,
     appUser: session.appUserId ? publicAppUser(store.users.find((user) => user.id === session.appUserId)) : null,
     configured: Boolean(config.onshapeClientId && config.onshapeClientSecret),
-    appBaseUrl: config.appBaseUrl
+    appBaseUrl: config.appBaseUrl,
+    storage: {
+      kind: storage.kind,
+      persistent: storage.persistent
+    }
   };
 }
 
