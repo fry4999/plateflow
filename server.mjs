@@ -4057,18 +4057,19 @@ function mergeCustomReferenceIndexes(...indexes) {
 function normalizeAssemblyCustomPart(row, input, index) {
   const text = String(row.name || "").toLowerCase();
   const shaftProfile = shaftStockProfile(row);
+  const isShaftCut = isShaftCutPart(row);
   const stock = text.includes("churro")
     ? "Churro"
     : text.includes("spacer")
       ? "Spacer Stock"
-      : text.includes("shaft")
+      : isShaftCut
         ? shaftProfile?.shape || "Shaft"
         : "Sheet/Plate";
   return ensureCustomPartNumber(applyAutoRouting({
     ...row,
     type: "custom",
     sourceType: "custom",
-    category: text.includes("shaft") ? "shaft" : text.includes("pulley") ? "pulley" : stockCategory(stock),
+    category: isShaftCut ? "shaft" : text.includes("pulley") ? "pulley" : stockCategory(stock),
     vendor: "",
     vendorSku: "",
     manufacturer: "",
@@ -4287,7 +4288,11 @@ function extractShaftLengthInchesFromText(value) {
   const lengthValue = "(\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+(?:\\.\\d+)?)";
   const unit = "(in\\.?|inch(?:es)?\\.?|[\"”]|mm|millimeters?)";
   const end = "(?=$|\\s|[),;\\]])";
+  const lengthMarker = "(?:l|long|length)";
   const patterns = [
+    new RegExp(`\\(${lengthValue}\\s*${unit}\\s*${lengthMarker}\\b[^)]*\\)`, "i"),
+    new RegExp(`\\b${lengthValue}\\s*${unit}\\s*${lengthMarker}\\b`, "i"),
+    new RegExp(`\\b${lengthMarker}\\s*(?:is|:|=|-)?\\s*${lengthValue}\\s*${unit}${end}`, "i"),
     new RegExp(`\\(${lengthValue}\\s*${unit}\\)`, "i"),
     new RegExp(`\\b(?:shaft\\s+)?(?:cut\\s+)?lengths?\\s*(?:is|:|=|-)?\\s*${lengthValue}\\s*${unit}${end}`, "i"),
     new RegExp(`\\bl\\s*(?:=|:)\\s*${lengthValue}\\s*${unit}${end}`, "i"),
