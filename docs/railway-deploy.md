@@ -46,6 +46,17 @@ Generate a session secret locally with:
 openssl rand -base64 48
 ```
 
+Optional McMaster-Carr product/price API support:
+
+```text
+MCMASTER_API_USERNAME=<approved McMaster API username>
+MCMASTER_API_PASSWORD=<approved McMaster API password>
+MCMASTER_API_CERT_B64=<base64 .pfx/.p12 client certificate>
+MCMASTER_API_CERT_PASSPHRASE=<certificate password>
+```
+
+If McMaster gives you PEM files instead, use `MCMASTER_API_CERT_B64` for the certificate and `MCMASTER_API_KEY_B64` for the private key. Without these values, PlateFlow falls back to exact McMaster part-number links and best-effort public price lookup.
+
 ## 4. Disable sleeping/serverless
 
 Keep Railway's serverless/app sleeping feature off for the PlateFlow web service. The Onshape right-panel app should load without a first-request cold boot delay.

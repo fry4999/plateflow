@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
@@ -24,6 +25,17 @@ const config = {
   frcToolsSearchUrl: process.env.FRC_TOOLS_SEARCH_URL || "https://orders.frctools.com/api/vendors/search",
   frcToolsMatchTtlMs: Number(process.env.FRC_TOOLS_MATCH_TTL_MS || 12 * 60 * 60 * 1000),
   vendorMatchTtlMs: Number(process.env.VENDOR_MATCH_TTL_MS || process.env.FRC_TOOLS_MATCH_TTL_MS || 12 * 60 * 60 * 1000),
+  mcmasterApiBase: process.env.MCMASTER_API_BASE || "https://api.mcmaster.com/v1",
+  mcmasterApiToken: process.env.MCMASTER_API_TOKEN || "",
+  mcmasterApiUsername: process.env.MCMASTER_API_USERNAME || "",
+  mcmasterApiPassword: process.env.MCMASTER_API_PASSWORD || "",
+  mcmasterApiCertPath: process.env.MCMASTER_API_CERT_PATH || "",
+  mcmasterApiCertBase64: process.env.MCMASTER_API_CERT_B64 || "",
+  mcmasterApiCert: process.env.MCMASTER_API_CERT || "",
+  mcmasterApiKeyPath: process.env.MCMASTER_API_KEY_PATH || "",
+  mcmasterApiKeyBase64: process.env.MCMASTER_API_KEY_B64 || "",
+  mcmasterApiKey: process.env.MCMASTER_API_KEY || "",
+  mcmasterApiCertPassphrase: process.env.MCMASTER_API_CERT_PASSPHRASE || "",
   trustProxy: process.env.TRUST_PROXY === "true",
   prod: process.env.NODE_ENV === "production"
 };
@@ -35,6 +47,7 @@ const sessions = new Map();
 const rateBuckets = new Map();
 const eventClients = new Map();
 const onshapeJsonCache = new Map();
+let mcmasterAuthCache = { token: "", expiresAtMs: 0 };
 let storeRevision = 0;
 let realtimeTimer = null;
 
@@ -51,7 +64,7 @@ const procurementVendorAdapters = [
   { vendor: "The Thrifty Bot", type: "shopify", baseUrl: "https://www.thethriftybot.com" },
   { vendor: "WCP", type: "shopify", baseUrl: "https://wcproducts.com" },
   { vendor: "Andymark", type: "shopify", baseUrl: "https://www.andymark.com" },
-  { vendor: "McMaster-Carr", type: "direct", baseUrl: "https://www.mcmaster.com" }
+  { vendor: "McMaster-Carr", type: "mcmaster", baseUrl: "https://www.mcmaster.com" }
 ];
 
 const mime = {
@@ -2225,6 +2238,7 @@ function inferredVendorFromSku(sku) {
 async function lookupVendorAdapter(adapter, part, query, sku, updatedAt) {
   if (adapter.type === "shopify") return lookupShopifyVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "bigcommerce") return lookupRevVendor(adapter, part, query, sku, updatedAt);
+  if (adapter.type === "mcmaster") return lookupMcmasterVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "direct") return lookupDirectVendor(adapter, part, query, sku, updatedAt);
   return null;
 }
@@ -2295,6 +2309,110 @@ async function lookupRevVendor(adapter, part, query, sku, updatedAt) {
     };
   }
   return null;
+}
+
+async function lookupMcmasterVendor(adapter, part, query, sku, updatedAt) {
+  const partNumber = normalizeMcmasterPartNumber(sku || query);
+  if (!partNumber) return null;
+  try {
+    const apiMatch = await lookupMcmasterApiVendor(adapter, part, partNumber, updatedAt);
+    if (apiMatch) return apiMatch;
+  } catch (error) {
+    // McMaster API access depends on account approval and mTLS certs; keep exact-SKU lookup usable while credentials are being set up.
+  }
+  return lookupMcmasterPublicVendor(adapter, part, partNumber, updatedAt);
+}
+
+async function lookupMcmasterApiVendor(adapter, part, partNumber, updatedAt) {
+  if (!mcmasterApiConfigured()) return null;
+  const token = await mcmasterApiToken();
+  let product = null;
+  try {
+    product = await mcmasterApiRequest("/products", {
+      method: "PUT",
+      token,
+      body: { URL: mcmasterProductUrl(adapter.baseUrl, partNumber) }
+    });
+  } catch (error) {
+    product = await mcmasterApiRequest(`/products/${encodeURIComponent(partNumber)}`, {
+      method: "GET",
+      token
+    });
+  }
+  const prices = await mcmasterApiRequest(`/products/${encodeURIComponent(partNumber)}/price`, {
+    method: "GET",
+    token
+  });
+  const price = chooseMcmasterApiPrice(prices, Number(part?.quantityNeeded || part?.quantity || 1));
+  return mcmasterMatchResult({
+    part,
+    partNumber: String(product?.PartNumber || partNumber),
+    vendor: "McMaster-Carr",
+    productUrl: mcmasterProductUrl(adapter.baseUrl, product?.PartNumber || partNumber),
+    searchUrl: vendorSearchLink("McMaster-Carr", partNumber),
+    title: [product?.FamilyDescription, product?.DetailDescription].filter(Boolean).join(" - "),
+    unitPriceCents: price?.unitPriceCents ?? null,
+    unitOfMeasure: price?.unitOfMeasure || "",
+    confidence: price ? 1 : 0.9,
+    updatedAt
+  });
+}
+
+async function lookupMcmasterPublicVendor(adapter, part, partNumber, updatedAt) {
+  const productUrl = mcmasterProductUrl(adapter.baseUrl, partNumber);
+  const shell = await fetchMcmasterPublicText(productUrl);
+  const cookie = shell.cookie;
+  const orderInfoUrl = new URL("/WebParts/OrderServer/ProductOrderInfo.aspx", adapter.baseUrl);
+  orderInfoUrl.searchParams.set("partNumber", partNumber);
+  orderInfoUrl.searchParams.set("clientNavigationEvents", "[]");
+  orderInfoUrl.searchParams.set("isNotInTablePartNumber", "true");
+  const orderInfo = await fetchMcmasterPublicJson(orderInfoUrl, { cookie, referer: productUrl });
+  const dynamicUrl = new URL("/WebParts/OrderServer/ItmPrsnttnDynamicDat.aspx", adapter.baseUrl);
+  dynamicUrl.searchParams.set("acttxt", "dynamicdat");
+  dynamicUrl.searchParams.set("partnbrtxt", partNumber);
+  const dynamicInfo = await fetchMcmasterPublicJson(dynamicUrl, { cookie, referer: productUrl });
+  const stockUrl = new URL("/WebParts/OrderServer/GetStockStatus.aspx", adapter.baseUrl);
+  stockUrl.searchParams.set("partnbrtxt", partNumber);
+  const stockInfo = await fetchMcmasterPublicJson(stockUrl, { cookie, referer: productUrl });
+  const hasEvidence = Boolean(orderInfo?.partNumber || orderInfo?.parentDescription || dynamicInfo?.PrceTxt || stockInfo?.IntrnPartNbrTxt || stockInfo?.PrceTxt);
+  if (!hasEvidence) return null;
+  const resolvedPartNumber = String(orderInfo?.partNumber || stockInfo?.PartNbrTxt || partNumber);
+  if (normalizeSku(resolvedPartNumber) && normalizeSku(resolvedPartNumber) !== normalizeSku(partNumber)) return null;
+  const priceText = orderInfo?.pricingData?.price || dynamicInfo?.PrceTxt || stockInfo?.PrceTxt || "";
+  const unitPriceCents = centsFromPrice(priceText);
+  const title = [
+    orderInfo?.parentDescription,
+    orderInfo?.suffixDescription
+  ].filter(Boolean).join(" - ");
+  return mcmasterMatchResult({
+    part,
+    partNumber: resolvedPartNumber || partNumber,
+    vendor: "McMaster-Carr",
+    productUrl,
+    searchUrl: vendorSearchLink("McMaster-Carr", partNumber),
+    title,
+    unitPriceCents,
+    unitOfMeasure: orderInfo?.unitOfMeasure || dynamicInfo?.UMTxt || "",
+    confidence: unitPriceCents === null ? 0.75 : 1,
+    updatedAt
+  });
+}
+
+function mcmasterMatchResult({ part, partNumber, vendor, productUrl, searchUrl, title, unitPriceCents, unitOfMeasure, confidence, updatedAt }) {
+  return {
+    source: "plateflow-vendor",
+    title: String(title || part?.name || partNumber).slice(0, 180),
+    sku: String(partNumber || "").slice(0, 100),
+    vendor,
+    productUrl,
+    searchUrl,
+    unitPriceCents,
+    currency: "USD",
+    variantTitle: String(unitOfMeasure || "").slice(0, 160),
+    confidence,
+    matchType: "sku_exact",
+    updatedAt
+  };
 }
 
 function lookupDirectVendor(adapter, part, query, sku, updatedAt) {
@@ -2523,6 +2641,97 @@ function vendorSearchLink(vendor, query) {
   if (canonical === "The Thrifty Bot") return `https://www.thethriftybot.com/search?q=${encoded}`;
   if (canonical === "McMaster-Carr") return value ? `https://www.mcmaster.com/${encoded}` : "https://www.mcmaster.com/";
   return "";
+}
+
+function normalizeMcmasterPartNumber(value) {
+  return String(value || "")
+    .replace(/^mcmaster[-_\s:]*/i, "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toUpperCase();
+}
+
+function mcmasterProductUrl(baseUrl, partNumber) {
+  return new URL(`/${encodeURIComponent(normalizeMcmasterPartNumber(partNumber))}/`, baseUrl).toString();
+}
+
+function chooseMcmasterApiPrice(prices, quantity = 1) {
+  if (!Array.isArray(prices) || !prices.length) return null;
+  const qty = Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+  const rows = prices
+    .map((row) => ({
+      unitPriceCents: centsFromPrice(row?.Amount),
+      minimumQuantity: Number(row?.MinimumQuantity || 0),
+      unitOfMeasure: String(row?.UnitOfMeasure || "").trim()
+    }))
+    .filter((row) => row.unitPriceCents !== null)
+    .sort((a, b) => a.minimumQuantity - b.minimumQuantity);
+  if (!rows.length) return null;
+  return [...rows].reverse().find((row) => row.minimumQuantity <= qty) || rows[0];
+}
+
+function mcmasterApiConfigured() {
+  const hasCert = Boolean(
+    config.mcmasterApiCertPath
+    || config.mcmasterApiCertBase64
+    || config.mcmasterApiCert
+  );
+  return hasCert && Boolean(config.mcmasterApiToken || (config.mcmasterApiUsername && config.mcmasterApiPassword));
+}
+
+async function mcmasterApiToken() {
+  if (config.mcmasterApiToken) return config.mcmasterApiToken;
+  const now = Date.now();
+  if (mcmasterAuthCache.token && mcmasterAuthCache.expiresAtMs > now + 60_000) return mcmasterAuthCache.token;
+  const payload = await mcmasterApiRequest("/login", {
+    method: "POST",
+    body: {
+      UserName: config.mcmasterApiUsername,
+      Password: config.mcmasterApiPassword
+    },
+    token: ""
+  });
+  const token = String(payload?.AuthToken || "");
+  if (!token) throw new Error("McMaster API login did not return an AuthToken");
+  const expiresAtMs = Date.parse(payload?.ExpirationTS || "") || now + 23 * 60 * 60 * 1000;
+  mcmasterAuthCache = { token, expiresAtMs };
+  return token;
+}
+
+async function mcmasterApiRequest(path, options = {}) {
+  const base = config.mcmasterApiBase.endsWith("/") ? config.mcmasterApiBase : `${config.mcmasterApiBase}/`;
+  const url = new URL(String(path || "").replace(/^\//, ""), base);
+  const headers = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    ...(options.token ? { Authorization: `Bearer ${options.token}` } : {})
+  };
+  return httpsJsonRequest(url, {
+    method: options.method || "GET",
+    body: options.body,
+    headers,
+    timeoutMs: options.timeoutMs || 8000,
+    tlsOptions: mcmasterTlsOptions()
+  });
+}
+
+function mcmasterTlsOptions() {
+  const cert = mcmasterEnvBuffer(config.mcmasterApiCertPath, config.mcmasterApiCertBase64, config.mcmasterApiCert);
+  const key = mcmasterEnvBuffer(config.mcmasterApiKeyPath, config.mcmasterApiKeyBase64, config.mcmasterApiKey);
+  const passphrase = config.mcmasterApiCertPassphrase || undefined;
+  const options = passphrase ? { passphrase } : {};
+  if (key) return { ...options, cert, key };
+  const certText = cert.toString("utf8");
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(certText)) return { ...options, cert, key: cert };
+  if (/-----BEGIN CERTIFICATE-----/.test(certText)) return { ...options, cert };
+  return { ...options, pfx: cert };
+}
+
+function mcmasterEnvBuffer(pathValue, base64Value, rawValue) {
+  if (pathValue) return readFileSync(pathValue);
+  if (base64Value) return Buffer.from(base64Value, "base64");
+  if (rawValue) return Buffer.from(rawValue.replace(/\\n/g, "\n"), "utf8");
+  return null;
 }
 
 function upsertVendorMatch(match) {
@@ -4360,6 +4569,48 @@ async function fetchVendorText(url, timeoutMs = 6000) {
   return response.text();
 }
 
+async function fetchMcmasterPublicText(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs || 7000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json,text/html;q=0.9,*/*;q=0.8",
+        Referer: options.referer || "https://www.mcmaster.com/",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 PlateFlow/1.0",
+        ...(options.cookie ? { Cookie: options.cookie, "X-Requested-With": "XMLHttpRequest" } : {})
+      }
+    });
+    if (!response.ok) throw new Error(`McMaster lookup returned ${response.status}`);
+    return {
+      text: await response.text(),
+      cookie: mcmasterCookieHeader(response.headers) || options.cookie || ""
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchMcmasterPublicJson(url, options = {}) {
+  try {
+    const response = await fetchMcmasterPublicText(url, options);
+    return parseJsonSafe(response.text) || {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function mcmasterCookieHeader(headers) {
+  const cookies = typeof headers.getSetCookie === "function"
+    ? headers.getSetCookie()
+    : String(headers.get("set-cookie") || "").split(/,(?=[^;,]+=)/);
+  return cookies
+    .map((cookie) => String(cookie || "").split(";")[0].trim())
+    .filter(Boolean)
+    .join("; ");
+}
+
 async function fetchVendor(url, timeoutMs = 6000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -4373,6 +4624,50 @@ async function fetchVendor(url, timeoutMs = 6000) {
     });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function httpsJsonRequest(urlValue, options = {}) {
+  const url = new URL(urlValue);
+  const body = options.body === undefined || options.body === null ? "" : JSON.stringify(options.body);
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest({
+      method: options.method || "GET",
+      hostname: url.hostname,
+      port: url.port || 443,
+      path: `${url.pathname}${url.search}`,
+      timeout: options.timeoutMs || 8000,
+      headers: {
+        ...options.headers,
+        ...(body ? { "Content-Length": Buffer.byteLength(body) } : {})
+      },
+      ...(options.tlsOptions || {})
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        const parsed = parseJsonSafe(text);
+        if (Number(response.statusCode || 0) >= 400) {
+          const message = parsed?.ErrorDescription || parsed?.ErrorMessage || text || `HTTP ${response.statusCode}`;
+          reject(new Error(`McMaster API returned ${response.statusCode}: ${String(message).slice(0, 240)}`));
+          return;
+        }
+        resolve(parsed ?? {});
+      });
+    });
+    req.on("timeout", () => req.destroy(new Error("McMaster API request timed out")));
+    req.on("error", reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function parseJsonSafe(text) {
+  try {
+    return JSON.parse(String(text || ""));
+  } catch (error) {
+    return null;
   }
 }
 
