@@ -227,10 +227,13 @@ function defaultSettings() {
     routing: {
       materials: ["Polycarbonate Smoked", "Polycarbonate Clear", "Aluminum", "Aluminium", "6061 Aluminum", "5052 Aluminum"],
       stockTypes: ["Sheet/Plate", "Tube 1x1", "Tube 1x2", "Tube 2x2", "Spacer Stock", "Churro", "Rounded Hex"],
-      machines: ["Router", "Fabworks"],
+      machines: ["Router", "Fabworks", "Manual fabrication"],
       rules: [
         { match: "polycarbonate", machines: ["Router"], stockTypes: ["Sheet/Plate"] },
         { match: "aluminum,aluminium", machines: ["Fabworks"], stockTypes: ["Sheet/Plate", "Tube 1x1", "Tube 1x2", "Tube 2x2", "Spacer Stock", "Churro", "Rounded Hex"] }
+      ],
+      autoRules: [
+        { match: "round spacer", stock: "Spacer Stock", machine: "Manual fabrication", category: "stock", fabricationIntent: "make_now" }
       ]
     }
   };
@@ -251,7 +254,8 @@ function mergeSettings(value) {
       materials: cleanStringList(value?.routing?.materials, fallback.routing.materials, 40),
       stockTypes: cleanStringList(value?.routing?.stockTypes, fallback.routing.stockTypes, 40),
       machines: cleanStringList(value?.routing?.machines, fallback.routing.machines, 40),
-      rules: cleanRoutingRules(value?.routing?.rules, fallback.routing.rules)
+      rules: cleanRoutingRules(value?.routing?.rules, fallback.routing.rules),
+      autoRules: cleanAutoRoutingRules(value?.routing?.autoRules, fallback.routing.autoRules)
     }
   };
   if (!String(merged.partNumber.template || "").includes("{number}")) {
@@ -275,6 +279,22 @@ function cleanRoutingRules(value, fallback = []) {
     stockTypes: cleanStringList(rule?.stockTypes, [], 20)
   })).filter((rule) => rule.match);
   return rules.slice(0, 40);
+}
+
+function cleanAutoRoutingRules(value, fallback = []) {
+  if (!Array.isArray(value)) return fallback;
+  const intents = new Set(["make_now", "send_out", "defer", "review_needed"]);
+  const rules = value.map((rule) => {
+    const fabricationIntent = String(rule?.fabricationIntent || "").trim().toLowerCase();
+    return {
+      match: String(rule?.match || "").trim().toLowerCase().slice(0, 120),
+      stock: String(rule?.stock || rule?.stockType || "").trim().slice(0, 80),
+      machine: String(rule?.machine || rule?.process || "").trim().slice(0, 80),
+      category: String(rule?.category || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_").slice(0, 40),
+      fabricationIntent: intents.has(fabricationIntent) ? fabricationIntent : ""
+    };
+  }).filter((rule) => rule.match && (rule.stock || rule.machine || rule.category || rule.fabricationIntent));
+  return rules.slice(0, 80);
 }
 
 function defaultStore() {
@@ -961,21 +981,34 @@ function normalizeConfiguredParts(value) {
   return value.slice(0, 50).map((item) => {
     const id = String(item.id || item.partId || "").trim().slice(0, 100);
     const partKey = String(item.partKey || item.id || item.partId || item.name || "").trim().slice(0, 140);
+    const name = String(item.name || "").trim().slice(0, 140);
+    const materialType = String(item.materialType || item.material || "").trim().slice(0, 120);
+    const partNumber = String(item.partNumber || "").trim().slice(0, 80);
     const stock = String(item.stock || "").trim().slice(0, 80);
+    const autoRule = autoRoutingRuleForPart({
+      name,
+      material: materialType,
+      partNumber,
+      category: item.category,
+      stock
+    });
+    const routedStock = stock || autoRule?.stock || "";
     if (!partKey) throw httpError(400, "Configured part is missing an Onshape part selection");
-    if (!stock) throw httpError(400, "Stock is required for custom parts");
+    if (!routedStock) throw httpError(400, "Stock is required for custom parts");
     const quantity = Math.max(1, Math.min(999, Number(item.quantity || 1)));
     return {
       id,
       partKey,
-      name: String(item.name || "").trim().slice(0, 140),
+      name,
       robotId: String(item.robotId || "").trim().slice(0, 80),
       subsystem: String(item.subsystem || "").trim().slice(0, 120),
       thickness: String(item.thickness || "").trim().slice(0, 40),
-      materialType: String(item.materialType || item.material || "").trim().slice(0, 120),
-      stock,
-      machine: String(item.machine || item.process || "").trim().slice(0, 80),
-      partNumber: String(item.partNumber || "").trim().slice(0, 80),
+      materialType,
+      stock: routedStock,
+      machine: String(item.machine || item.process || autoRule?.machine || "").trim().slice(0, 80),
+      category: String(item.category || autoRule?.category || "").trim().slice(0, 80),
+      fabricationIntent: String(item.fabricationIntent || autoRule?.fabricationIntent || "").trim().slice(0, 40),
+      partNumber,
       quantity
     };
   });
@@ -992,7 +1025,7 @@ function applyConfiguredParts(parts, configuredParts, input) {
     .filter((part) => byKey.has(part.id) || byKey.has(part.name))
     .map((part, index) => {
       const config = byKey.get(part.id) || byKey.get(part.name);
-      return {
+      return applyAutoRouting({
         ...part,
         partNumber: part.partNumber || config.partNumber || "",
         robotId: config.robotId || input.robotId || "",
@@ -1004,11 +1037,11 @@ function applyConfiguredParts(parts, configuredParts, input) {
         stock: config.stock,
         process: config.machine || "Router",
         machine: config.machine || "Router",
-        fabricationIntent: config.machine.toLowerCase() === "fabworks" ? "send_out" : "make_now",
-        category: stockCategory(config.stock),
+        fabricationIntent: config.fabricationIntent || (config.machine.toLowerCase() === "fabworks" ? "send_out" : "make_now"),
+        category: config.category || stockCategory(config.stock),
         quantity: config.quantity,
         status: "extracted"
-      };
+      });
     });
 }
 
@@ -1150,6 +1183,50 @@ function stockCategory(stock) {
   if (text.includes("tube")) return "tube";
   if (text.includes("spacer") || text.includes("churro") || text.includes("hex")) return "stock";
   return "fabricated";
+}
+
+function applyAutoRouting(part) {
+  const rule = autoRoutingRuleForPart(part);
+  if (!rule) return part;
+  const machine = rule.machine || part.machine || part.process || "";
+  return {
+    ...part,
+    stock: rule.stock || part.stock || "",
+    machine,
+    process: rule.machine || rule.process || part.process || machine,
+    category: rule.category || part.category || stockCategory(rule.stock || part.stock),
+    fabricationIntent: rule.fabricationIntent || part.fabricationIntent || (machine.toLowerCase() === "fabworks" ? "send_out" : "make_now"),
+    routingRule: rule.match
+  };
+}
+
+function autoRoutingRuleForPart(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.category,
+    part?.material,
+    part?.stock,
+    part?.bodyType
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (!text) return null;
+  return (settingsSnapshot().routing.autoRules || []).find((rule) => routingRuleMatches(rule.match, text)) || null;
+}
+
+function routingRuleMatches(match, text) {
+  const normalized = String(text || "").toLowerCase();
+  return String(match || "").toLowerCase().split(/[,|]/).map((item) => item.trim()).filter(Boolean).some((matcher) => {
+    if (!matcher) return false;
+    if (matcher.startsWith("/") && matcher.lastIndexOf("/") > 0) {
+      try {
+        const pattern = matcher.slice(1, matcher.lastIndexOf("/"));
+        return new RegExp(pattern, "i").test(normalized);
+      } catch {
+        return false;
+      }
+    }
+    return normalized.includes(matcher);
+  });
 }
 
 async function enrichPhysicalPartData(accessToken, base, input, parts, configuredParts = []) {
@@ -2629,7 +2706,7 @@ function normalizePart(part, input) {
   const machine = partCustomProperty(part, ["machine", "process", "manufacturing process"]) || "unknown";
   const category = partCustomProperty(part, ["category", "part category"]);
   const fabricationIntent = partCustomProperty(part, ["fabrication intent", "fab intent"]);
-  return {
+  return applyAutoRouting({
     id: partId,
     name: part.name || partId,
     type: "custom",
@@ -2658,7 +2735,7 @@ function normalizePart(part, input) {
       documentName: input.documentName || "",
       configuration: input.configuration || ""
     }
-  };
+  });
 }
 
 function markLikelyPurchasedParts(parts) {
@@ -3540,7 +3617,8 @@ function validateSettings(body) {
       materials: cleanStringList(routing.materials, existing.routing.materials, 80),
       stockTypes: cleanStringList(routing.stockTypes, existing.routing.stockTypes, 80),
       machines: cleanStringList(routing.machines, existing.routing.machines, 80),
-      rules: cleanRoutingRules(routing.rules, existing.routing.rules)
+      rules: cleanRoutingRules(routing.rules, existing.routing.rules),
+      autoRules: cleanAutoRoutingRules(routing.autoRules, existing.routing.autoRules)
     }
   };
 }

@@ -68,6 +68,7 @@ const els = {
   metricCots: document.querySelector("#metricCots"),
   metricFabrication: document.querySelector("#metricFabrication"),
   metricProcurement: document.querySelector("#metricProcurement"),
+  dashboardGreeting: document.querySelector("#dashboardGreeting"),
   overviewRobotPanel: document.querySelector("#overviewRobotPanel"),
   inventorySearch: document.querySelector("#inventorySearch"),
   inventoryTypeFilter: document.querySelector("#inventoryTypeFilter"),
@@ -358,8 +359,15 @@ function renderAppAccess(session) {
     `;
   }
   if (els.appLogoutLink) els.appLogoutLink.classList.toggle("hidden", !session.appAuthenticated);
+  renderDashboardGreeting(session.appUser);
   if (allowApp) startRealtime();
   else stopRealtime();
+}
+
+function renderDashboardGreeting(user) {
+  if (!els.dashboardGreeting) return;
+  const name = String(user?.name || user?.email || "").split("@")[0].trim();
+  els.dashboardGreeting.textContent = name ? `Hello, ${name}` : "Hello";
 }
 
 function canLoadDashboard(session) {
@@ -404,7 +412,7 @@ async function onImport(event) {
       body: JSON.stringify({ ...source, previewOnly })
     });
     parts = result.parts.map((part) => normalizePreviewPart(part, mode));
-    source = result.source;
+    source = { ...result.source, syncMode: mode };
     renderParts();
     if (previewOnly) {
       const cotsDetected = mode === "custom" ? parts.filter(likelyCotsPart).length : 0;
@@ -424,6 +432,7 @@ async function onImport(event) {
 
 function setSyncMode(mode) {
   const selected = mode === "cots" ? "cots" : "custom";
+  const previous = els.importForm.elements.syncMode.value || "custom";
   els.importForm.elements.syncMode.value = selected;
   els.modeTabs.forEach((button) => button.classList.toggle("active", button.dataset.mode === selected));
   if (els.syncTitle) els.syncTitle.textContent = selected === "cots" ? "Assembly BOM COTS sync" : "Part Studio custom sync";
@@ -432,6 +441,11 @@ function setSyncMode(mode) {
     else if (embeddedMode && selected === "cots") els.importSubmitButton.textContent = "Load BOM from Onshape";
     else if (selected === "cots") els.importSubmitButton.textContent = "Submit Assembly BOM";
     else els.importSubmitButton.textContent = "Submit sync batch";
+  }
+  if (previous !== selected) {
+    source = null;
+    parts = [];
+    renderParts();
   }
   renderCustomConfigurator();
   if (embeddedMode) {
@@ -649,11 +663,18 @@ function fillConfigFromSelectedPart(options = {}) {
 
 function populateRoutingSelects(part, options = {}) {
   const routing = routingSettings();
-  const rule = routingForMaterial(part?.material || "");
-  const machines = rule?.machines?.length ? rule.machines : routing.machines;
-  const stocks = rule?.stockTypes?.length ? rule.stockTypes : routing.stockTypes;
-  fillSelect(els.configMachine, machines, options.preserve ? els.configMachine?.value : "");
-  fillSelect(els.configStock, stocks, options.preserve ? els.configStock?.value : "");
+  const materialRule = routingForMaterial(part?.material || "");
+  const autoRule = autoRoutingForPart(part);
+  const machines = [
+    autoRule?.machine,
+    ...(materialRule?.machines?.length ? materialRule.machines : routing.machines)
+  ].filter(Boolean);
+  const stocks = [
+    autoRule?.stock,
+    ...(materialRule?.stockTypes?.length ? materialRule.stockTypes : routing.stockTypes)
+  ].filter(Boolean);
+  fillSelect(els.configMachine, machines, autoRule?.machine || (options.preserve ? els.configMachine?.value : ""));
+  fillSelect(els.configStock, stocks, autoRule?.stock || (options.preserve ? els.configStock?.value : ""));
 }
 
 function fillSelect(select, values, current = "") {
@@ -668,11 +689,13 @@ function fillSelect(select, values, current = "") {
 
 function routingSettings() {
   const routing = dashboardState?.settings?.routing || defaultRoutingSettings();
+  const defaults = defaultRoutingSettings();
   return {
-    materials: Array.isArray(routing.materials) && routing.materials.length ? routing.materials : defaultRoutingSettings().materials,
-    stockTypes: Array.isArray(routing.stockTypes) && routing.stockTypes.length ? routing.stockTypes : defaultRoutingSettings().stockTypes,
-    machines: Array.isArray(routing.machines) && routing.machines.length ? routing.machines : defaultRoutingSettings().machines,
-    rules: Array.isArray(routing.rules) && routing.rules.length ? routing.rules : defaultRoutingSettings().rules
+    materials: Array.isArray(routing.materials) && routing.materials.length ? routing.materials : defaults.materials,
+    stockTypes: Array.isArray(routing.stockTypes) && routing.stockTypes.length ? routing.stockTypes : defaults.stockTypes,
+    machines: Array.isArray(routing.machines) && routing.machines.length ? routing.machines : defaults.machines,
+    rules: Array.isArray(routing.rules) && routing.rules.length ? routing.rules : defaults.rules,
+    autoRules: Array.isArray(routing.autoRules) && routing.autoRules.length ? routing.autoRules : defaults.autoRules
   };
 }
 
@@ -680,19 +703,49 @@ function routingForMaterial(material) {
   const normalized = String(material || "").toLowerCase();
   if (!normalized) return null;
   return routingSettings().rules.find((rule) => {
-    const matchers = String(rule.match || "").toLowerCase().split(/[,|]/).map((item) => item.trim()).filter(Boolean);
-    return matchers.some((matcher) => normalized.includes(matcher));
+    return routingRuleMatches(rule.match, normalized);
   }) || null;
+}
+
+function autoRoutingForPart(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.category,
+    part?.material,
+    part?.stock,
+    part?.bodyType
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (!text) return null;
+  return routingSettings().autoRules.find((rule) => routingRuleMatches(rule.match, text)) || null;
+}
+
+function routingRuleMatches(match, text) {
+  const normalized = String(text || "").toLowerCase();
+  return String(match || "").toLowerCase().split(/[,|]/).map((item) => item.trim()).filter(Boolean).some((matcher) => {
+    if (matcher.startsWith("/") && matcher.lastIndexOf("/") > 0) {
+      try {
+        const pattern = matcher.slice(1, matcher.lastIndexOf("/"));
+        return new RegExp(pattern, "i").test(normalized);
+      } catch {
+        return false;
+      }
+    }
+    return normalized.includes(matcher);
+  });
 }
 
 function defaultRoutingSettings() {
   return {
     materials: ["Polycarbonate Smoked", "Polycarbonate Clear", "Aluminum", "Aluminium", "6061 Aluminum", "5052 Aluminum"],
     stockTypes: ["Sheet/Plate", "Tube 1x1", "Tube 1x2", "Tube 2x2", "Spacer Stock", "Churro", "Rounded Hex"],
-    machines: ["Router", "Fabworks"],
+    machines: ["Router", "Fabworks", "Manual fabrication"],
     rules: [
       { match: "polycarbonate", machines: ["Router"], stockTypes: ["Sheet/Plate"] },
       { match: "aluminum,aluminium", machines: ["Fabworks"], stockTypes: ["Sheet/Plate", "Tube 1x1", "Tube 1x2", "Tube 2x2", "Spacer Stock", "Churro", "Rounded Hex"] }
+    ],
+    autoRules: [
+      { match: "round spacer", stock: "Spacer Stock", machine: "Manual fabrication", category: "stock", fabricationIntent: "make_now" }
     ]
   };
 }
@@ -784,8 +837,8 @@ function formatPartNumber(settings, tokens) {
 }
 
 function onClearConfig() {
-  if (els.configStock) els.configStock.value = "";
-  if (els.configMachine) els.configMachine.value = "Router";
+  const part = selectedConfigPart();
+  populateRoutingSelects(part, { preserve: false });
   if (els.configQuantity) els.configQuantity.value = selectedConfigPart()?.quantity || 1;
   onGeneratePartNumber();
   setMessage("Cleared routing fields. Onshape material and thickness stay attached to the selected part.", "");
@@ -813,7 +866,10 @@ async function onSubmitSelectedParts() {
 }
 
 async function onSubmitAllParts() {
-  await submitCurrentParts(parts.filter((part) => part.selected && !partImportBlocked(part)), { forceQuantityFromConfigurator: false });
+  const selected = syncMode() === "cots"
+    ? parts.filter(Boolean)
+    : parts.filter((part) => part.selected && !partImportBlocked(part));
+  await submitCurrentParts(selected, { forceQuantityFromConfigurator: false });
 }
 
 async function submitCurrentParts(selectedParts, options = {}) {
@@ -841,12 +897,16 @@ async function submitConfiguredParts(selectedParts, options = {}) {
     return;
   }
   const stock = els.configStock?.value || "";
-  if (!stock) {
-    setMessage("Choose a stock type before submitting.", "error");
+  const missingStock = selected.find((part) => !(autoRoutingForPart(part)?.stock || stock || part.stock));
+  if (missingStock) {
+    setMessage(`Choose a stock type before submitting ${missingStock.name || "this part"}.`, "error");
     els.configStock?.focus();
     return;
   }
   const configuredParts = selected.map((item) => {
+    const autoRule = autoRoutingForPart(item);
+    const configuredStock = autoRule?.stock || item.stock || stock;
+    const configuredMachine = autoRule?.machine || item.machine || els.configMachine?.value || "Router";
     const generated = generateClientPartNumber(item);
     const typed = selected.length === 1 ? String(els.configPartNumber?.value || "").trim() : "";
     return {
@@ -857,8 +917,10 @@ async function submitConfiguredParts(selectedParts, options = {}) {
       subsystem: subassemblyNameFromSource(),
       thickness: item.thickness || "",
       materialType: item.material || "",
-      stock,
-      machine: els.configMachine?.value || "Router",
+      stock: configuredStock,
+      machine: configuredMachine,
+      category: autoRule?.category || "",
+      fabricationIntent: autoRule?.fabricationIntent || "",
       partNumber: typed && typed !== generated ? typed : "",
       quantity: Math.max(1, Number(options.forceQuantityFromConfigurator ? els.configQuantity?.value || item.quantity || 1 : item.quantity || 1))
     };
@@ -1096,6 +1158,15 @@ function renderSettings(settings) {
   if (els.settingsForm.elements.machines) els.settingsForm.elements.machines.value = (routing.machines || []).join("\n");
   if (els.settingsForm.elements.routingRules) {
     els.settingsForm.elements.routingRules.value = (routing.rules || []).map((rule) => `${rule.match || ""} | ${(rule.machines || []).join(", ")} | ${(rule.stockTypes || []).join(", ")}`).join("\n");
+  }
+  if (els.settingsForm.elements.autoRules) {
+    els.settingsForm.elements.autoRules.value = (routing.autoRules || []).map((rule) => [
+      rule.match || "",
+      rule.stock || "",
+      rule.machine || "",
+      rule.category || "",
+      rule.fabricationIntent || ""
+    ].join(" | ")).join("\n");
   }
   if (els.settingsSavedStatus) {
     els.settingsSavedStatus.textContent = settings?.updatedAt ? `Last saved ${formatDateTime(settings.updatedAt)}` : "Not saved yet";
@@ -2044,7 +2115,8 @@ async function onSettingsSave(event) {
           materials: parseLines(form.materials),
           stockTypes: parseLines(form.stockTypes),
           machines: parseLines(form.machines),
-          rules: parseRoutingRules(form.routingRules)
+          rules: parseRoutingRules(form.routingRules),
+          autoRules: parseAutoRoutingRules(form.autoRules)
         }
       })
     });
@@ -2070,6 +2142,13 @@ function parseRoutingRules(value) {
       machines: machines.split(",").map((item) => item.trim()).filter(Boolean),
       stockTypes: stockTypes.split(",").map((item) => item.trim()).filter(Boolean)
     };
+  }).filter((rule) => rule.match);
+}
+
+function parseAutoRoutingRules(value) {
+  return String(value || "").split(/\r?\n/).map((line) => {
+    const [match = "", stock = "", machine = "", category = "", fabricationIntent = ""] = line.split("|").map((part) => part.trim());
+    return { match, stock, machine, category, fabricationIntent };
   }).filter((rule) => rule.match);
 }
 

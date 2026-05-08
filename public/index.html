@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
     <link rel="icon" href="/plateflow-logo.png">
-    <link rel="stylesheet" href="/styles.css?v=27">
+    <link rel="stylesheet" href="/styles.css?v=28">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -59,9 +59,10 @@
         <p id="message" class="message global-message" role="status" aria-live="polite">Ready when your CAD is.</p>
         <div id="importConfirmation" class="import-confirmation hidden" role="status" aria-live="polite"></div>
         <section id="dashboard" class="dashboard app-page active-page" data-page>
+          <p id="dashboardGreeting" class="dashboard-greeting">Hello</p>
           <div class="section-heading">
-            <span class="eyebrow">Build Ops Overview</span>
-            <h2>Team state</h2>
+            <span class="eyebrow">Inventory overview</span>
+            <h2>Overview</h2>
           </div>
           <div class="metrics">
             <article><span>Imports</span><strong id="metricImports">0</strong></article>
@@ -286,6 +287,7 @@
             <select id="configMachine">
               <option>Router</option>
               <option>Fabworks</option>
+              <option>Manual fabrication</option>
             </select>
           </label>
           <label>
@@ -418,12 +420,17 @@
           </label>
           <label class="wide">
             <span>Machines/processes</span>
-            <textarea name="machines" rows="5" placeholder="Router&#10;Fabworks"></textarea>
+            <textarea name="machines" rows="5" placeholder="Router&#10;Fabworks&#10;Manual fabrication"></textarea>
           </label>
           <label class="wide">
             <span>Material routing rules</span>
             <textarea name="routingRules" rows="5" placeholder="polycarbonate | Router | Sheet/Plate&#10;aluminum, aluminium | Fabworks | Sheet/Plate, Tube 1x1"></textarea>
             <small>Format: material match | machines | stock types</small>
+          </label>
+          <label class="wide">
+            <span>Part name auto-routing rules</span>
+            <textarea name="autoRules" rows="5" placeholder="round spacer | Spacer Stock | Manual fabrication | stock | make_now"></textarea>
+            <small>Format: part-name match | stock type | machine/process | category | intent. Use this for names like ROUND Spacer 0.500 in.</small>
           </label>
           <button class="button" type="submit">Save settings</button>
           <span id="settingsSavedStatus" class="settings-status" aria-live="polite"></span>

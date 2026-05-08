@@ -555,6 +555,37 @@ td {
   align-content: start;
 }
 
+.dashboard-greeting {
+  margin: 0 0 16px;
+  color: var(--text);
+  font-size: 34px;
+  font-weight: 900;
+  line-height: 1.1;
+  opacity: 0;
+  transform: translateY(-18px);
+  animation: greeting-in 650ms cubic-bezier(.2, .8, .2, 1) 120ms forwards;
+}
+
+@keyframes greeting-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dashboard > .section-heading,
+.dashboard > .metrics,
+.dashboard > .overview-robot-panel {
+  opacity: 0;
+  animation: overview-in 520ms ease 420ms forwards;
+}
+
+@keyframes overview-in {
+  to {
+    opacity: 1;
+  }
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
