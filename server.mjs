@@ -637,12 +637,16 @@ function promoteShaftCutProcurementRowsToStockRollups() {
   for (const order of store.procurementOrders || []) {
     if (!Array.isArray(order.lines)) continue;
     const groups = new Map();
-    for (const line of order.lines) {
+    const lineIdsToRemove = new Set();
+    for (const [lineIndex, line] of order.lines.entries()) {
+      line.id = line.id || procurementLineId(order, line, lineIndex);
       if (line.shaftStockRollup || !isShaftCutPart(line)) continue;
       const profile = shaftStockProfile(line);
       const lengthInches = extractShaftLengthInches(line);
       if (!profile || !Number.isFinite(lengthInches) || lengthInches <= 0) continue;
       const quantity = Math.max(1, Number(line.quantityNeeded || line.quantity || 1));
+      ensureShaftCutManufacturingJob(order, line, profile, lengthInches, quantity);
+      lineIdsToRemove.add(line.id);
       const key = [
         line.robotId,
         line.subsystemId,
@@ -702,12 +706,99 @@ function promoteShaftCutProcurementRowsToStockRollups() {
       changed = true;
     }
     if (groups.size) {
+      order.lines = order.lines.filter((line) => !lineIdsToRemove.has(line.id));
       order.vendorGroups = groupCotsParts(order.lines);
       order.updatedAt = new Date().toISOString();
     }
   }
   if (changed) audit("procurement.shaft_rollups_promoted", "Promoted shaft cut procurement rows into WCP shaft stock rollups", "system");
   return changed;
+}
+
+function ensureShaftCutManufacturingJob(order, line, profile, lengthInches, quantity) {
+  const source = {
+    ...(line.source || {}),
+    bomRowKey: line.source?.bomRowKey || line.id,
+    partId: line.source?.partId || line.source?.bomRowKey || line.id,
+    sourceTag: line.source?.sourceTag || line.sourceDocument || "",
+    documentName: line.source?.documentName || line.sourceDocumentName || "",
+    configuration: line.source?.configuration || ""
+  };
+  const input = {
+    documentId: source.documentId || "",
+    workspaceId: source.workspaceId || "",
+    elementId: source.elementId || source.assemblyElementId || "",
+    robotId: line.robotId || "",
+    subassemblyId: line.subsystemId || "",
+    subassemblyName: line.subassemblyName || line.subsystem || "",
+    sourceTag: source.sourceTag,
+    documentName: source.documentName,
+    configuration: source.configuration
+  };
+  const customPart = ensureCustomPartNumber(applyAutoRouting({
+    ...line,
+    type: "custom",
+    sourceType: "custom",
+    category: "shaft",
+    vendor: "",
+    vendorSku: "",
+    manufacturer: "",
+    manufacturerSku: "",
+    partNumber: "",
+    material: line.material && line.material !== "Purchased" ? line.material : "Unassigned",
+    stock: profile.shape || "Shaft",
+    process: "Manual fabrication",
+    machine: "Manual fabrication",
+    fabricationIntent: "make_now",
+    quantity,
+    quantityNeeded: quantity,
+    status: "extracted",
+    procurementStatus: "",
+    vendorUrl: "",
+    productUrl: "",
+    sourceDocument: source.sourceTag,
+    sourceDocumentName: source.documentName,
+    source
+  }), input, 0);
+  const catalog = upsertCatalogPart(customPart, "custom", order.syncBatchId || "shaft-cut-manufacturing");
+  const alreadyQueued = (store.fabricationJobs || []).some((job) => (
+    (job.lines || []).some((jobLine) => jobLine.catalogPartId === catalog.id)
+  ));
+  if (alreadyQueued) return;
+  const now = new Date().toISOString();
+  store.fabricationJobs.unshift({
+    id: `F-SHAFT-${createHash("sha1").update(`${catalog.id}:${source.bomRowKey}`).digest("hex").slice(0, 8).toUpperCase()}`,
+    syncBatchId: order.syncBatchId || "shaft-cut-manufacturing",
+    status: "todo",
+    robotId: line.robotId || "",
+    subsystemId: line.subsystemId || "",
+    subassemblyName: line.subassemblyName || line.subsystem || "",
+    grouping: [{ key: `${profile.diameter || ""} ${profile.shape || "Shaft"}`.trim(), count: quantity }],
+    lines: [
+      {
+        catalogPartId: catalog.id,
+        name: line.name,
+        material: customPart.material,
+        thickness: "",
+        robotId: line.robotId || "",
+        subsystemId: line.subsystemId || "",
+        subsystem: line.subsystem || line.subassemblyName || "",
+        subassemblyName: line.subassemblyName || line.subsystem || "",
+        stock: profile.shape || "Shaft",
+        process: "Manual fabrication",
+        machine: "Manual fabrication",
+        fabricationIntent: "make_now",
+        quantityNeeded: quantity,
+        quantityMade: 0,
+        quantityReceived: 0,
+        quantityInstalled: 0,
+        lengthInches: Number(lengthInches.toFixed(3))
+      }
+    ],
+    createdAt: now,
+    updatedAt: now
+  });
+  store.fabricationJobs.splice(200);
 }
 
 function normalizeDerivedProcurementVendors() {
@@ -4189,7 +4280,7 @@ function extractShaftLengthInchesFromText(value) {
   const text = String(value || "").toLowerCase();
   if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return 0;
   const lengthValue = "(\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+(?:\\.\\d+)?)";
-  const unit = "(in(?:ch(?:es)?)?|[\"”]|mm|millimeters?)";
+  const unit = "(in\\.?|inch(?:es)?\\.?|[\"”]|mm|millimeters?)";
   const end = "(?=$|\\s|[),;\\]])";
   const patterns = [
     new RegExp(`\\b(?:shaft\\s+)?(?:cut\\s+)?lengths?\\s*(?:is|:|=|-)?\\s*${lengthValue}\\s*${unit}${end}`, "i"),
