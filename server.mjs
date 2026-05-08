@@ -418,6 +418,7 @@ async function refreshStore() {
   if (mergeDuplicateInventoryRecords()) changed = true;
   if (removeLikelyPurchasedFromCustomPipeline()) changed = true;
   if (removeKnownCustomFromProcurementPipeline()) changed = true;
+  if (normalizeShaftStockRollups()) changed = true;
   if (normalizeDerivedProcurementVendors()) changed = true;
   if (changed) await persistStore();
 }
@@ -544,6 +545,66 @@ function removeKnownCustomFromProcurementPipeline() {
   store.catalogParts = store.catalogParts.filter((part) => !removedCatalogIds.has(part.id) && !(part.sourceType === "cots" && !isProcurementEligiblePart(part, part, part.source || {})));
   audit("procurement.custom_cleanup", "Removed custom Part Studio matches from procurement; custom rows stay in manufacturing only", "system");
   return true;
+}
+
+function normalizeShaftStockRollups() {
+  let changed = false;
+  const normalizeItem = (item) => {
+    if (!item?.shaftStockRollup) return false;
+    const sourceRows = Array.isArray(item.shaftSourceRows) ? item.shaftSourceRows : [];
+    if (!sourceRows.length) return false;
+    const stockLengthInches = Number(item.stockLengthInches || 36) || 36;
+    let totalInches = 0;
+    const normalizedRows = [];
+    for (const row of sourceRows) {
+      const parsedLength = extractShaftLengthInchesFromText(row?.name || "");
+      const fallbackLength = Number(row?.lengthInches || 0);
+      const lengthInches = parsedLength || (fallbackLength > 0 && fallbackLength <= 144 ? fallbackLength : 0);
+      if (!Number.isFinite(lengthInches) || lengthInches <= 0) continue;
+      const quantity = Math.max(1, Number(row?.quantity || 1));
+      totalInches += lengthInches * quantity;
+      normalizedRows.push({ ...row, quantity, lengthInches: Number(lengthInches.toFixed(3)) });
+    }
+    if (!totalInches) return false;
+    const quantityNeeded = Math.max(1, Math.ceil(totalInches / stockLengthInches));
+    const nextName = String(item.name || "").replace(/\([^)]*needed\)/, `(${formatInches(totalInches)} needed)`);
+    let itemChanged = false;
+    if (Number(item.quantityNeeded || item.quantity || 0) !== quantityNeeded) {
+      item.quantityNeeded = quantityNeeded;
+      item.quantity = quantityNeeded;
+      itemChanged = true;
+    }
+    if (Number(item.totalShaftLengthInches || 0) !== Number(totalInches.toFixed(3))) {
+      item.totalShaftLengthInches = Number(totalInches.toFixed(3));
+      itemChanged = true;
+    }
+    if (nextName && nextName !== item.name) {
+      item.name = nextName;
+      itemChanged = true;
+    }
+    if (JSON.stringify(item.shaftSourceRows) !== JSON.stringify(normalizedRows)) {
+      item.shaftSourceRows = normalizedRows;
+      itemChanged = true;
+    }
+    return itemChanged;
+  };
+
+  for (const record of store.inventoryRecords || []) {
+    for (const part of record.parts || []) {
+      if (normalizeItem(part)) changed = true;
+    }
+  }
+  for (const part of store.catalogParts || []) {
+    if (normalizeItem(part)) changed = true;
+  }
+  for (const order of store.procurementOrders || []) {
+    for (const line of order.lines || []) {
+      if (normalizeItem(line)) changed = true;
+    }
+    if (changed) order.vendorGroups = groupCotsParts(order.lines || []);
+  }
+  if (changed) audit("procurement.shaft_rollups_normalized", "Normalized shaft stock rollup quantities from parsed cut lengths", "system");
+  return changed;
 }
 
 function normalizeDerivedProcurementVendors() {
@@ -3657,6 +3718,7 @@ function shouldRouteAssemblyRowToManufacturing(part, input = {}) {
   if (part?.shaftStockRollup) return false;
   if (isLikelyPurchasedPart(part)) return false;
   if (isExplicitVendorStockRollup(part)) return false;
+  if (isVendorShaftStockItem(part)) return false;
   if (isShaftCutPart(part)) return true;
   if (matchesKnownCustomPart(part, input)) return true;
   if (isManufacturedByName(part)) return true;
@@ -3676,6 +3738,15 @@ function isExplicitVendorStockRollup(part) {
   ].filter(Boolean).join(" ").toLowerCase();
   if (/\b(?:stock|material|procurement)\s+rollups?\b|\brollups?\s+(?:stock|material|procurement)\b/.test(text)) return true;
   return isShaftStockProcurementText(text) && /\bshaft\s+stock\b|\bstock\s+shaft\b/.test(text);
+}
+
+function isVendorShaftStockItem(part) {
+  if (!part || part.shaftStockRollup || !hasProcurementIdentity(part)) return false;
+  const text = shaftDescriptorText(part);
+  if (!isShaftStockProcurementText(text)) return false;
+  if (/\bshaft\s+stock\b|\bstock\s+shaft\b/.test(text)) return true;
+  const sku = procurementSku(part);
+  return Boolean(inferredVendorFromSku(sku)) && extractShaftLengthInches(part) >= 24;
 }
 
 function hasProcurementIdentity(part) {
@@ -3980,22 +4051,28 @@ function extractShaftLengthInchesFromText(value) {
   const text = String(value || "").toLowerCase();
   if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return 0;
   const lengthValue = "(\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+(?:\\.\\d+)?)";
-  const unit = "(?:in(?:ch(?:es)?)?|[\"”])";
+  const unit = "(in(?:ch(?:es)?)?|[\"”]|mm|millimeters?)";
+  const end = "(?=$|\\s|[),;\\]])";
   const patterns = [
-    new RegExp(`\\b(?:shaft\\s+)?(?:cut\\s+)?lengths?\\s*(?:is|:|=|-)?\\s*${lengthValue}\\s*${unit}?\\b`, "i"),
-    new RegExp(`\\bl\\s*(?:=|:)\\s*${lengthValue}\\s*${unit}?\\b`, "i"),
+    new RegExp(`\\b(?:shaft\\s+)?(?:cut\\s+)?lengths?\\s*(?:is|:|=|-)?\\s*${lengthValue}\\s*${unit}${end}`, "i"),
+    new RegExp(`\\bl\\s*(?:=|:)\\s*${lengthValue}\\s*${unit}${end}`, "i"),
     new RegExp(`\\b${lengthValue}\\s*${unit}\\s*(?:long|length)\\b`, "i"),
-    new RegExp(`\\bshaft\\b[^\\d]{0,40}${lengthValue}\\s*${unit}?\\b`, "i"),
-    new RegExp(`\\b${lengthValue}\\s*${unit}\\s+(?:rounded\\s+hex|rounded|round|hex)\\s+shaft\\b`, "i"),
-    new RegExp(`\\b${lengthValue}\\s*[\"”]\\s*(?:rounded\\s+hex|rounded|round|hex)?\\s*shaft\\b`, "i")
+    new RegExp(`\\bshaft\\b[^\\d]{0,40}${lengthValue}\\s*${unit}${end}`, "i"),
+    new RegExp(`\\b${lengthValue}\\s*${unit}\\s+(?:rounded\\s+hex|rounded|round|hex)?\\s*shaft\\b`, "i")
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (!match) continue;
-    const inches = parseInchesValue(match[1]);
-    if (Number.isFinite(inches) && inches > 0.75) return inches;
+    const inches = parseLengthAsInches(match[1], match[2]);
+    if (Number.isFinite(inches) && inches > 0.75 && inches <= 144) return inches;
   }
   return 0;
+}
+
+function parseLengthAsInches(value, unit) {
+  const length = parseInchesValue(value);
+  if (!Number.isFinite(length) || length <= 0) return 0;
+  return /^mm|millimeter/i.test(String(unit || "")) ? length / 25.4 : length;
 }
 
 function parseInchesValue(value) {
