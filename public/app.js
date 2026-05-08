@@ -1784,11 +1784,14 @@ function renderProcurementSubassembly(subassembly) {
 }
 
 function renderProcurementLine(line) {
-  const name = line.matchedTitle || line.name || "Purchased item";
+  const exact = line.matchStatus === "sku_exact" || line.matchStatus === "manual";
+  const name = exact ? line.matchedTitle || line.name || "Purchased item" : line.name || "Purchased item";
   const sku = line.vendorSku || line.partNumber || line.manufacturerSku || "No SKU";
   const unit = line.unitPriceCents == null ? "price n/a" : formatMoney(line.unitPriceCents);
   const total = line.totalPriceCents == null ? "n/a" : formatMoney(line.totalPriceCents);
   const neededBy = Array.isArray(line.neededBy) ? line.neededBy.map((item) => `${item.robotName || "Project"} / ${item.subassemblyName || "Unassigned"} x${Number(item.quantityNeeded || 0)}`).join("\n") : "";
+  const actionUrl = line.productUrl || line.searchUrl || "";
+  const actionLabel = line.productUrl ? "Open" : "Search";
   return `
     <div class="procurement-line">
       <div class="procurement-line-main">
@@ -1797,10 +1800,12 @@ function renderProcurementLine(line) {
         ${neededBy ? `<span class="needed-tooltip compact" tabindex="0">Needed by<span role="tooltip">${escapeHtml(neededBy).replace(/\n/g, "<br>")}</span></span>` : ""}
       </div>
       <span class="match-chip ${escapeAttr(line.matchStatus || "unmatched")}">${escapeHtml(procurementMatchLabel(line.matchStatus))}</span>
-      <span class="price-cell">qty ${Number(line.quantityNeeded || 0)}</span>
-      <span class="price-cell">${escapeHtml(unit)}</span>
-      <strong class="price-cell">${escapeHtml(total)}</strong>
-      ${line.productUrl ? `<a class="ghost small" href="${escapeAttr(line.productUrl)}" target="_blank" rel="noreferrer">Open</a>` : `<span class="ghost small disabled">No link</span>`}
+      <span class="price-pack">
+        <b>qty ${Number(line.quantityNeeded || 0)}</b>
+        <b>${escapeHtml(unit)}</b>
+        <strong>${escapeHtml(total)}</strong>
+      </span>
+      ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
     </div>
   `;
 }
@@ -1825,11 +1830,10 @@ function renderProcurementOrderStatus(order) {
 }
 
 function procurementMatchLabel(status) {
-  if (status === "sku_exact") return "SKU match";
-  if (status === "vendor_hint") return "Vendor match";
-  if (status === "search_result" || status === "matched") return "Matched";
+  if (status === "sku_exact") return "Exact SKU";
+  if (status === "manual") return "Manual";
   if (status === "lookup_failed") return "Lookup failed";
-  return "Review";
+  return "Needs review";
 }
 
 function formatMoney(cents) {

@@ -1687,7 +1687,7 @@ body.dialog-open {
 
 .vendor-order-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
   gap: 12px;
 }
 
@@ -1761,11 +1761,12 @@ body.dialog-open {
 
 .procurement-line {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 110px 70px 96px 110px 70px;
+  grid-template-columns: minmax(0, 1fr) auto minmax(150px, auto) auto;
   align-items: center;
   gap: 10px;
   padding: 10px 0;
   border-top: 1px solid var(--line);
+  min-width: 0;
 }
 
 .procurement-line:first-child {
@@ -1775,12 +1776,29 @@ body.dialog-open {
 .procurement-line-main {
   display: grid;
   gap: 3px;
+  min-width: 0;
 }
 
-.price-cell {
+.procurement-line-main strong,
+.procurement-line-main small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.price-pack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 10px;
   color: var(--ink);
   font-weight: 900;
   text-align: right;
+  white-space: nowrap;
+}
+
+.price-pack b {
+  font: inherit;
+  color: var(--ink);
 }
 
 .match-chip {
@@ -1794,20 +1812,15 @@ body.dialog-open {
   background: rgba(34, 197, 94, .12);
   font-size: 11px;
   font-weight: 900;
+  white-space: nowrap;
 }
 
 .match-chip.unmatched,
-.match-chip.lookup_failed {
+.match-chip.lookup_failed,
+.match-chip.review_needed {
   border-color: rgba(239, 68, 68, .35);
   color: #ef4444;
   background: rgba(239, 68, 68, .12);
-}
-
-.match-chip.search_result,
-.match-chip.vendor_hint {
-  border-color: rgba(234, 179, 8, .45);
-  color: var(--yellow);
-  background: rgba(234, 179, 8, .12);
 }
 
 .needed-tooltip.compact {
@@ -2329,7 +2342,8 @@ body.dialog-open {
     align-items: start;
   }
 
-  .price-cell {
+  .price-pack {
+    justify-content: start;
     text-align: left;
   }
 }

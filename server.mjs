@@ -2020,8 +2020,14 @@ function procurementLineInScope(line, options = {}) {
 
 function applyProcurementMatch(line, catalog, match) {
   const quantity = Number(line.quantityNeeded || catalog.quantityNeeded || 1);
-  if (!match || match.error) {
-    line.vendorUrl ||= vendorLink(line.vendor || catalog.vendor, procurementSku(line) || procurementSku(catalog), line.name || catalog.name);
+  if (!match || match.error || !trustedProcurementMatchStatus(match.matchType)) {
+    const sku = procurementSku(line) || procurementSku(catalog);
+    line.vendorUrl = "";
+    line.productUrl = "";
+    line.searchUrl = match?.searchUrl || frcToolsSearchLink(sku || line.name || catalog.name);
+    line.matchedTitle = "";
+    line.unitPriceCents = null;
+    line.totalPriceCents = null;
     line.matchStatus = match?.error ? "lookup_failed" : "unmatched";
     line.matchError = match?.error || "";
     return;
@@ -2108,7 +2114,8 @@ async function frcToolsVendorMatch(part, options = {}) {
           title: "",
           sku: procurementSku(part),
           vendor: part.vendor || "Unassigned",
-          productUrl: vendorLink(part.vendor, procurementSku(part), part.name),
+          productUrl: "",
+          searchUrl: frcToolsSearchLink(query),
           unitPriceCents: null,
           confidence: 0,
           matchType: "unmatched",
@@ -2125,7 +2132,8 @@ async function frcToolsVendorMatch(part, options = {}) {
       title: "",
       sku: procurementSku(part),
       vendor: part.vendor || "Unassigned",
-      productUrl: vendorLink(part.vendor, procurementSku(part), part.name),
+      productUrl: "",
+      searchUrl: frcToolsSearchLink(query),
       unitPriceCents: null,
       confidence: 0,
       matchType: "lookup_failed",
@@ -2158,12 +2166,7 @@ function chooseFrcToolsHit(hits, part) {
     const exact = hits.find((hit) => hitSkus(hit).some((hitSku) => normalizeSku(hitSku) === sku));
     if (exact) return { ...exact, _matchType: "sku_exact", _confidence: 1 };
   }
-  const vendor = normalizeKey(part?.vendor || "");
-  if (vendor) {
-    const vendorHit = hits.find((hit) => normalizeKey(hit.vendorName || hit.vendor || "").includes(vendor) || vendor.includes(normalizeKey(hit.vendorName || "")));
-    if (vendorHit) return { ...vendorHit, _matchType: "vendor_hint", _confidence: 0.78 };
-  }
-  return { ...hits[0], _matchType: "search_result", _confidence: 0.62 };
+  return null;
 }
 
 function hitSkus(hit) {
@@ -2189,6 +2192,7 @@ function normalizeFrcToolsHit(id, query, hit, part, updatedAt) {
     vendorHostname: String(hit.vendorHostname || "").slice(0, 120),
     vendorType: String(hit.vendorType || "").slice(0, 40),
     productUrl: String(hit.originalUrl || hit.url || vendorLink(hit.vendorName, skus[0], hit.title)).slice(0, 400),
+    searchUrl: frcToolsSearchLink(query),
     image: String(hit.image || "").slice(0, 400),
     unitPriceCents,
     currency: hit.currency || "USD",
@@ -2199,6 +2203,16 @@ function normalizeFrcToolsHit(id, query, hit, part, updatedAt) {
     updatedAt,
     expiresAtMs: Date.now() + config.frcToolsMatchTtlMs
   };
+}
+
+function trustedProcurementMatchStatus(status) {
+  return status === "sku_exact" || status === "manual";
+}
+
+function frcToolsSearchLink(query) {
+  const url = new URL("https://orders.frctools.com/search");
+  url.searchParams.set("q", String(query || "").trim());
+  return url.toString();
 }
 
 function upsertVendorMatch(match) {
@@ -2252,23 +2266,26 @@ function procurementLines() {
       const subassemblyId = line.subsystemId || catalog.subsystemId || "";
       const subsystem = robot?.subsystems?.find((item) => item.id === subassemblyId);
       const quantity = Number(line.quantityNeeded || catalog.quantityNeeded || 1);
-      const unitPriceCents = line.unitPriceCents ?? catalog.unitPriceCents ?? null;
-      const vendor = line.vendor || catalog.vendor || "Unassigned";
+      const trusted = trustedProcurementMatchStatus(line.matchStatus);
+      const unitPriceCents = trusted ? line.unitPriceCents ?? catalog.unitPriceCents ?? null : null;
+      const vendor = trusted ? line.vendor || catalog.vendor || "Unassigned" : inferredProcurementVendor(line, catalog);
+      const sku = line.vendorSku || catalog.vendorSku || line.partNumber || catalog.partNumber || line.manufacturerSku || catalog.manufacturerSku || "";
       return {
         orderId: order.id,
         syncBatchId: order.syncBatchId || "",
         catalogPartId: line.catalogPartId || catalog.id || "",
         name: line.name || catalog.name || "Purchased item",
-        matchedTitle: line.matchedTitle || catalog.matchedTitle || "",
+        matchedTitle: trusted ? line.matchedTitle || catalog.matchedTitle || "" : "",
         vendor,
         vendorId: line.vendorId || catalog.vendorId || "",
-        vendorSku: line.vendorSku || catalog.vendorSku || "",
-        partNumber: line.partNumber || catalog.partNumber || line.vendorSku || catalog.vendorSku || "",
+        vendorSku: sku,
+        partNumber: line.partNumber || catalog.partNumber || sku,
         manufacturer: line.manufacturer || catalog.manufacturer || "",
         manufacturerSku: line.manufacturerSku || catalog.manufacturerSku || "",
-        productUrl: line.productUrl || line.vendorUrl || catalog.productUrl || catalog.vendorUrl || vendorLink(vendor, line.vendorSku || catalog.vendorSku, line.name || catalog.name),
-        vendorUrl: line.vendorUrl || catalog.vendorUrl || "",
-        variantTitle: line.variantTitle || "",
+        productUrl: trusted ? line.productUrl || line.vendorUrl || catalog.productUrl || catalog.vendorUrl || "" : "",
+        vendorUrl: trusted ? line.vendorUrl || catalog.vendorUrl || "" : "",
+        searchUrl: line.searchUrl || frcToolsSearchLink(sku || line.name || catalog.name),
+        variantTitle: trusted ? line.variantTitle || "" : "",
         quantityNeeded: quantity,
         quantityOrdered: Number(line.quantityOrdered || 0),
         quantityReceived: Number(line.quantityReceived || 0),
@@ -2276,8 +2293,8 @@ function procurementLines() {
         totalPriceCents: unitPriceCents == null ? null : unitPriceCents * quantity,
         currency: line.currency || "USD",
         status: line.status || order.status || "needed",
-        matchStatus: line.matchStatus || (line.productUrl || catalog.productUrl ? "matched" : "unmatched"),
-        matchConfidence: line.matchConfidence ?? catalog.matchConfidence ?? null,
+        matchStatus: trusted ? line.matchStatus : line.matchError ? "lookup_failed" : "unmatched",
+        matchConfidence: trusted ? line.matchConfidence ?? catalog.matchConfidence ?? null : null,
         matchError: line.matchError || "",
         priceUpdatedAt: line.priceUpdatedAt || catalog.priceUpdatedAt || "",
         robotId: line.robotId || catalog.robotId || "",
@@ -2290,6 +2307,16 @@ function procurementLines() {
       };
     });
   });
+}
+
+function inferredProcurementVendor(line, catalog) {
+  const sku = String(line.vendorSku || catalog.vendorSku || line.partNumber || catalog.partNumber || line.manufacturerSku || catalog.manufacturerSku || "").trim();
+  const normalized = sku.toLowerCase();
+  if (/^rev[-_]/.test(normalized)) return "REV";
+  if (/^wcp[-_]/.test(normalized)) return "WCP";
+  if (/^am[-_]/.test(normalized)) return "Andymark";
+  if (/^ttb[-_]/.test(normalized)) return "The Thrifty Bot";
+  return line.vendor && line.vendor !== "Unassigned" ? line.vendor : catalog.vendor || "Unassigned";
 }
 
 function buildVendorBuckets(lines) {
