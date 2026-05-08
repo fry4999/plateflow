@@ -2059,6 +2059,20 @@ body.dialog-open {
   background: var(--soft);
 }
 
+.procurement-editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.procurement-editor-head strong {
+  color: var(--ink);
+}
+
 .procurement-edit-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));

@@ -2267,6 +2267,10 @@ function renderProcurementLine(line) {
         </span>
       </div>
       <div class="procurement-editor hidden">
+        <div class="procurement-editor-head">
+          <strong>Edit line</strong>
+          <button class="button small" type="button" data-action="save-procurement-line">Save line</button>
+        </div>
         <div class="procurement-edit-grid">
           <label class="span-2">
             <span>Name</span>
@@ -2301,7 +2305,7 @@ function renderProcurementLine(line) {
             <span>Link</span>
             <input data-field="productUrl" value="${escapeAttr(actionUrl)}">
           </label>
-          <button class="primary small" type="button" data-action="save-procurement-line">Save changes</button>
+          <button class="primary small" type="button" data-action="save-procurement-line">Save line</button>
         </div>
       </div>
     </div>

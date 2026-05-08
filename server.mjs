@@ -4193,7 +4193,7 @@ function shaftStockPlannedLengthInches(totalInches, sourceRows = []) {
 
 function shaftStockProfile(part) {
   const text = shaftDescriptorText(part);
-  if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return null;
+  if (!isShaftLikeText(text) || isExcludedShaftAccessoryText(text)) return null;
   const shape = /\b(churro|rounded\s+hex)\b/.test(text)
     ? "Rounded Hex"
     : /\bhex\b/.test(text)
@@ -4219,6 +4219,11 @@ function shaftStockSku(profile = {}) {
 
 function shaftStockDisplayName(profile = {}) {
   return [profile.diameter, profile.shape === "Shaft" ? "" : profile.shape, "Shaft Stock"].filter(Boolean).join(" ") || "Shaft Stock";
+}
+
+function isShaftLikeText(value) {
+  const text = String(value || "").toLowerCase();
+  return /\bshaft\b/.test(text) || /\brounded\s+hex\b/.test(text) || /\bchurro\b/.test(text);
 }
 
 function shaftDescriptorText(part) {
@@ -4251,7 +4256,7 @@ function isShaftCutPart(part) {
 
 function isShaftCutText(value) {
   const text = String(value || "").toLowerCase();
-  if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return false;
+  if (!isShaftLikeText(text) || isExcludedShaftAccessoryText(text)) return false;
   if (/\bshaft\s+stock\b|\bstock\s+shaft\b/.test(text) && !/\b(?:length|long|cut)\b/.test(text)) return false;
   return extractShaftLengthInchesFromText(text) > 0;
 }
@@ -4278,11 +4283,12 @@ function extractShaftLengthInches(part) {
 
 function extractShaftLengthInchesFromText(value) {
   const text = String(value || "").toLowerCase();
-  if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return 0;
+  if (!isShaftLikeText(text) || isExcludedShaftAccessoryText(text)) return 0;
   const lengthValue = "(\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+(?:\\.\\d+)?)";
   const unit = "(in\\.?|inch(?:es)?\\.?|[\"”]|mm|millimeters?)";
   const end = "(?=$|\\s|[),;\\]])";
   const patterns = [
+    new RegExp(`\\(${lengthValue}\\s*${unit}\\)`, "i"),
     new RegExp(`\\b(?:shaft\\s+)?(?:cut\\s+)?lengths?\\s*(?:is|:|=|-)?\\s*${lengthValue}\\s*${unit}${end}`, "i"),
     new RegExp(`\\bl\\s*(?:=|:)\\s*${lengthValue}\\s*${unit}${end}`, "i"),
     new RegExp(`\\b${lengthValue}\\s*${unit}\\s*(?:long|length)\\b`, "i"),
@@ -4404,7 +4410,7 @@ function normalizeCotsRow(row, input, index) {
 
 function isShaftStockProcurementText(value) {
   const text = String(value || "").toLowerCase();
-  if (!/\bshaft\b/.test(text)) return false;
+  if (!isShaftLikeText(text)) return false;
   if (/\b(collar|bearing|gearbox|motor)\b/.test(text)) return false;
   return /\b(stock|hex|round|rounded|churro|tube|bar|rod)\b/.test(text);
 }
