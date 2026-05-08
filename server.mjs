@@ -508,7 +508,7 @@ function removeKnownCustomFromProcurementPipeline() {
     if (record.sourceType !== "cots" || !Array.isArray(record.parts)) continue;
     const keep = [];
     for (const part of record.parts) {
-      if (!shouldRouteAssemblyRowToManufacturing(part, record.source || part.source || {})) {
+      if (isProcurementEligiblePart(part, part, record.source || part.source || {})) {
         keep.push(part);
         continue;
       }
@@ -522,10 +522,10 @@ function removeKnownCustomFromProcurementPipeline() {
   for (const order of store.procurementOrders || []) {
     if (!Array.isArray(order.lines)) continue;
     const before = order.lines.length;
-    order.lines = order.lines.filter((line) => (
-      line.shaftStockRollup ||
-      (!removedCatalogIds.has(line.catalogPartId) && !shouldRouteAssemblyRowToManufacturing(line, line.source || {}))
-    ));
+    order.lines = order.lines.filter((line) => {
+      const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
+      return !removedCatalogIds.has(line.catalogPartId) && isProcurementEligiblePart(line, catalog, line.source || catalog.source || {});
+    });
     if (order.lines.length !== before) {
       changed = true;
       order.vendorGroups = groupCotsParts(order.lines);
@@ -539,9 +539,9 @@ function removeKnownCustomFromProcurementPipeline() {
   store.procurementOrders = store.procurementOrders.filter((order) => Array.isArray(order.lines) && order.lines.length);
   store.requirements = store.requirements.filter((requirement) => (
     requirement.sourceType !== "cots" ||
-    (!removedCatalogIds.has(requirement.catalogPartId) && !shouldRouteAssemblyRowToManufacturing(requirement, {}))
+    (!removedCatalogIds.has(requirement.catalogPartId) && isProcurementEligiblePart(requirement, {}, {}))
   ));
-  store.catalogParts = store.catalogParts.filter((part) => !removedCatalogIds.has(part.id) && !(part.sourceType === "cots" && shouldRouteAssemblyRowToManufacturing(part, part.source || {})));
+  store.catalogParts = store.catalogParts.filter((part) => !removedCatalogIds.has(part.id) && !(part.sourceType === "cots" && !isProcurementEligiblePart(part, part, part.source || {})));
   audit("procurement.custom_cleanup", "Removed custom Part Studio matches from procurement; custom rows stay in manufacturing only", "system");
   return true;
 }
@@ -1539,7 +1539,7 @@ async function importCots(req, res, session) {
   const shaftStockRows = aggregateShaftStockProcurementRows(normalized, input);
   const importRows = [...normalized, ...shaftStockRows];
   if (body.previewOnly) return json(res, 200, { parts: importRows, source: input });
-  const cotsRows = importRows.filter((row) => row.sourceType !== "custom");
+  const cotsRows = importRows.filter((row) => row.sourceType !== "custom" && isProcurementEligiblePart(row, row));
   const customRows = normalized.filter((row) => row.sourceType === "custom");
   let saved = null;
   let customSaved = null;
@@ -2070,6 +2070,11 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     machine: part.machine || part.process || "",
     process: part.process || "",
     fabricationIntent: part.fabricationIntent || "",
+    description: part.description || existing?.description || "",
+    shaftStockRollup: Boolean(part.shaftStockRollup || existing?.shaftStockRollup),
+    totalShaftLengthInches: part.totalShaftLengthInches ?? existing?.totalShaftLengthInches,
+    stockLengthInches: part.stockLengthInches ?? existing?.stockLengthInches,
+    shaftSourceRows: Array.isArray(part.shaftSourceRows) ? part.shaftSourceRows : existing?.shaftSourceRows || [],
     status: part.status || (sourceType === "custom" ? "extracted" : "needed"),
     onHand: Number(part.onHand ?? existing?.onHand ?? 0),
     reserved: Number(part.reserved ?? existing?.reserved ?? 0),
@@ -2157,6 +2162,14 @@ async function upsertOperationalQueue(batchId, sourceType, catalogParts, previou
       manufacturer: part.manufacturer || "",
       manufacturerSku: part.manufacturerSku || "",
       partNumber: part.partNumber || part.vendorSku || part.manufacturerSku || "",
+      category: part.category || "",
+      material: part.material || "",
+      stock: part.stock || "",
+      description: part.description || "",
+      shaftStockRollup: Boolean(part.shaftStockRollup),
+      totalShaftLengthInches: part.totalShaftLengthInches,
+      stockLengthInches: part.stockLengthInches,
+      shaftSourceRows: Array.isArray(part.shaftSourceRows) ? part.shaftSourceRows : [],
       vendorUrl: part.vendorUrl || vendorLink(part.vendor, part.vendorSku || part.manufacturerSku || part.partNumber, part.name),
       robotId: part.robotId || "",
       subsystemId: part.subsystemId || "",
@@ -3021,7 +3034,10 @@ function procurementSnapshot(cotsParts = []) {
   const projectBuckets = buildProcurementProjectBuckets(lines);
   return {
     orders: store.procurementOrders.map((order) => {
-      const lines = (order.lines || []).filter((line) => !isAssemblyManufacturedPart(line));
+      const lines = (order.lines || []).filter((line) => {
+        const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
+        return isProcurementEligiblePart(line, catalog, line.source || catalog.source || {});
+      });
       return { ...order, lines, vendorGroups: groupCotsParts(lines) };
     }).filter((order) => order.lines.length).slice(0, 20),
     items: cotsParts,
@@ -3062,7 +3078,10 @@ function procurementAvailableProjects(projectBuckets = []) {
 
 function procurementLines() {
   return (store.procurementOrders || []).flatMap((order) => {
-    const rawLines = (Array.isArray(order.lines) ? order.lines : []).filter((line) => !isAssemblyManufacturedPart(line));
+    const rawLines = (Array.isArray(order.lines) ? order.lines : []).filter((line) => {
+      const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
+      return isProcurementEligiblePart(line, catalog, line.source || catalog.source || {});
+    });
     return rawLines.map((line, index) => {
       line.id = line.id || procurementLineId(order, line, index);
       const lineKey = procurementLineKey(order.id, line.id);
@@ -3329,7 +3348,11 @@ function dashboardSnapshot(user = null) {
   ensureIndividualFabricationJobs();
   const inventory = inventorySnapshot();
   const customParts = inventory.parts.filter((part) => part.sourceType === "custom");
-  const cotsParts = inventory.parts.filter((part) => part.sourceType === "cots");
+  const cotsParts = inventory.parts.filter((part) => {
+    if (part.sourceType !== "cots") return false;
+    const catalog = store.catalogParts.find((item) => item.id === part.catalogPartId) || {};
+    return isProcurementEligiblePart(part, catalog, part.source || catalog.source || {});
+  });
   const robots = robotSnapshot();
   const adminVisible = user?.role === "admin";
   return {
@@ -3337,7 +3360,11 @@ function dashboardSnapshot(user = null) {
       partsMissing: inventory.parts.reduce((sum, part) => sum + Math.max(0, Number(part.quantity || 1) - Number(part.onHand || 0)), 0),
       partsOnOrder: store.procurementOrders.reduce((sum, order) => {
         const lines = Array.isArray(order.lines) ? order.lines : Array.isArray(order.parts) ? order.parts : [];
-        return sum + lines.reduce((lineSum, line) => lineSum + Number(line.quantityOrdered || line.quantity || 0), 0);
+        return sum + lines.reduce((lineSum, line) => {
+          const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
+          if (!isProcurementEligiblePart(line, catalog, line.source || catalog.source || {})) return lineSum;
+          return lineSum + Number(line.quantityOrdered || line.quantity || 0);
+        }, 0);
       }, 0),
       partsInFabrication: store.fabricationJobs.filter((job) => job.status !== "canceled").length,
       partsReceivedToday: 0,
@@ -3598,14 +3625,14 @@ function isManufacturedByName(part) {
     part?.description
   ].filter(Boolean).join(" ").toLowerCase();
   if (!text) return false;
-  if (/\bshaft\s+collar\b/.test(text)) return false;
+  if (isExcludedShaftAccessoryText(text)) return false;
   if (/\bshaft\s+stock\b|\bstock\s+shaft\b/.test(text)) return false;
+  if (isShaftCutText(text)) return true;
   return [
     /\bcustom\b.*\bpulley\b/,
     /\bcustom\s+htd\s*5\b.*\bpulley\b/,
-    /\bshaft\s+lengths?\b/,
-    /\b(?:hex|rounded|round)?\s*shaft\b/,
-    /\b\d+(?:\.\d+)?\s*(?:in|inch|")\s+(?:hex\s+|round\s+|rounded\s+)?shaft\b/,
+    /\bround\s+spacers?\b/,
+    /\bspacer\s+stock\b/,
     /\b(plate|gusset|bracket|bellypan|belly\s+pan)\b/
   ].some((pattern) => pattern.test(text));
 }
@@ -3614,15 +3641,41 @@ function isAssemblyManufacturedPart(part) {
   return shouldRouteAssemblyRowToManufacturing(part, part?.source || {});
 }
 
+function isProcurementEligiblePart(line = {}, catalog = {}, input = {}) {
+  if (line?.shaftStockRollup || catalog?.shaftStockRollup) return true;
+  if (line?.sourceType === "custom" || catalog?.sourceType === "custom") return false;
+  if (line?.type === "custom" || catalog?.type === "custom") return false;
+  if (matchesExistingCustomCatalogEntry(line, input) || matchesExistingCustomCatalogEntry(catalog, catalog?.source || input)) return false;
+  if (catalog && Object.keys(catalog).length && shouldRouteAssemblyRowToManufacturing(catalog, catalog.source || input)) return false;
+  if (shouldRouteAssemblyRowToManufacturing(line, input)) return false;
+  if (catalog && Object.keys(catalog).length && isExplicitVendorStockRollup(catalog)) return true;
+  if (isExplicitVendorStockRollup(line)) return true;
+  return true;
+}
+
 function shouldRouteAssemblyRowToManufacturing(part, input = {}) {
   if (part?.shaftStockRollup) return false;
   if (isLikelyPurchasedPart(part)) return false;
+  if (isExplicitVendorStockRollup(part)) return false;
+  if (isShaftCutPart(part)) return true;
   if (matchesKnownCustomPart(part, input)) return true;
+  if (isManufacturedByName(part)) return true;
   if (isTeamCustomPartNumber(part?.partNumber || part?.vendorSku || part?.manufacturerSku)) return true;
   if (hasProcurementIdentity(part)) return false;
-  if (isManufacturedByName(part)) return true;
   const text = [part?.name, part?.category, part?.description].filter(Boolean).join(" ").toLowerCase();
   return /\bcustom\b/i.test(text) || /\b(plate|gusset|bracket|tube|rail|spacer|standoff)\b/.test(text);
+}
+
+function isExplicitVendorStockRollup(part) {
+  if (!part || part.shaftStockRollup || isShaftCutPart(part) || !hasProcurementIdentity(part)) return false;
+  const text = [
+    part?.name,
+    part?.category,
+    part?.description,
+    part?.stock
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (/\b(?:stock|material|procurement)\s+rollups?\b|\brollups?\s+(?:stock|material|procurement)\b/.test(text)) return true;
+  return isShaftStockProcurementText(text) && /\bshaft\s+stock\b|\bstock\s+shaft\b/.test(text);
 }
 
 function hasProcurementIdentity(part) {
@@ -3659,6 +3712,34 @@ function matchesKnownCustomPart(part, input = {}) {
   if (docId && numberKeys.some((key) => references.documentNumberKeys.has(`${docId}:${key}`))) return true;
   if (numberKeys.some((key) => references.partNumbers.has(key))) return true;
   return false;
+}
+
+function matchesExistingCustomCatalogEntry(part, input = {}) {
+  if (!part || part.shaftStockRollup) return false;
+  const docId = String(input.documentId || part?.source?.documentId || "").trim();
+  const elementId = String(input.elementId || part?.source?.elementId || "").trim();
+  const partId = String(part?.source?.partId || part?.id || "").trim();
+  const nameKey = normalizeKey(part?.name);
+  const numberKeys = [
+    part?.partNumber,
+    part?.vendorSku,
+    part?.manufacturerSku
+  ].map(normalizeSku).filter(Boolean);
+  return (store.catalogParts || []).some((custom) => {
+    if (custom.sourceType !== "custom" || custom.shaftStockRollup) return false;
+    const customSource = custom.source || {};
+    const customDocId = String(customSource.documentId || "").trim();
+    const customElementId = String(customSource.elementId || "").trim();
+    const customPartId = String(customSource.partId || custom.id || "").trim();
+    if (docId && elementId && partId && customDocId === docId && customElementId === elementId && customPartId === partId) return true;
+    if (docId && nameKey && customDocId === docId && normalizeKey(custom.name) === nameKey) return true;
+    const customNumberKeys = [
+      custom.partNumber,
+      custom.vendorSku,
+      custom.manufacturerSku
+    ].map(normalizeSku).filter(Boolean);
+    return numberKeys.some((key) => customNumberKeys.includes(key));
+  });
 }
 
 function customPartReferenceIndex() {
@@ -3708,12 +3789,13 @@ function mergeCustomReferenceIndexes(...indexes) {
 
 function normalizeAssemblyCustomPart(row, input, index) {
   const text = String(row.name || "").toLowerCase();
+  const shaftProfile = shaftStockProfile(row);
   const stock = text.includes("churro")
     ? "Churro"
     : text.includes("spacer")
       ? "Spacer Stock"
       : text.includes("shaft")
-        ? "Rounded Hex"
+        ? shaftProfile?.shape || "Shaft"
         : "Sheet/Plate";
   return ensureCustomPartNumber(applyAutoRouting({
     ...row,
@@ -3819,14 +3901,8 @@ function aggregateShaftStockProcurementRows(rows, input) {
 }
 
 function shaftStockProfile(part) {
-  const text = [
-    part?.name,
-    part?.partNumber,
-    part?.category,
-    part?.description,
-    part?.stock
-  ].filter(Boolean).join(" ").toLowerCase();
-  if (!/\bshaft\b/.test(text) || /\bshaft\s+collar\b/.test(text)) return null;
+  const text = shaftDescriptorText(part);
+  if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return null;
   const diameter = shaftDiameterLabel(text);
   const shape = /\b(churro|rounded\s+hex)\b/.test(text)
     ? "Rounded Hex"
@@ -3845,6 +3921,41 @@ function shaftStockProfile(part) {
   };
 }
 
+function shaftDescriptorText(part) {
+  return [
+    part?.name,
+    part?.partNumber,
+    part?.category,
+    part?.description,
+    part?.stock,
+    part?.material
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function isExcludedShaftAccessoryText(value) {
+  const text = String(value || "").toLowerCase();
+  return [
+    /\bshaft\s+collars?\b/,
+    /\bcollars?\s+(?:for\s+)?shaft\b/,
+    /\bshaft\s+bearings?\b/,
+    /\bbearings?\s+(?:for\s+)?shaft\b/,
+    /\bshaft\s+bushings?\b/,
+    /\bbushings?\s+(?:for\s+)?shaft\b/
+  ].some((pattern) => pattern.test(text));
+}
+
+function isShaftCutPart(part) {
+  const text = shaftDescriptorText(part);
+  return isShaftCutText(text);
+}
+
+function isShaftCutText(value) {
+  const text = String(value || "").toLowerCase();
+  if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return false;
+  if (/\bshaft\s+stock\b|\bstock\s+shaft\b/.test(text) && !/\b(?:length|long|cut)\b/.test(text)) return false;
+  return extractShaftLengthInchesFromText(text) > 0;
+}
+
 function shaftDiameterLabel(text) {
   const match = String(text || "").match(/\b(1\s*\/\s*2|3\s*\/\s*8|5\s*\/\s*8|1\s*\/\s*4|0\.5|0\.375|0\.625|0\.25)\s*(?:in|inch|")?\b/i);
   if (!match) return "";
@@ -3857,17 +3968,26 @@ function shaftDiameterLabel(text) {
 }
 
 function extractShaftLengthInches(part) {
-  const text = [
+  return extractShaftLengthInchesFromText([
     part?.name,
     part?.partNumber,
-    part?.description
-  ].filter(Boolean).join(" ").toLowerCase();
+    part?.description,
+    part?.stock
+  ].filter(Boolean).join(" ").toLowerCase());
+}
+
+function extractShaftLengthInchesFromText(value) {
+  const text = String(value || "").toLowerCase();
+  if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return 0;
+  const lengthValue = "(\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+(?:\\.\\d+)?)";
+  const unit = "(?:in(?:ch(?:es)?)?|[\"”])";
   const patterns = [
-    /\b(?:length|long)\s*(?:is|:|=|-)?\s*(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\s*(?:in|inch|")\b/i,
-    /\b(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\s*(?:in|inch|")\s*(?:long|length)\b/i,
-    /\bshaft\b[^\d]*(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\s*(?:in|inch|")\b/i,
-    /\b(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\s*(?:in|inch|")\s+(?:rounded\s+|round\s+|hex\s+)?shaft\b/i,
-    /\bshaft\s+lengths?\b[^\d]*(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\b/i
+    new RegExp(`\\b(?:shaft\\s+)?(?:cut\\s+)?lengths?\\s*(?:is|:|=|-)?\\s*${lengthValue}\\s*${unit}?\\b`, "i"),
+    new RegExp(`\\bl\\s*(?:=|:)\\s*${lengthValue}\\s*${unit}?\\b`, "i"),
+    new RegExp(`\\b${lengthValue}\\s*${unit}\\s*(?:long|length)\\b`, "i"),
+    new RegExp(`\\bshaft\\b[^\\d]{0,40}${lengthValue}\\s*${unit}?\\b`, "i"),
+    new RegExp(`\\b${lengthValue}\\s*${unit}\\s+(?:rounded\\s+hex|rounded|round|hex)\\s+shaft\\b`, "i"),
+    new RegExp(`\\b${lengthValue}\\s*[\"”]\\s*(?:rounded\\s+hex|rounded|round|hex)?\\s*shaft\\b`, "i")
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -3880,6 +4000,13 @@ function extractShaftLengthInches(part) {
 
 function parseInchesValue(value) {
   const text = String(value || "").trim();
+  const mixed = text.match(/^(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
+  if (mixed) {
+    const whole = Number(mixed[1]);
+    const numerator = Number(mixed[2]);
+    const denominator = Number(mixed[3]);
+    return denominator ? whole + numerator / denominator : 0;
+  }
   const fraction = text.match(/^(\d+)\s*\/\s*(\d+)$/);
   if (fraction) {
     const numerator = Number(fraction[1]);

@@ -140,6 +140,7 @@ const roles = ["admin", "mentor", "purchaser", "fabricator", "student", "read_on
 const userStatuses = ["active", "disabled", "pending"];
 const fabricationStatuses = ["todo", "in_progress", "completed"];
 const procurementStatuses = ["needed", "sourcing", "ready_to_order", "ordered", "partially_received", "received", "backordered", "canceled"];
+let procurementMutationSeq = 0;
 
 init();
 
@@ -171,6 +172,9 @@ async function init() {
   }
   if (params.get("server") && !isUnresolvedMacro(params.get("server"))) {
     els.importForm.dataset.baseUrl = normalizeOnshapeServer(params.get("server"));
+  }
+  if (params.get("documentName") && !isUnresolvedMacro(params.get("documentName"))) {
+    els.importForm.dataset.documentName = params.get("documentName");
   }
   if (params.get("workspaceOrVersion")) {
     els.importForm.dataset.workspaceOrVersion = params.get("workspaceOrVersion");
@@ -435,6 +439,7 @@ async function onImport(event) {
   source.configuration = isUnresolvedMacro(source.configuration) ? "" : source.configuration;
   source.robotId = els.syncRobotSelect?.value || selectedRobotId || "";
   if (els.importForm.dataset.baseUrl) source.baseUrl = els.importForm.dataset.baseUrl;
+  if (els.importForm.dataset.documentName) source.documentName = els.importForm.dataset.documentName;
   if (els.importForm.dataset.workspaceOrVersion) source.workspaceOrVersion = els.importForm.dataset.workspaceOrVersion;
   setMessage(mode === "cots" ? "Submitting Assembly BOM rows to procurement..." : "Reading custom parts, assigned material, and part metadata from Onshape...");
   try {
@@ -2162,14 +2167,20 @@ function aggregateClientProcurementLines(lines) {
 function renderVendorBucket(bucket) {
   const lines = Array.isArray(bucket.lines) ? bucket.lines : [];
   const total = lines.reduce((sum, line) => sum + Number(line.totalPriceCents || 0), 0);
+  const lineKeys = procurementBucketLineKeys(lines);
   return `
-    <section class="vendor-bucket">
+    <section class="vendor-bucket" data-line-keys="${escapeAttr(JSON.stringify(lineKeys))}">
       <header>
         <div>
           <h4>${escapeHtml(bucket.vendor || "Unassigned")}</h4>
           <span>${Number(lines.length)} part${lines.length === 1 ? "" : "s"} · qty ${Number(bucket.quantity || 0)}</span>
         </div>
-        <strong>${formatMoney(total)}</strong>
+        <span class="vendor-bucket-actions">
+          <strong>${formatMoney(total)}</strong>
+          <button class="ghost small" type="button" data-action="vendor-procurement-status" data-status="ordered">All bought</button>
+          <button class="ghost small" type="button" data-action="vendor-procurement-status" data-status="received">All arrived</button>
+          <button class="ghost small danger" type="button" data-action="delete-procurement-vendor">Delete vendor</button>
+        </span>
       </header>
       <div class="vendor-lines">
         ${lines.map(renderProcurementLine).join("")}
@@ -2244,8 +2255,8 @@ function renderProcurementLine(line) {
             <input data-procurement-quantity type="number" min="0" max="9999" value="${quantity}" aria-label="Quantity needed">
             <button class="ghost micro" type="button" data-action="adjust-procurement-quantity" data-delta="1" aria-label="Increase quantity">+</button>
           </span>
-          <b>${escapeHtml(unit)}</b>
-          <strong>${escapeHtml(total)}</strong>
+          <b><span>${escapeHtml(unit)}</span><small>/ea</small></b>
+          <strong><span>${escapeHtml(total)}</span><small>total</small></strong>
         </span>
         <span class="procurement-line-actions">
           ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
@@ -2295,6 +2306,10 @@ function renderProcurementLine(line) {
       </div>
     </div>
   `;
+}
+
+function procurementBucketLineKeys(lines = []) {
+  return [...new Set(lines.flatMap((line) => line.lineKeys || (line.lineKey ? [line.lineKey] : [])).filter(Boolean))];
 }
 
 function procurementVendors() {
@@ -2967,8 +2982,22 @@ async function onProcurementLineCreate(event) {
 }
 
 async function onProcurementLineAction(event) {
-  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line'], button[data-action='toggle-procurement-edit'], button[data-action='quick-procurement-status'], button[data-action='adjust-procurement-quantity']");
+  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line'], button[data-action='delete-procurement-vendor'], button[data-action='toggle-procurement-edit'], button[data-action='quick-procurement-status'], button[data-action='vendor-procurement-status'], button[data-action='adjust-procurement-quantity']");
   if (!button) return;
+  if (button.dataset.action === "vendor-procurement-status" || button.dataset.action === "delete-procurement-vendor") {
+    const bucket = button.closest(".vendor-bucket");
+    const lineKeys = parseLineKeys(bucket?.dataset.lineKeys);
+    if (!bucket || !lineKeys.length) {
+      setMessage("This vendor bucket is missing edit keys. Refresh and try again.", "error");
+      return;
+    }
+    if (button.dataset.action === "vendor-procurement-status") {
+      await updateProcurementVendorStatus(bucket, lineKeys, button.dataset.status || "needed");
+      return;
+    }
+    await deleteProcurementLines(bucket, lineKeys, "vendor");
+    return;
+  }
   const row = button.closest(".procurement-line");
   if (!row) return;
   const lineKeys = parseLineKeys(row.dataset.lineKeys);
@@ -2998,39 +3027,22 @@ async function onProcurementLineAction(event) {
     return;
   }
   if (button.dataset.action === "delete-procurement-line") {
-    const matchingRows = [...els.procurementOrders.querySelectorAll(".procurement-line")]
-      .filter((item) => item.dataset.lineKeys === row.dataset.lineKeys);
-    for (const item of matchingRows) {
-      item.classList.add("removing");
-      item.querySelectorAll("button, a, input, select").forEach((control) => {
-        if ("disabled" in control) control.disabled = true;
-      });
-    }
-    setTimeout(() => matchingRows.forEach((item) => item.remove()), 120);
-    setMessage("Deleting procurement line...");
-    try {
-      const result = await api("/api/procurement/lines", {
-        method: "DELETE",
-        body: JSON.stringify({ lineKeys })
-      });
-      dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
-      renderProcurement(result.procurement);
-      setMessage("Procurement line deleted.", "ok");
-    } catch (error) {
-      setMessage(error.message, "error");
-      await loadDashboard();
-    }
+    await deleteProcurementLines(row, lineKeys, "line");
     return;
   }
   try {
+    const mutationSeq = nextProcurementMutationSeq();
+    const body = procurementLineFormData(row);
+    setProcurementPending(row, true);
     const result = await api("/api/procurement/lines", {
       method: "PATCH",
-      body: JSON.stringify({ lineKeys, ...procurementLineFormData(row) })
+      body: JSON.stringify({ lineKeys, ...body })
     });
-    dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
-    renderProcurement(result.procurement);
-    setMessage("Procurement line saved.", "ok");
+    applyProcurementResult(result, mutationSeq);
+    if (isCurrentProcurementMutation(mutationSeq)) setMessage("Procurement line saved.", "ok");
+    else setProcurementPending(row, false);
   } catch (error) {
+    setProcurementPending(row, false);
     setMessage(error.message, "error");
   }
 }
@@ -3038,35 +3050,34 @@ async function onProcurementLineAction(event) {
 async function updateProcurementLineQuantity(row, lineKeys, quantity) {
   const previous = Number(row.dataset.quantity || row.querySelector("input[data-procurement-quantity]")?.value || 0);
   const next = Math.max(0, Math.min(9999, Math.round(Number(quantity || 0))));
+  const mutationSeq = nextProcurementMutationSeq();
   row.dataset.quantity = String(next);
   row.querySelectorAll("input[data-procurement-quantity], input[data-field='quantityNeeded']").forEach((input) => {
     input.value = String(next);
   });
-  row.querySelectorAll("button[data-action='adjust-procurement-quantity'], input[data-procurement-quantity]").forEach((control) => {
-    control.disabled = true;
-  });
+  setProcurementPending(row, true, "quantity");
   try {
     const result = await api("/api/procurement/lines", {
       method: "PATCH",
       body: JSON.stringify({ lineKeys, quantityNeeded: next })
     });
-    dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
-    renderProcurement(result.procurement);
-    setMessage(`Quantity updated to ${next}.`, "ok");
+    applyProcurementResult(result, mutationSeq);
+    if (isCurrentProcurementMutation(mutationSeq)) setMessage(`Quantity updated to ${next}.`, "ok");
+    else setProcurementPending(row, false, "quantity");
   } catch (error) {
     row.dataset.quantity = String(previous);
     row.querySelectorAll("input[data-procurement-quantity], input[data-field='quantityNeeded']").forEach((input) => {
       input.value = String(previous);
     });
-    row.querySelectorAll("button[data-action='adjust-procurement-quantity'], input[data-procurement-quantity]").forEach((control) => {
-      control.disabled = false;
-    });
+    setProcurementPending(row, false, "quantity");
     setMessage(error.message, "error");
   }
 }
 
 async function updateProcurementLineStatus(row, lineKeys, status) {
   const previous = row.querySelector("[data-field='status']")?.value || "";
+  const mutationSeq = nextProcurementMutationSeq();
+  setProcurementPending(row, true, "status");
   row.querySelectorAll(".procurement-status").forEach((badge) => {
     badge.textContent = procurementStatusLabel(status);
     badge.className = `procurement-status ${status}`;
@@ -3081,9 +3092,9 @@ async function updateProcurementLineStatus(row, lineKeys, status) {
       method: "PATCH",
       body: JSON.stringify({ lineKeys, status })
     });
-    dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
-    renderProcurement(result.procurement);
-    setMessage(status === "received" ? "Procurement line marked arrived." : "Procurement line marked bought.", "ok");
+    applyProcurementResult(result, mutationSeq);
+    if (isCurrentProcurementMutation(mutationSeq)) setMessage(status === "received" ? "Procurement line marked arrived." : "Procurement line marked bought.", "ok");
+    else setProcurementPending(row, false, "status");
   } catch (error) {
     if (previous) {
       row.querySelectorAll("[data-field='status']").forEach((select) => {
@@ -3093,6 +3104,89 @@ async function updateProcurementLineStatus(row, lineKeys, status) {
     setMessage(error.message, "error");
     await loadDashboard();
   }
+}
+
+async function updateProcurementVendorStatus(bucket, lineKeys, status) {
+  const mutationSeq = nextProcurementMutationSeq();
+  setProcurementPending(bucket, true, "status");
+  bucket.querySelectorAll(".procurement-line").forEach((row) => {
+    row.classList.remove(...procurementStatuses);
+    row.classList.add(status);
+    row.querySelectorAll(".procurement-status").forEach((badge) => {
+      badge.textContent = procurementStatusLabel(status);
+      badge.className = `procurement-status ${status}`;
+    });
+    row.querySelectorAll("[data-field='status']").forEach((select) => {
+      select.value = status;
+    });
+  });
+  setMessage(status === "received" ? "Marking vendor arrived..." : "Marking vendor bought...");
+  try {
+    const result = await api("/api/procurement/lines", {
+      method: "PATCH",
+      body: JSON.stringify({ lineKeys, status })
+    });
+    applyProcurementResult(result, mutationSeq);
+    if (isCurrentProcurementMutation(mutationSeq)) setMessage(status === "received" ? "Vendor lines marked arrived." : "Vendor lines marked bought.", "ok");
+    else setProcurementPending(bucket, false, "status");
+  } catch (error) {
+    setMessage(error.message, "error");
+    await loadDashboard();
+  }
+}
+
+async function deleteProcurementLines(source, lineKeys, scope = "line") {
+  const mutationSeq = nextProcurementMutationSeq();
+  const selector = scope === "vendor" ? ".vendor-bucket" : ".procurement-line";
+  const targets = scope === "vendor"
+    ? [source.closest(selector)].filter(Boolean)
+    : [...els.procurementOrders.querySelectorAll(selector)].filter((item) => item.dataset.lineKeys === source.dataset.lineKeys);
+  for (const item of targets) {
+    item.classList.add("removing");
+    setProcurementPending(item, true);
+  }
+  setTimeout(() => targets.forEach((item) => item.remove()), 70);
+  setMessage(scope === "vendor" ? "Deleting vendor bucket..." : "Deleting procurement line...");
+  try {
+    const result = await api("/api/procurement/lines", {
+      method: "DELETE",
+      body: JSON.stringify({ lineKeys })
+    });
+    applyProcurementResult(result, mutationSeq);
+    if (isCurrentProcurementMutation(mutationSeq)) setMessage(scope === "vendor" ? "Vendor bucket deleted." : "Procurement line deleted.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+    await loadDashboard();
+  }
+}
+
+function nextProcurementMutationSeq() {
+  procurementMutationSeq += 1;
+  return procurementMutationSeq;
+}
+
+function isCurrentProcurementMutation(mutationSeq) {
+  return mutationSeq === procurementMutationSeq;
+}
+
+function applyProcurementResult(result, mutationSeq) {
+  if (!result?.procurement || !isCurrentProcurementMutation(mutationSeq)) return false;
+  dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
+  renderProcurement(result.procurement);
+  return true;
+}
+
+function setProcurementPending(container, pending, mode = "") {
+  if (!container) return;
+  container.classList.toggle("pending", pending);
+  const controls = mode === "status"
+    ? container.querySelectorAll("button[data-action='quick-procurement-status'], button[data-action='vendor-procurement-status'], button[data-action='delete-procurement-line'], button[data-action='delete-procurement-vendor']")
+    : mode === "quantity"
+      ? container.querySelectorAll("button[data-action='adjust-procurement-quantity'], input[data-procurement-quantity]")
+      : container.querySelectorAll("button, input, select");
+  controls.forEach((control) => {
+    control.disabled = pending;
+  });
 }
 
 function parseLineKeys(value) {

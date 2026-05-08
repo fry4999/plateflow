@@ -1896,6 +1896,7 @@ body.dialog-open {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
+  transition: opacity .12s ease, transform .12s ease, max-height .16s ease, padding .16s ease, margin .16s ease;
 }
 
 .queue-grid .vendor-bucket {
@@ -1917,6 +1918,19 @@ body.dialog-open {
 .vendor-bucket h4,
 .procurement-project h3 {
   margin: 0;
+}
+
+.vendor-bucket-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.vendor-bucket-actions strong {
+  margin-right: 4px;
 }
 
 .vendor-lines,
@@ -1986,9 +2000,16 @@ body.dialog-open {
   max-height: 320px;
 }
 
+.vendor-bucket.pending,
+.procurement-line.pending {
+  opacity: .72;
+}
+
+.vendor-bucket.removing,
 .procurement-line.removing {
   max-height: 0;
   padding: 0;
+  margin: 0;
   opacity: 0;
   overflow: hidden;
   transform: translateX(10px);
@@ -2070,8 +2091,23 @@ body.dialog-open {
 }
 
 .price-pack b {
+  display: inline-grid;
+  gap: 1px;
   font: inherit;
   color: var(--ink);
+}
+
+.price-pack strong {
+  display: inline-grid;
+  gap: 1px;
+}
+
+.price-pack small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 .quantity-control {
@@ -2745,6 +2781,11 @@ body.dialog-open {
   .procurement-line-actions {
     flex-wrap: wrap;
     justify-content: start;
+  }
+
+  .vendor-bucket-actions {
+    justify-content: start;
+    white-space: normal;
   }
 
   .price-pack {
