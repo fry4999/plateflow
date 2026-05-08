@@ -2,6 +2,8 @@
 
 An Onshape App Store-ready FRC build-ops platform. PlateFlow syncs custom parts from Part Studios into a fabrication pipeline, syncs purchased/COTS items from Assembly BOMs into a procurement pipeline, and tracks shared inventory, raw material, robot readiness, and audit history.
 
+Procurement matching uses the FRC Tools Orders vendor search API by default. PlateFlow caches each part-number lookup for 12 hours so dashboard loads do not call vendor/search APIs repeatedly.
+
 ## Run Locally
 
 1. Copy `.env.example` to `.env`.

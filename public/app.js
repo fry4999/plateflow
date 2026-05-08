@@ -94,6 +94,8 @@ const els = {
   procQueueCount: document.querySelector("#procQueueCount"),
   fabricationJobs: document.querySelector("#fabricationJobs"),
   procurementOrders: document.querySelector("#procurementOrders"),
+  procurementProjectFilter: document.querySelector("#procurementProjectFilter"),
+  refreshProcurementButton: document.querySelector("#refreshProcurementButton"),
   batchList: document.querySelector("#batchList"),
   rawMaterialForm: document.querySelector("#rawMaterialForm"),
   rawMaterialList: document.querySelector("#rawMaterialList"),
@@ -205,6 +207,8 @@ function bindEvents() {
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("dragover", onFabricationDragOver);
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("drop", onFabricationDrop);
   if (els.procurementOrders) els.procurementOrders.addEventListener("change", onProcurementOrderChange);
+  if (els.procurementProjectFilter) els.procurementProjectFilter.addEventListener("change", () => renderProcurement(dashboardState?.procurement || { orders: [], projectBuckets: [], vendorBuckets: [] }));
+  if (els.refreshProcurementButton) els.refreshProcurementButton.addEventListener("click", onProcurementRefresh);
   els.demoButton.addEventListener("click", loadDemo);
   els.configPartSelect?.addEventListener("change", onConfigPartChange);
   els.configRobot?.addEventListener("change", onConfigRobotChange);
@@ -1616,14 +1620,195 @@ function displayFabricationStatus(status) {
 
 function renderProcurement(procurement) {
   if (!els.procurementOrders) return;
-  if (!procurement.orders.length) {
-    els.procurementOrders.textContent = "No procurement groups yet.";
+  const safe = procurement || {};
+  const projects = Array.isArray(safe.projectBuckets) ? safe.projectBuckets : [];
+  const orders = Array.isArray(safe.orders) ? safe.orders : [];
+  renderProcurementProjectFilter(projects);
+  const selectedProject = els.procurementProjectFilter?.value || "";
+  const scopedProjects = selectedProject
+    ? projects.filter((project) => procurementProjectValue(project) === selectedProject)
+    : projects;
+  const scopedVendorBuckets = selectedProject ? vendorBucketsFromProjects(scopedProjects) : (Array.isArray(safe.vendorBuckets) ? safe.vendorBuckets : []);
+  const scopedLines = scopedProjects.flatMap((project) => project.subassemblies || []).flatMap((subassembly) => subassembly.vendorBuckets || []).flatMap((bucket) => bucket.lines || []);
+  const totals = procurementTotals(scopedVendorBuckets, scopedLines);
+  if (els.procQueueCount) {
+    els.procQueueCount.textContent = totals.lines
+      ? `${totals.quantity} COTS part${totals.quantity === 1 ? "" : "s"} needed · ${totals.matched}/${totals.lines} matched · ${formatMoney(totals.estimatedTotalCents)} estimated`
+      : "No COTS parts queued.";
+  }
+  if (!totals.lines) {
+    els.procurementOrders.innerHTML = `
+      <div class="empty-panel">
+        <strong>No procurement lines yet.</strong>
+        <span>Import Assembly BOM rows to create vendor order groups.</span>
+      </div>
+    `;
     return;
   }
-  els.procurementOrders.innerHTML = procurement.orders.slice(0, 8).map((order) => {
-    const lines = Array.isArray(order.lines) ? order.lines : Array.isArray(order.parts) ? order.parts : [];
-    const groups = Array.isArray(order.vendorGroups) ? order.vendorGroups : [];
-    return `
+  els.procurementOrders.innerHTML = `
+    <div class="procurement-summary-grid">
+      <div><strong>${Number(totals.lines)}</strong><span>order lines</span></div>
+      <div><strong>${Number(scopedVendorBuckets.length)}</strong><span>vendors</span></div>
+      <div><strong>${formatMoney(totals.estimatedTotalCents)}</strong><span>estimated total</span></div>
+      <div><strong>${Number(totals.unmatched)}</strong><span>need review</span></div>
+    </div>
+    <div class="vendor-order-grid">
+      ${scopedVendorBuckets.map(renderVendorBucket).join("")}
+    </div>
+    <div class="project-order-list">
+      ${scopedProjects.map(renderProcurementProject).join("")}
+    </div>
+    ${orders.length ? `
+      <details class="procurement-sync-list">
+        <summary>Sync batches and status</summary>
+        ${orders.slice(0, 12).map(renderProcurementOrderStatus).join("")}
+      </details>
+    ` : ""}
+  `;
+}
+
+function renderProcurementProjectFilter(projects) {
+  if (!els.procurementProjectFilter) return;
+  const current = els.procurementProjectFilter.value;
+  const options = projects.map((project) => ({
+    value: procurementProjectValue(project),
+    label: `${project.name || "Unassigned"} · ${targetLabel(project)}`
+  }));
+  els.procurementProjectFilter.innerHTML = [
+    `<option value="">All projects</option>`,
+    ...options.map((option) => `<option value="${escapeAttr(option.value)}"${option.value === current ? " selected" : ""}>${escapeHtml(option.label)}</option>`)
+  ].join("");
+  if (current && !options.some((option) => option.value === current)) els.procurementProjectFilter.value = "";
+}
+
+function procurementProjectValue(project) {
+  return project?.robotId || "__unassigned";
+}
+
+function procurementTotals(vendorBuckets, lines) {
+  const allLines = lines.length ? lines : vendorBuckets.flatMap((bucket) => bucket.lines || []);
+  const quantity = allLines.reduce((sum, line) => sum + Number(line.quantityNeeded || 0), 0);
+  const estimatedTotalCents = allLines.reduce((sum, line) => sum + Number(line.totalPriceCents || 0), 0);
+  const matched = allLines.filter((line) => line.matchStatus && !["unmatched", "lookup_failed"].includes(line.matchStatus)).length;
+  return {
+    lines: allLines.length,
+    quantity,
+    matched,
+    unmatched: Math.max(0, allLines.length - matched),
+    estimatedTotalCents
+  };
+}
+
+function vendorBucketsFromProjects(projects) {
+  const vendors = new Map();
+  for (const project of projects) {
+    for (const subassembly of project.subassemblies || []) {
+      for (const bucket of subassembly.vendorBuckets || []) {
+        const vendor = bucket.vendor || "Unassigned";
+        if (!vendors.has(vendor)) vendors.set(vendor, { vendor, quantity: 0, estimatedTotalCents: 0, matched: 0, lines: [] });
+        const target = vendors.get(vendor);
+        target.quantity += Number(bucket.quantity || 0);
+        target.estimatedTotalCents += Number(bucket.estimatedTotalCents || 0);
+        target.lines.push(...(bucket.lines || []));
+      }
+    }
+  }
+  return [...vendors.values()].map((bucket) => ({
+    ...bucket,
+    lines: aggregateClientProcurementLines(bucket.lines)
+  })).sort((a, b) => a.vendor.localeCompare(b.vendor));
+}
+
+function aggregateClientProcurementLines(lines) {
+  const grouped = new Map();
+  for (const line of lines || []) {
+    const key = [line.vendor || "Unassigned", line.vendorSku || line.partNumber || line.productUrl || line.name].join(":").toLowerCase();
+    if (!grouped.has(key)) grouped.set(key, { ...line, quantityNeeded: 0, totalPriceCents: 0, neededBy: [] });
+    const existing = grouped.get(key);
+    existing.quantityNeeded += Number(line.quantityNeeded || 0);
+    existing.totalPriceCents += Number(line.totalPriceCents || 0);
+    existing.neededBy.push(...(Array.isArray(line.neededBy) ? line.neededBy : []));
+  }
+  return [...grouped.values()].sort((a, b) => (a.vendorSku || a.name || "").localeCompare(b.vendorSku || b.name || ""));
+}
+
+function renderVendorBucket(bucket) {
+  const lines = Array.isArray(bucket.lines) ? bucket.lines : [];
+  const total = lines.reduce((sum, line) => sum + Number(line.totalPriceCents || 0), 0);
+  return `
+    <article class="vendor-bucket">
+      <header>
+        <div>
+          <h4>${escapeHtml(bucket.vendor || "Unassigned")}</h4>
+          <span>${Number(lines.length)} part${lines.length === 1 ? "" : "s"} · qty ${Number(bucket.quantity || 0)}</span>
+        </div>
+        <strong>${formatMoney(total)}</strong>
+      </header>
+      <div class="vendor-lines">
+        ${lines.slice(0, 10).map(renderProcurementLine).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderProcurementProject(project) {
+  return `
+    <article class="procurement-project">
+      <header>
+        <div>
+          <span class="eyebrow">${escapeHtml(targetLabel(project))}</span>
+          <h3>${escapeHtml(project.name || "Unassigned")}</h3>
+        </div>
+        <strong>${formatMoney(project.estimatedTotalCents || 0)}</strong>
+      </header>
+      ${(project.subassemblies || []).map(renderProcurementSubassembly).join("")}
+    </article>
+  `;
+}
+
+function renderProcurementSubassembly(subassembly) {
+  return `
+    <details class="procurement-subassembly" open>
+      <summary>
+        <span>${escapeHtml(subassembly.name || "Unassigned")}</span>
+        <b>${Number(subassembly.quantity || 0)} needed · ${formatMoney(subassembly.estimatedTotalCents || 0)}</b>
+      </summary>
+      ${(subassembly.vendorBuckets || []).map((bucket) => `
+        <section class="subassembly-vendor-group">
+          <h4>${escapeHtml(bucket.vendor || "Unassigned")}</h4>
+          ${(bucket.lines || []).map(renderProcurementLine).join("")}
+        </section>
+      `).join("")}
+    </details>
+  `;
+}
+
+function renderProcurementLine(line) {
+  const name = line.matchedTitle || line.name || "Purchased item";
+  const sku = line.vendorSku || line.partNumber || line.manufacturerSku || "No SKU";
+  const unit = line.unitPriceCents == null ? "price n/a" : formatMoney(line.unitPriceCents);
+  const total = line.totalPriceCents == null ? "n/a" : formatMoney(line.totalPriceCents);
+  const neededBy = Array.isArray(line.neededBy) ? line.neededBy.map((item) => `${item.robotName || "Project"} / ${item.subassemblyName || "Unassigned"} x${Number(item.quantityNeeded || 0)}`).join("\n") : "";
+  return `
+    <div class="procurement-line">
+      <div class="procurement-line-main">
+        <strong>${escapeHtml(name)}</strong>
+        <small>${escapeHtml(sku)}${line.variantTitle ? ` · ${escapeHtml(line.variantTitle)}` : ""}</small>
+        ${neededBy ? `<span class="needed-tooltip compact" tabindex="0">Needed by<span role="tooltip">${escapeHtml(neededBy).replace(/\n/g, "<br>")}</span></span>` : ""}
+      </div>
+      <span class="match-chip ${escapeAttr(line.matchStatus || "unmatched")}">${escapeHtml(procurementMatchLabel(line.matchStatus))}</span>
+      <span class="price-cell">qty ${Number(line.quantityNeeded || 0)}</span>
+      <span class="price-cell">${escapeHtml(unit)}</span>
+      <strong class="price-cell">${escapeHtml(total)}</strong>
+      ${line.productUrl ? `<a class="ghost small" href="${escapeAttr(line.productUrl)}" target="_blank" rel="noreferrer">Open</a>` : `<span class="ghost small disabled">No link</span>`}
+    </div>
+  `;
+}
+
+function renderProcurementOrderStatus(order) {
+  const lines = Array.isArray(order.lines) ? order.lines : [];
+  const groups = Array.isArray(order.vendorGroups) ? order.vendorGroups : [];
+  return `
     <div class="queue-row">
       <span>
         <strong>${escapeHtml(order.id)}</strong>
@@ -1637,7 +1822,19 @@ function renderProcurement(procurement) {
       </label>
     </div>
   `;
-  }).join("");
+}
+
+function procurementMatchLabel(status) {
+  if (status === "sku_exact") return "SKU match";
+  if (status === "vendor_hint") return "Vendor match";
+  if (status === "search_result" || status === "matched") return "Matched";
+  if (status === "lookup_failed") return "Lookup failed";
+  return "Review";
+}
+
+function formatMoney(cents) {
+  const amount = Number(cents || 0) / 100;
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(amount);
 }
 
 function renderRawMaterials(rawMaterials) {
@@ -2118,6 +2315,33 @@ async function onProcurementOrderChange(event) {
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();
+  }
+}
+
+async function onProcurementRefresh() {
+  if (!els.refreshProcurementButton) return;
+  const previous = els.refreshProcurementButton.textContent;
+  els.refreshProcurementButton.disabled = true;
+  els.refreshProcurementButton.textContent = "Matching...";
+  try {
+    const result = await api("/api/procurement/refresh", {
+      method: "POST",
+      body: JSON.stringify({
+        robotId: els.procurementProjectFilter?.value && els.procurementProjectFilter.value !== "__unassigned" ? els.procurementProjectFilter.value : ""
+      })
+    });
+    dashboardState = {
+      ...(dashboardState || {}),
+      procurement: result.procurement
+    };
+    renderProcurement(result.procurement);
+    const stats = result.stats || {};
+    setMessage(`Procurement matches updated: ${Number(stats.matched || 0)} matched, ${Number(stats.cached || 0)} cached.`, "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  } finally {
+    els.refreshProcurementButton.disabled = false;
+    els.refreshProcurementButton.textContent = previous;
   }
 }
 

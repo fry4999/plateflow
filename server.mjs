@@ -21,6 +21,8 @@ const config = {
   onshapeApiBase: process.env.ONSHAPE_API_BASE || "https://cad.onshape.com",
   onshapeScope: process.env.ONSHAPE_OAUTH_SCOPE || "",
   onshapeCacheTtlMs: Number(process.env.ONSHAPE_CACHE_TTL_MS || 10 * 60 * 1000),
+  frcToolsSearchUrl: process.env.FRC_TOOLS_SEARCH_URL || "https://orders.frctools.com/api/vendors/search",
+  frcToolsMatchTtlMs: Number(process.env.FRC_TOOLS_MATCH_TTL_MS || 12 * 60 * 60 * 1000),
   trustProxy: process.env.TRUST_PROXY === "true",
   prod: process.env.NODE_ENV === "production"
 };
@@ -87,6 +89,7 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/admin/remove-placeholder-cots" && req.method === "POST") return withAppAccess(session, res, () => removePlaceholderCots(req, res, session), ["admin"]);
     if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
     if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
+    if (url.pathname === "/api/procurement/refresh" && req.method === "POST") return withAppAccess(session, res, (user) => refreshProcurement(req, res, session, user), ["admin", "mentor", "purchaser"]);
     if (url.pathname.startsWith("/api/procurement/orders/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementOrder(req, res, session, user, pathId(url.pathname, "/api/procurement/orders/")), ["admin", "mentor", "purchaser"]);
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), ["admin", "mentor", "fabricator", "student"]);
     if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), ["admin", "mentor", "purchaser", "student"]);
@@ -1506,7 +1509,7 @@ async function saveInventory(input, parts, sourceType, label, options = {}) {
   const previousFabStatus = sourceType === "custom" && replacedBatchId ? fabricationStatusByCatalogPart(replacedBatchId) : new Map();
   const normalizedParts = recordParts.map((part) => upsertCatalogPart(part, sourceType, batchId));
   if (replacedBatchId) removeOperationalQueue(replacedBatchId, sourceType);
-  upsertOperationalQueue(batchId, sourceType, normalizedParts, previousFabStatus);
+  await upsertOperationalQueue(batchId, sourceType, normalizedParts, previousFabStatus);
   store.syncBatches.unshift({
     id: batchId,
     label,
@@ -1794,6 +1797,12 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     vendorSku: part.vendorSku || "",
     manufacturer: part.manufacturer || "",
     manufacturerSku: part.manufacturerSku || "",
+    vendorUrl: part.vendorUrl || existing?.vendorUrl || "",
+    productUrl: part.productUrl || part.vendorUrl || existing?.productUrl || existing?.vendorUrl || "",
+    unitPriceCents: part.unitPriceCents ?? existing?.unitPriceCents ?? null,
+    priceUpdatedAt: part.priceUpdatedAt || existing?.priceUpdatedAt || "",
+    vendorMatchId: part.vendorMatchId || existing?.vendorMatchId || "",
+    matchConfidence: part.matchConfidence ?? existing?.matchConfidence ?? null,
     sourceDocument: part.sourceDocument || part.source?.sourceTag || "",
     sourceDocumentName: part.sourceDocumentName || part.source?.documentName || "",
     partNumber: part.partNumber || "",
@@ -1839,7 +1848,7 @@ function normalizeKey(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown";
 }
 
-function upsertOperationalQueue(batchId, sourceType, catalogParts, previousFabStatus = new Map()) {
+async function upsertOperationalQueue(batchId, sourceType, catalogParts, previousFabStatus = new Map()) {
   const now = new Date().toISOString();
   if (sourceType === "custom") {
     const jobs = catalogParts.map((part, index) => ({
@@ -1878,7 +1887,7 @@ function upsertOperationalQueue(batchId, sourceType, catalogParts, previousFabSt
     return;
   }
 
-  store.procurementOrders.unshift({
+  const order = {
     id: `P-${batchId.slice(2)}`,
     syncBatchId: batchId,
     status: "needed",
@@ -1888,6 +1897,17 @@ function upsertOperationalQueue(batchId, sourceType, catalogParts, previousFabSt
       name: part.name,
       vendor: part.vendor || "Unassigned",
       vendorSku: part.vendorSku || "",
+      manufacturer: part.manufacturer || "",
+      manufacturerSku: part.manufacturerSku || "",
+      partNumber: part.partNumber || part.vendorSku || part.manufacturerSku || "",
+      vendorUrl: part.vendorUrl || vendorLink(part.vendor, part.vendorSku || part.manufacturerSku || part.partNumber, part.name),
+      robotId: part.robotId || "",
+      subsystemId: part.subsystemId || "",
+      subsystem: part.subsystem || "",
+      subassemblyName: part.subassemblyName || part.subsystem || "",
+      sourceDocument: part.sourceDocument || "",
+      sourceDocumentName: part.sourceDocumentName || "",
+      source: part.source || {},
       quantityNeeded: part.quantityNeeded,
       quantityOrdered: 0,
       quantityReceived: 0,
@@ -1895,7 +1915,10 @@ function upsertOperationalQueue(batchId, sourceType, catalogParts, previousFabSt
     })),
     createdAt: now,
     updatedAt: now
-  });
+  };
+  await hydrateProcurementOrderMatches(order, { force: false });
+  order.vendorGroups = groupCotsParts(order.lines);
+  store.procurementOrders.unshift(order);
   store.procurementOrders.splice(100);
 }
 
@@ -1949,11 +1972,429 @@ function canonicalFabricationStatus(status) {
 
 function groupCotsParts(parts) {
   return Object.values(parts.reduce((groups, part) => {
-    const key = part.vendor || "Unassigned";
+    const key = part.vendor || part.vendorName || "Unassigned";
     groups[key] ||= { vendor: key, count: 0 };
     groups[key].count += Number(part.quantityNeeded || 1);
     return groups;
   }, {}));
+}
+
+async function hydrateProcurementOrderMatches(order, options = {}) {
+  if (!order || !Array.isArray(order.lines)) return { lookedUp: 0, matched: 0, cached: 0 };
+  const stats = { lookedUp: 0, matched: 0, cached: 0 };
+  for (const line of order.lines) {
+    const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
+    const match = await frcToolsVendorMatch({ ...catalog, ...line }, options);
+    if (match?.cached) stats.cached += 1;
+    if (match && !match.error && !["unmatched", "lookup_failed"].includes(match.matchType)) stats.matched += 1;
+    if (match) stats.lookedUp += 1;
+    applyProcurementMatch(line, catalog, match);
+  }
+  order.updatedAt = new Date().toISOString();
+  return stats;
+}
+
+async function refreshProcurementLookups(options = {}) {
+  const stats = { orders: 0, lines: 0, lookedUp: 0, matched: 0, cached: 0 };
+  for (const order of store.procurementOrders || []) {
+    if (!Array.isArray(order.lines) || !order.lines.length) continue;
+    const scopedLines = order.lines.filter((line) => procurementLineInScope(line, options));
+    if (!scopedLines.length) continue;
+    stats.orders += 1;
+    const scopedOrder = { ...order, lines: scopedLines };
+    const result = await hydrateProcurementOrderMatches(scopedOrder, options);
+    order.vendorGroups = groupCotsParts(order.lines);
+    stats.lines += scopedLines.length;
+    stats.lookedUp += result.lookedUp;
+    stats.matched += result.matched;
+    stats.cached += result.cached;
+  }
+  return stats;
+}
+
+function procurementLineInScope(line, options = {}) {
+  if (options.robotId && String(line.robotId || "") !== String(options.robotId)) return false;
+  if (options.subassemblyId && String(line.subsystemId || "") !== String(options.subassemblyId)) return false;
+  return true;
+}
+
+function applyProcurementMatch(line, catalog, match) {
+  const quantity = Number(line.quantityNeeded || catalog.quantityNeeded || 1);
+  if (!match || match.error) {
+    line.vendorUrl ||= vendorLink(line.vendor || catalog.vendor, procurementSku(line) || procurementSku(catalog), line.name || catalog.name);
+    line.matchStatus = match?.error ? "lookup_failed" : "unmatched";
+    line.matchError = match?.error || "";
+    return;
+  }
+  const vendor = match.vendor || line.vendor || catalog.vendor || "Unassigned";
+  const sku = line.vendorSku || match.sku || catalog.vendorSku || catalog.manufacturerSku || "";
+  Object.assign(line, {
+    vendor,
+    vendorId: match.vendorId || "",
+    vendorSku: sku,
+    partNumber: line.partNumber || sku || catalog.partNumber || "",
+    matchedTitle: match.title || "",
+    vendorUrl: match.productUrl || line.vendorUrl || "",
+    productUrl: match.productUrl || line.productUrl || "",
+    unitPriceCents: match.unitPriceCents,
+    totalPriceCents: match.unitPriceCents == null ? null : match.unitPriceCents * quantity,
+    currency: match.currency || "USD",
+    variantId: match.variantId || "",
+    variantTitle: match.variantTitle || "",
+    matchConfidence: match.confidence,
+    matchStatus: match.matchType || "matched",
+    vendorMatchId: match.id,
+    priceUpdatedAt: match.updatedAt,
+    matchError: ""
+  });
+  if (catalog?.id) {
+    Object.assign(catalog, {
+      vendor,
+      vendorSku: catalog.vendorSku || sku,
+      partNumber: catalog.partNumber || sku,
+      vendorUrl: match.productUrl || catalog.vendorUrl || "",
+      productUrl: match.productUrl || catalog.productUrl || "",
+      unitPriceCents: match.unitPriceCents,
+      priceUpdatedAt: match.updatedAt,
+      vendorMatchId: match.id,
+      matchConfidence: match.confidence,
+      updatedAt: new Date().toISOString()
+    });
+  }
+}
+
+async function frcToolsVendorMatch(part, options = {}) {
+  const query = procurementQuery(part);
+  if (!query) return null;
+  const key = `frctools:${normalizeKey(query)}`;
+  const now = Date.now();
+  const cached = store.vendorMatches.find((item) => item.id === key);
+  if (
+    cached &&
+    !options.force &&
+    Number(cached.expiresAtMs || 0) > now
+  ) {
+    return { ...cached, cached: true };
+  }
+
+  const startedAt = new Date().toISOString();
+  try {
+    const url = new URL(config.frcToolsSearchUrl);
+    url.searchParams.set("q", query);
+    url.searchParams.set("limit", "5");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    let response;
+    try {
+      response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "PlateFlow procurement matcher (FRC Team inventory tool)"
+        }
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) throw new Error(`FRC Tools search returned ${response.status}`);
+    const payload = await response.json();
+    const hit = chooseFrcToolsHit(Array.isArray(payload.hits) ? payload.hits : [], part);
+    const match = hit
+      ? normalizeFrcToolsHit(key, query, hit, part, startedAt)
+      : {
+          id: key,
+          source: "frctools",
+          query,
+          title: "",
+          sku: procurementSku(part),
+          vendor: part.vendor || "Unassigned",
+          productUrl: vendorLink(part.vendor, procurementSku(part), part.name),
+          unitPriceCents: null,
+          confidence: 0,
+          matchType: "unmatched",
+          updatedAt: startedAt,
+          expiresAtMs: now + Math.min(config.frcToolsMatchTtlMs, 60 * 60 * 1000)
+        };
+    upsertVendorMatch(match);
+    return match;
+  } catch (error) {
+    const failure = {
+      id: key,
+      source: "frctools",
+      query,
+      title: "",
+      sku: procurementSku(part),
+      vendor: part.vendor || "Unassigned",
+      productUrl: vendorLink(part.vendor, procurementSku(part), part.name),
+      unitPriceCents: null,
+      confidence: 0,
+      matchType: "lookup_failed",
+      error: String(error.message || error).slice(0, 180),
+      updatedAt: startedAt,
+      expiresAtMs: now + 15 * 60 * 1000
+    };
+    upsertVendorMatch(failure);
+    return failure;
+  }
+}
+
+function procurementQuery(part) {
+  return [
+    procurementSku(part),
+    part?.manufacturerSku,
+    part?.partNumber,
+    part?.name
+  ].map((value) => String(value || "").trim()).find(Boolean) || "";
+}
+
+function procurementSku(part) {
+  return String(part?.vendorSku || part?.partNumber || part?.manufacturerSku || "").trim();
+}
+
+function chooseFrcToolsHit(hits, part) {
+  if (!hits.length) return null;
+  const sku = normalizeSku(procurementSku(part));
+  if (sku) {
+    const exact = hits.find((hit) => hitSkus(hit).some((hitSku) => normalizeSku(hitSku) === sku));
+    if (exact) return { ...exact, _matchType: "sku_exact", _confidence: 1 };
+  }
+  const vendor = normalizeKey(part?.vendor || "");
+  if (vendor) {
+    const vendorHit = hits.find((hit) => normalizeKey(hit.vendorName || hit.vendor || "").includes(vendor) || vendor.includes(normalizeKey(hit.vendorName || "")));
+    if (vendorHit) return { ...vendorHit, _matchType: "vendor_hint", _confidence: 0.78 };
+  }
+  return { ...hits[0], _matchType: "search_result", _confidence: 0.62 };
+}
+
+function hitSkus(hit) {
+  return [
+    hit?.sku,
+    ...(Array.isArray(hit?.skus) ? hit.skus : [])
+  ].filter(Boolean);
+}
+
+function normalizeFrcToolsHit(id, query, hit, part, updatedAt) {
+  const skus = hitSkus(hit);
+  const unitPriceCents = centsFromPrice(hit.price);
+  return {
+    id,
+    source: "frctools",
+    query,
+    title: String(hit.title || hit.name || part?.name || "").slice(0, 180),
+    description: stripHtml(String(hit.description || "")).slice(0, 240),
+    sku: procurementSku(part) || skus[0] || "",
+    skus: skus.slice(0, 20),
+    vendor: String(hit.vendorName || hit.vendor || part?.vendor || "Unassigned").slice(0, 100),
+    vendorId: String(hit.vendorId || "").slice(0, 80),
+    vendorHostname: String(hit.vendorHostname || "").slice(0, 120),
+    vendorType: String(hit.vendorType || "").slice(0, 40),
+    productUrl: String(hit.originalUrl || hit.url || vendorLink(hit.vendorName, skus[0], hit.title)).slice(0, 400),
+    image: String(hit.image || "").slice(0, 400),
+    unitPriceCents,
+    currency: hit.currency || "USD",
+    variantId: String(hit.variantId || "").slice(0, 120),
+    variantTitle: String(hit.variantTitle || "").slice(0, 160),
+    confidence: Number(hit._confidence || 0.6),
+    matchType: hit._matchType || "matched",
+    updatedAt,
+    expiresAtMs: Date.now() + config.frcToolsMatchTtlMs
+  };
+}
+
+function upsertVendorMatch(match) {
+  const index = store.vendorMatches.findIndex((item) => item.id === match.id);
+  if (index >= 0) store.vendorMatches.splice(index, 1, match);
+  else store.vendorMatches.unshift(match);
+  store.vendorMatches.splice(1000);
+}
+
+function centsFromPrice(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(String(value).replace(/[^0-9.-]/g, ""));
+  if (!Number.isFinite(number)) return null;
+  return Math.round(number * 100);
+}
+
+function stripHtml(value) {
+  return String(value || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeSku(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function procurementSnapshot(cotsParts = []) {
+  const lines = procurementLines();
+  const vendorBuckets = buildVendorBuckets(lines);
+  return {
+    orders: store.procurementOrders.slice(0, 20),
+    items: cotsParts,
+    lines,
+    vendorBuckets,
+    projectBuckets: buildProcurementProjectBuckets(lines),
+    totals: {
+      lines: lines.length,
+      vendors: vendorBuckets.length,
+      quantity: lines.reduce((sum, line) => sum + Number(line.quantityNeeded || 0), 0),
+      matched: lines.filter((line) => line.matchStatus && !["unmatched", "lookup_failed"].includes(line.matchStatus)).length,
+      estimatedTotalCents: lines.reduce((sum, line) => sum + Number(line.totalPriceCents || 0), 0)
+    },
+    lastMatchedAt: store.vendorMatches.reduce((latest, item) => String(item.updatedAt || "").localeCompare(latest) > 0 ? item.updatedAt : latest, "")
+  };
+}
+
+function procurementLines() {
+  return (store.procurementOrders || []).flatMap((order) => {
+    const rawLines = Array.isArray(order.lines) ? order.lines : [];
+    return rawLines.map((line) => {
+      const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
+      const robot = store.robots.find((item) => item.id === (line.robotId || catalog.robotId));
+      const subassemblyId = line.subsystemId || catalog.subsystemId || "";
+      const subsystem = robot?.subsystems?.find((item) => item.id === subassemblyId);
+      const quantity = Number(line.quantityNeeded || catalog.quantityNeeded || 1);
+      const unitPriceCents = line.unitPriceCents ?? catalog.unitPriceCents ?? null;
+      const vendor = line.vendor || catalog.vendor || "Unassigned";
+      return {
+        orderId: order.id,
+        syncBatchId: order.syncBatchId || "",
+        catalogPartId: line.catalogPartId || catalog.id || "",
+        name: line.name || catalog.name || "Purchased item",
+        matchedTitle: line.matchedTitle || catalog.matchedTitle || "",
+        vendor,
+        vendorId: line.vendorId || catalog.vendorId || "",
+        vendorSku: line.vendorSku || catalog.vendorSku || "",
+        partNumber: line.partNumber || catalog.partNumber || line.vendorSku || catalog.vendorSku || "",
+        manufacturer: line.manufacturer || catalog.manufacturer || "",
+        manufacturerSku: line.manufacturerSku || catalog.manufacturerSku || "",
+        productUrl: line.productUrl || line.vendorUrl || catalog.productUrl || catalog.vendorUrl || vendorLink(vendor, line.vendorSku || catalog.vendorSku, line.name || catalog.name),
+        vendorUrl: line.vendorUrl || catalog.vendorUrl || "",
+        variantTitle: line.variantTitle || "",
+        quantityNeeded: quantity,
+        quantityOrdered: Number(line.quantityOrdered || 0),
+        quantityReceived: Number(line.quantityReceived || 0),
+        unitPriceCents,
+        totalPriceCents: unitPriceCents == null ? null : unitPriceCents * quantity,
+        currency: line.currency || "USD",
+        status: line.status || order.status || "needed",
+        matchStatus: line.matchStatus || (line.productUrl || catalog.productUrl ? "matched" : "unmatched"),
+        matchConfidence: line.matchConfidence ?? catalog.matchConfidence ?? null,
+        matchError: line.matchError || "",
+        priceUpdatedAt: line.priceUpdatedAt || catalog.priceUpdatedAt || "",
+        robotId: line.robotId || catalog.robotId || "",
+        robotName: robot?.name || (line.robotId || catalog.robotId ? "Project" : "Unassigned"),
+        targetType: robot?.targetType || "project",
+        subsystemId: subassemblyId,
+        subassemblyName: line.subassemblyName || catalog.subassemblyName || subsystem?.name || line.subsystem || catalog.subsystem || "Unassigned",
+        sourceDocument: line.sourceDocument || catalog.sourceDocument || "",
+        sourceDocumentName: line.sourceDocumentName || catalog.sourceDocumentName || ""
+      };
+    });
+  });
+}
+
+function buildVendorBuckets(lines) {
+  const buckets = new Map();
+  for (const line of lines) {
+    const vendor = line.vendor || "Unassigned";
+    if (!buckets.has(vendor)) {
+      buckets.set(vendor, {
+        vendor,
+        quantity: 0,
+        estimatedTotalCents: 0,
+        matched: 0,
+        lines: []
+      });
+    }
+    const bucket = buckets.get(vendor);
+    bucket.quantity += Number(line.quantityNeeded || 0);
+    bucket.estimatedTotalCents += Number(line.totalPriceCents || 0);
+    if (line.matchStatus && !["unmatched", "lookup_failed"].includes(line.matchStatus)) bucket.matched += 1;
+    bucket.lines.push(line);
+  }
+  return [...buckets.values()].map((bucket) => ({
+    ...bucket,
+    lines: aggregateProcurementLines(bucket.lines)
+  })).sort((a, b) => a.vendor.localeCompare(b.vendor));
+}
+
+function aggregateProcurementLines(lines) {
+  const grouped = new Map();
+  for (const line of lines) {
+    const key = [
+      normalizeKey(line.vendor),
+      normalizeKey(line.vendorSku || line.partNumber || line.productUrl || line.name)
+    ].join(":");
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        ...line,
+        neededBy: [],
+        quantityNeeded: 0,
+        totalPriceCents: 0
+      });
+    }
+    const existing = grouped.get(key);
+    existing.quantityNeeded += Number(line.quantityNeeded || 0);
+    existing.totalPriceCents += Number(line.totalPriceCents || 0);
+    existing.neededBy.push({
+      robotId: line.robotId,
+      robotName: line.robotName,
+      subsystemId: line.subsystemId,
+      subassemblyName: line.subassemblyName,
+      quantityNeeded: Number(line.quantityNeeded || 0)
+    });
+  }
+  return [...grouped.values()].sort((a, b) => (a.vendorSku || a.name).localeCompare(b.vendorSku || b.name));
+}
+
+function buildProcurementProjectBuckets(lines) {
+  const projects = new Map();
+  for (const line of lines) {
+    const projectKey = line.robotId || "unassigned";
+    if (!projects.has(projectKey)) {
+      projects.set(projectKey, {
+        robotId: line.robotId,
+        name: line.robotName || "Unassigned",
+        targetType: line.targetType || "project",
+        quantity: 0,
+        estimatedTotalCents: 0,
+        subassemblies: new Map()
+      });
+    }
+    const project = projects.get(projectKey);
+    project.quantity += Number(line.quantityNeeded || 0);
+    project.estimatedTotalCents += Number(line.totalPriceCents || 0);
+    const subKey = line.subsystemId || line.subassemblyName || "unassigned";
+    if (!project.subassemblies.has(subKey)) {
+      project.subassemblies.set(subKey, {
+        id: line.subsystemId || subKey,
+        name: line.subassemblyName || "Unassigned",
+        quantity: 0,
+        estimatedTotalCents: 0,
+        vendorBuckets: new Map()
+      });
+    }
+    const subassembly = project.subassemblies.get(subKey);
+    subassembly.quantity += Number(line.quantityNeeded || 0);
+    subassembly.estimatedTotalCents += Number(line.totalPriceCents || 0);
+    const vendor = line.vendor || "Unassigned";
+    if (!subassembly.vendorBuckets.has(vendor)) {
+      subassembly.vendorBuckets.set(vendor, { vendor, quantity: 0, estimatedTotalCents: 0, lines: [] });
+    }
+    const vendorBucket = subassembly.vendorBuckets.get(vendor);
+    vendorBucket.quantity += Number(line.quantityNeeded || 0);
+    vendorBucket.estimatedTotalCents += Number(line.totalPriceCents || 0);
+    vendorBucket.lines.push(line);
+  }
+  return [...projects.values()].map((project) => ({
+    ...project,
+    subassemblies: [...project.subassemblies.values()].map((subassembly) => ({
+      ...subassembly,
+      vendorBuckets: [...subassembly.vendorBuckets.values()].map((bucket) => ({
+        ...bucket,
+        lines: aggregateProcurementLines(bucket.lines)
+      })).sort((a, b) => a.vendor.localeCompare(b.vendor))
+    })).sort((a, b) => a.name.localeCompare(b.name))
+  })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function dashboardSnapshot(user = null) {
@@ -1983,10 +2424,7 @@ function dashboardSnapshot(user = null) {
       jobs: store.fabricationJobs.filter((job) => job.status !== "canceled").slice(0, 200),
       items: customParts
     },
-    procurement: {
-      orders: store.procurementOrders.slice(0, 20),
-      items: cotsParts
-    },
+    procurement: procurementSnapshot(cotsParts),
     robotSources: robotSourceSnapshot(),
     rawMaterials: store.rawMaterials,
     settings: settingsSnapshot(),
@@ -2246,6 +2684,7 @@ function normalizeCotsRow(row, input, index) {
     vendorSku,
     manufacturer,
     manufacturerSku,
+    partNumber: vendorSku || manufacturerSku || "",
     material: "Purchased",
     thickness: "",
     quantity: Math.min(999, Math.max(1, quantity)),
@@ -2764,6 +3203,13 @@ function updateQueueCatalogPart(catalogPartId, catalog, part, sourceType) {
       name: part.name,
       vendor: part.vendor || "Unassigned",
       vendorSku: part.vendorSku || "",
+      manufacturer: part.manufacturer || "",
+      manufacturerSku: part.manufacturerSku || "",
+      partNumber: part.partNumber || part.vendorSku || part.manufacturerSku || "",
+      vendorUrl: part.vendorUrl || line.vendorUrl || "",
+      productUrl: part.productUrl || line.productUrl || "",
+      unitPriceCents: part.unitPriceCents ?? line.unitPriceCents ?? null,
+      priceUpdatedAt: part.priceUpdatedAt || line.priceUpdatedAt || "",
       quantityNeeded: Number(part.quantityNeeded ?? part.quantity ?? 1)
     } : line);
     order.vendorGroups = groupCotsParts(order.lines.map((line) => ({
@@ -2982,6 +3428,19 @@ async function deleteFabricationJob(req, res, session, actor, jobId, options = {
   audit("fabrication.job_deleted", `Deleted ${line?.name || job.id}`, actor.email);
   await persistStore();
   return json(res, 200, { fabrication: dashboardSnapshot().fabrication });
+}
+
+async function refreshProcurement(req, res, session, actor) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const stats = await refreshProcurementLookups({
+    force: Boolean(body.force),
+    robotId: String(body.robotId || "").trim(),
+    subassemblyId: String(body.subassemblyId || "").trim()
+  });
+  audit("procurement.vendor_matches_refreshed", `Matched ${stats.matched} of ${stats.lines} procurement line${stats.lines === 1 ? "" : "s"}`, actor.email);
+  await persistStore();
+  return json(res, 200, { procurement: dashboardSnapshot(actor).procurement, stats });
 }
 
 async function updateProcurementOrder(req, res, session, actor, orderId) {
