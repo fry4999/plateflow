@@ -56,7 +56,8 @@ const allowedProcurementVendorRules = [
   { name: "The Thrifty Bot", patterns: [/thethriftybot/i, /thrifty\s*bot/i, /\bttb\b/i] },
   { name: "WCP", patterns: [/wcproducts/i, /west\s*coast\s*products/i, /\bwcp\b/i] },
   { name: "Andymark", patterns: [/andymark/i, /andy\s*mark/i] },
-  { name: "McMaster-Carr", patterns: [/mcmaster/i, /mcmaster-carr/i] }
+  { name: "McMaster-Carr", patterns: [/mcmaster/i, /mcmaster-carr/i] },
+  { name: "V-Belt Guys", patterns: [/v-?belt\s*guys/i, /vbeltguys/i] }
 ];
 
 const procurementVendorAdapters = [
@@ -64,7 +65,8 @@ const procurementVendorAdapters = [
   { vendor: "The Thrifty Bot", type: "shopify", baseUrl: "https://www.thethriftybot.com" },
   { vendor: "WCP", type: "shopify", baseUrl: "https://wcproducts.com" },
   { vendor: "Andymark", type: "shopify", baseUrl: "https://www.andymark.com" },
-  { vendor: "McMaster-Carr", type: "mcmaster", baseUrl: "https://www.mcmaster.com" }
+  { vendor: "McMaster-Carr", type: "mcmaster", baseUrl: "https://www.mcmaster.com" },
+  { vendor: "V-Belt Guys", type: "vbelts", baseUrl: "https://www.vbeltguys.com" }
 ];
 
 const mime = {
@@ -416,7 +418,7 @@ async function refreshStore() {
   if (mergeDuplicateInventoryRecords()) changed = true;
   if (removeLikelyPurchasedFromCustomPipeline()) changed = true;
   if (removeKnownCustomFromProcurementPipeline()) changed = true;
-  if (normalizeShaftProcurementVendors()) changed = true;
+  if (normalizeDerivedProcurementVendors()) changed = true;
   if (changed) await persistStore();
 }
 
@@ -544,10 +546,28 @@ function removeKnownCustomFromProcurementPipeline() {
   return true;
 }
 
-function normalizeShaftProcurementVendors() {
+function normalizeDerivedProcurementVendors() {
   let changed = false;
   const apply = (item) => {
-    if (!item || !(item.shaftStockRollup || isShaftStockProcurementText([item.name, item.category, item.description, item.stock].join(" ")))) return;
+    if (!item) return;
+    const beltSku = timingBeltSkuFromPart(item);
+    if (beltSku) {
+      if (item.vendor !== "V-Belt Guys") {
+        item.vendor = "V-Belt Guys";
+        changed = true;
+      }
+      if (item.vendorSku !== beltSku) {
+        item.vendorSku = beltSku;
+        item.partNumber = beltSku;
+        changed = true;
+      }
+      if (!item.vendorUrl && !item.productUrl) {
+        item.vendorUrl = vendorLink("V-Belt Guys", beltSku, item.name);
+        changed = true;
+      }
+      return;
+    }
+    if (!(item.shaftStockRollup || isShaftStockProcurementText([item.name, item.category, item.description, item.stock].join(" ")))) return;
     if (item.vendor !== "WCP") {
       item.vendor = "WCP";
       changed = true;
@@ -569,7 +589,7 @@ function normalizeShaftProcurementVendors() {
     for (const line of order.lines) apply(line);
     if (changed) order.vendorGroups = groupCotsParts(order.lines);
   }
-  if (changed) audit("procurement.shaft_vendor_normalized", "Forced shaft stock procurement rows to WCP", "system");
+  if (changed) audit("procurement.vendor_normalized", "Normalized shaft stock to WCP and timing belts to V-Belt Guys", "system");
   return changed;
 }
 
@@ -2330,6 +2350,7 @@ function inferredVendorFromSku(sku) {
   if (/^am[-_]/.test(normalized)) return "Andymark";
   if (/^ttb[-_]/.test(normalized)) return "The Thrifty Bot";
   if (/^mcmaster[-_]/.test(normalized) || /^\d+[a-z]\d+/i.test(sku || "")) return "McMaster-Carr";
+  if (normalizeTimingBeltSku(sku)) return "V-Belt Guys";
   return "";
 }
 
@@ -2337,6 +2358,7 @@ async function lookupVendorAdapter(adapter, part, query, sku, updatedAt) {
   if (adapter.type === "shopify") return lookupShopifyVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "bigcommerce") return lookupRevVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "mcmaster") return lookupMcmasterVendor(adapter, part, query, sku, updatedAt);
+  if (adapter.type === "vbelts") return lookupVBeltGuysVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "direct") return lookupDirectVendor(adapter, part, query, sku, updatedAt);
   return null;
 }
@@ -2401,6 +2423,47 @@ async function lookupRevVendor(adapter, part, query, sku, updatedAt) {
       searchUrl: vendorSearchLink(adapter.vendor, sku || query),
       unitPriceCents: centsFromPrice(Array.isArray(priceMatch) ? priceMatch[1] || priceMatch[0] : ""),
       currency: "USD",
+      confidence: 1,
+      matchType: "sku_exact",
+      updatedAt
+    };
+  }
+  return null;
+}
+
+async function lookupVBeltGuysVendor(adapter, part, query, sku, updatedAt) {
+  const beltSku = normalizeTimingBeltSku(sku) || timingBeltSkuFromPart(part) || timingBeltSkuFromText(query);
+  if (!beltSku) return null;
+  const url = new URL(`${adapter.baseUrl}/search/suggest.json`);
+  url.searchParams.set("q", beltSku);
+  url.searchParams.set("resources[type]", "product");
+  url.searchParams.set("resources[limit]", "6");
+  url.searchParams.set("resources[options][fields]", "title,variants.sku,vendor");
+  const payload = await fetchVendorJson(url);
+  const products = Array.isArray(payload?.resources?.results?.products) ? payload.resources.results.products : [];
+  for (const summary of products) {
+    const title = String(summary?.title || "").trim();
+    if (!titleMatchesTimingBeltSku(title, beltSku)) continue;
+    const handle = shopifyHandle(summary.url);
+    let product = null;
+    let variant = null;
+    if (handle) {
+      product = await fetchVendorJson(`${adapter.baseUrl}/products/${handle}.js`);
+      variant = Array.isArray(product?.variants) ? product.variants[0] || null : null;
+    }
+    const productUrl = new URL(summary.url || product?.url || (handle ? `/products/${handle}` : `/search?q=${encodeURIComponent(beltSku)}`), adapter.baseUrl);
+    if (variant?.id) productUrl.searchParams.set("variant", String(variant.id));
+    return {
+      source: "plateflow-vendor",
+      title: String(product?.title || title || part?.name || beltSku).slice(0, 180),
+      sku: beltSku,
+      vendor: adapter.vendor,
+      productUrl: productUrl.toString(),
+      searchUrl: vendorSearchLink(adapter.vendor, beltSku),
+      unitPriceCents: shopifyPriceCents(variant?.price ?? product?.price ?? summary.price),
+      currency: "USD",
+      variantId: String(variant?.id || "").slice(0, 120),
+      variantTitle: String(variant?.title || "").slice(0, 160),
       confidence: 1,
       matchType: "sku_exact",
       updatedAt
@@ -2738,7 +2801,64 @@ function vendorSearchLink(vendor, query) {
   if (canonical === "Andymark") return `https://www.andymark.com/search?q=${encoded}`;
   if (canonical === "The Thrifty Bot") return `https://www.thethriftybot.com/search?q=${encoded}`;
   if (canonical === "McMaster-Carr") return value ? `https://www.mcmaster.com/${encoded}` : "https://www.mcmaster.com/";
+  if (canonical === "V-Belt Guys") return `https://www.vbeltguys.com/search?q=${encoded}`;
   return "";
+}
+
+function normalizeTimingBeltSku(value) {
+  const text = String(value || "").trim().toUpperCase();
+  const match = text.match(/\b(\d{2,5})[-\s_]*(3M|5M|8M|14M)[-\s_]*(\d{1,2})\b/);
+  if (!match) return "";
+  return `${Number(match[1])}-${match[2]}-${String(Number(match[3])).padStart(2, "0")}`;
+}
+
+function timingBeltSkuFromPart(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.vendorSku,
+    part?.manufacturerSku,
+    part?.category,
+    part?.description,
+    part?.variantTitle
+  ].filter(Boolean).join(" ");
+  return timingBeltSkuFromText(text);
+}
+
+function timingBeltSkuFromText(text) {
+  const normalized = String(text || "").toLowerCase();
+  if (!/\bbelt\b/.test(normalized)) return normalizeTimingBeltSku(text);
+  const existing = normalizeTimingBeltSku(text);
+  if (existing) return existing;
+  const teeth = beltToothCount(normalized);
+  const pitch = beltPitch(normalized);
+  const width = beltWidth(normalized);
+  if (!teeth || !pitch || !width) return "";
+  const length = Math.round(teeth * Number(pitch.replace("M", "")));
+  return `${length}-${pitch}-${String(width).padStart(2, "0")}`;
+}
+
+function beltToothCount(text) {
+  const match = String(text || "").match(/\b(\d{2,4})\s*(?:t|tooth|teeth)\b/i);
+  return match ? Number(match[1]) : 0;
+}
+
+function beltPitch(text) {
+  const match = String(text || "").match(/\b(?:htd\s*)?(3|5|8|14)\s*m\b/i);
+  return match ? `${Number(match[1])}M` : "";
+}
+
+function beltWidth(text) {
+  const explicit = String(text || "").match(/\b(\d{1,2})\s*mm\s*(?:wide|width)?\b/i);
+  if (explicit) return Number(explicit[1]);
+  const parenthesized = String(text || "").match(/\((\d{1,2})(?:\s*\/\s*\d{1,2})?\)\s*mm/i);
+  if (parenthesized) return Number(parenthesized[1]);
+  return 0;
+}
+
+function titleMatchesTimingBeltSku(title, sku) {
+  const normalizedTitle = normalizeTimingBeltSku(title);
+  return normalizedTitle === normalizeTimingBeltSku(sku);
 }
 
 function normalizeMcmasterPartNumber(value) {
@@ -3710,25 +3830,41 @@ function normalizeCotsRow(row, input, index) {
   const rowKey = rowValue(row, ["id", "row id", "rowId", "item", "item number"]) || `bom-${index + 1}`;
   const sourceElementId = rowValue(row, ["element id", "elementId", "part studio id", "part studio element id"]) || input.elementId;
   const sourcePartId = rowValue(row, ["part id", "partId", "part studio part id", "body id"]) || "";
-  const vendor = isShaftStockProcurementText([name, rowValue(row, ["category", "classification"]), vendorSku, manufacturerSku].join(" "))
+  const category = String(rowValue(row, ["category", "classification"]) || "purchased").slice(0, 80);
+  const toothCount = rowValue(row, ["teeth", "tooth count", "toothcount"]);
+  const beltPitchValue = rowValue(row, ["pitch", "belt pitch"]);
+  const beltWidthValue = rowValue(row, ["width", "belt width"]);
+  const beltSku = timingBeltSkuFromText([
+    name,
+    vendorSku,
+    manufacturerSku,
+    category,
+    toothCount ? `${toothCount}T` : "",
+    beltPitchValue,
+    beltWidthValue ? `${beltWidthValue}mm wide` : ""
+  ].filter(Boolean).join(" "));
+  const finalVendorSku = beltSku || vendorSku;
+  const vendor = beltSku
+    ? "V-Belt Guys"
+    : isShaftStockProcurementText([name, category, vendorSku, manufacturerSku].join(" "))
     ? "WCP"
     : rawVendor;
   return {
     id: String(rowKey).slice(0, 80),
     name: String(name).slice(0, 120),
     type: "cots",
-    category: String(rowValue(row, ["category", "classification"]) || "purchased").slice(0, 80),
+    category: beltSku ? "belt" : category,
     vendor: vendor || "Unassigned",
-    vendorSku,
+    vendorSku: finalVendorSku,
     manufacturer,
     manufacturerSku,
-    partNumber: vendorSku || manufacturerSku || "",
+    partNumber: finalVendorSku || manufacturerSku || "",
     material: "Purchased",
     thickness: "",
     quantity: Math.min(999, Math.max(1, quantity)),
     status: "needed",
     procurementStatus: "needed",
-    vendorUrl: vendorLink(vendor, vendorSku || manufacturerSku, name),
+    vendorUrl: vendorLink(vendor, finalVendorSku || manufacturerSku, name),
     robotId: input.robotId || "",
     subsystemId: input.subassemblyId || "",
     subsystem: input.subassemblyName || input.documentName || input.sourceTag,

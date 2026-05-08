@@ -1955,7 +1955,7 @@ function renderProcurementLine(line) {
 }
 
 function procurementVendors() {
-  const vendors = ["REV", "The Thrifty Bot", "WCP", "Andymark", "McMaster-Carr", "Unassigned"];
+  const vendors = ["REV", "The Thrifty Bot", "WCP", "Andymark", "McMaster-Carr", "V-Belt Guys", "Unassigned"];
   return vendors;
 }
 
