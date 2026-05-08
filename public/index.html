@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
     <link rel="icon" href="/plateflow-logo.png">
-    <link rel="stylesheet" href="/styles.css?v=23">
+    <link rel="stylesheet" href="/styles.css?v=24">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -58,6 +58,7 @@
 
       <div id="appShell" class="app-shell hidden">
         <p id="message" class="message global-message" role="status" aria-live="polite">Ready when your CAD is.</p>
+        <div id="importConfirmation" class="import-confirmation hidden" role="status" aria-live="polite"></div>
         <section id="dashboard" class="dashboard app-page active-page" data-page>
           <div class="section-heading">
             <span class="eyebrow">Build Ops Overview</span>
@@ -340,6 +341,7 @@
           <button id="backToRobotsButton" class="ghost small" type="button">Back to targets</button>
         </div>
         <p id="fabQueueCount" class="page-kicker">No custom parts queued.</p>
+        <div id="fabricationSwitcher" class="fabrication-switcher"></div>
         <div id="fabricationJobs" class="fabrication-board">No fabrication jobs yet.</div>
       </section>
 
@@ -523,6 +525,6 @@
       </section>
     </div>
 
-    <script src="/app.js?v=23"></script>
+    <script src="/app.js?v=24"></script>
   </body>
 </html>

@@ -8,8 +8,13 @@ let dashboardState = null;
 let selectedRobotId = "";
 let selectedSubassemblyId = "";
 let messageTimer = null;
+let importConfirmationTimer = null;
 let dialogResolver = null;
 let lastFocusedElement = null;
+let dashboardRevision = 0;
+let realtimeSource = null;
+let realtimePollTimer = null;
+let realtimeReconnectTimer = null;
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -80,6 +85,7 @@ const els = {
   robotRequirementList: document.querySelector("#robotRequirementList"),
   fabQueueCount: document.querySelector("#fabQueueCount"),
   fabricationTitle: document.querySelector("#fabricationTitle"),
+  fabricationSwitcher: document.querySelector("#fabricationSwitcher"),
   backToRobotsButton: document.querySelector("#backToRobotsButton"),
   procQueueCount: document.querySelector("#procQueueCount"),
   fabricationJobs: document.querySelector("#fabricationJobs"),
@@ -97,6 +103,7 @@ const els = {
   summaryQty: document.querySelector("#summaryQty"),
   summaryMaterials: document.querySelector("#summaryMaterials"),
   message: document.querySelector("#message"),
+  importConfirmation: document.querySelector("#importConfirmation"),
   dialogBackdrop: document.querySelector("#dialogBackdrop"),
   dialogKicker: document.querySelector("#dialogKicker"),
   dialogTitle: document.querySelector("#dialogTitle"),
@@ -224,6 +231,8 @@ function bindEvents() {
     selectedSubassemblyId = "";
     location.hash = "#robots";
   });
+  if (els.fabricationSwitcher) els.fabricationSwitcher.addEventListener("change", onFabricationSwitcherChange);
+  if (els.fabricationSwitcher) els.fabricationSwitcher.addEventListener("click", onFabricationSwitcherClick);
   if (els.inventorySearch) els.inventorySearch.addEventListener("input", renderCurrentInventoryTable);
   if (els.inventoryTypeFilter) els.inventoryTypeFilter.addEventListener("change", renderCurrentInventoryTable);
   if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", renderCurrentInventoryTable);
@@ -336,6 +345,8 @@ function renderAppAccess(session) {
     `;
   }
   if (els.appLogoutLink) els.appLogoutLink.classList.toggle("hidden", !session.appAuthenticated);
+  if (allowApp) startRealtime();
+  else stopRealtime();
 }
 
 function canLoadDashboard(session) {
@@ -379,18 +390,20 @@ async function onImport(event) {
       method: "POST",
       body: JSON.stringify({ ...source, previewOnly })
     });
-    parts = result.parts.map((part) => ({ ...part, selected: true }));
+    parts = result.parts.map((part) => normalizePreviewPart(part, mode));
     source = result.source;
     renderParts();
     if (previewOnly) {
+      const cotsDetected = mode === "custom" ? parts.filter(likelyCotsPart).length : 0;
       setMessage(mode === "cots"
         ? `Loaded ${parts.length} Assembly BOM row${parts.length === 1 ? "" : "s"}. Deselect anything you do not want, then import.`
-        : `Loaded ${parts.length} Onshape custom part${parts.length === 1 ? "" : "s"}. Deselect reference geometry, then import selected or all.`, "ok");
+        : `Loaded ${parts.length} Onshape custom part${parts.length === 1 ? "" : "s"}. ${cotsDetected ? `${cotsDetected} belt/COTS-like row${cotsDetected === 1 ? " was" : "s were"} left deselected.` : "Deselect reference geometry, then import selected or all."}`, "ok");
       return;
     }
     if (!embeddedMode) await loadDashboard();
     const noun = parts.length === 1 ? "part" : "parts";
     setMessage(embeddedMode ? `Sent ${parts.length} ${noun} to the PlateFlow dashboard.` : `Imported ${parts.length} ${noun} into ${mode === "cots" ? "procurement" : "fabrication"} inventory.`, "ok");
+    showImportConfirmation(mode === "cots" ? "COTS rows imported" : "Custom parts imported", `${parts.length} ${noun} updated on the dashboard.`);
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -446,6 +459,41 @@ function loadDemo() {
   setMessage("Local custom-part demo loaded. Demo rows are never saved unless you import from Onshape.", "ok");
 }
 
+function normalizePreviewPart(part, mode) {
+  const sourceType = mode === "cots" ? "cots" : likelyCotsPart(part) ? "cots" : "custom";
+  return {
+    ...part,
+    type: sourceType,
+    sourceType,
+    selected: mode === "cots" || sourceType === "custom",
+    status: sourceType === "cots" && mode === "custom" ? "COTS detected" : part.status || part.procurementStatus || "needed"
+  };
+}
+
+function likelyCotsPart(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.vendorSku,
+    part?.manufacturerSku,
+    part?.category,
+    part?.description
+  ].filter(Boolean).join(" ").toLowerCase();
+  return [
+    /\b\d+\s*t\s*5m\b/i,
+    /#\s*t\s*\d*\s*5m/i,
+    /\bwide\s+belt\b/i,
+    /\b\d+\s*mm\s+wide\s+belt\b/i,
+    /\bbelt\b/i,
+    /\bpulley\b/i,
+    /\bbearing\b/i,
+    /\bmotor\b/i,
+    /\bgearbox\b/i,
+    /\bsprocket\b/i,
+    /\bchain\b/i
+  ].some((pattern) => pattern.test(text));
+}
+
 function renderParts() {
   els.exportButton.disabled = !source || !parts.length;
   els.partCount.textContent = parts.length ? `${parts.length} part${parts.length === 1 ? "" : "s"} loaded` : "No parts loaded";
@@ -478,13 +526,21 @@ function onPartEdit(event) {
   const index = Number(event.target.dataset.index);
   const field = event.target.dataset.field;
   if (!Number.isInteger(index) || !field) return;
+  if (field === "selected" && event.target.checked && els.importForm?.elements.syncMode?.value !== "cots" && likelyCotsPart(parts[index])) {
+    event.target.checked = false;
+    parts[index].selected = false;
+    setMessage("That row looks like COTS hardware, so PlateFlow keeps it out of the custom fabrication import.", "error");
+    updateSummary();
+    return;
+  }
   parts[index][field] = field === "selected" ? event.target.checked : event.target.value;
   if (field === "quantity") parts[index][field] = Math.max(1, Number(event.target.value || 1));
   updateSummary();
 }
 
 function toggleAll(event) {
-  parts = parts.map((part) => ({ ...part, selected: event.target.checked }));
+  const customMode = els.importForm?.elements.syncMode?.value !== "cots";
+  parts = parts.map((part) => ({ ...part, selected: event.target.checked && !(customMode && likelyCotsPart(part)) }));
   renderParts();
 }
 
@@ -696,9 +752,11 @@ async function submitConfiguredParts(selectedParts, options = {}) {
     setMessage("Load Onshape parts before submitting custom parts.", "error");
     return;
   }
-  const selected = selectedParts.filter(Boolean);
+  const incoming = selectedParts.filter(Boolean);
+  const cotsLike = incoming.filter(likelyCotsPart);
+  const selected = incoming.filter((part) => !likelyCotsPart(part));
   if (!selected.length) {
-    setMessage("Select at least one part to import.", "error");
+    setMessage(cotsLike.length ? "The selected row looks like COTS hardware. Import it from an Assembly BOM instead of the custom Part Studio flow." : "Select at least one part to import.", "error");
     return;
   }
   const robotId = els.configRobot?.value || selectedRobotId || "";
@@ -727,7 +785,7 @@ async function submitConfiguredParts(selectedParts, options = {}) {
     quantity: Math.max(1, Number(options.forceQuantityFromConfigurator ? els.configQuantity?.value || item.quantity || 1 : item.quantity || 1))
   }));
   const previousParts = parts;
-  setMessage(`Importing ${selected.length} custom part${selected.length === 1 ? "" : "s"} into ${subassemblyNameFromSource()}...`);
+  setMessage(`Importing ${selected.length} custom part${selected.length === 1 ? "" : "s"} into ${subassemblyNameFromSource()}...${cotsLike.length ? ` Skipping ${cotsLike.length} COTS-like row${cotsLike.length === 1 ? "" : "s"}.` : ""}`);
   try {
     const result = await api("/api/onshape/import", {
       method: "POST",
@@ -741,7 +799,9 @@ async function submitConfiguredParts(selectedParts, options = {}) {
     });
     renderParts();
     await loadDashboard({ preserveParts: true, quiet: true });
-    setMessage(`Imported ${selected.length} custom part${selected.length === 1 ? "" : "s"} into ${subassemblyNameFromSource()}.`, "ok");
+    const revision = Number(result.inventory?.revision || 1);
+    setMessage(`Imported ${selected.length} custom part${selected.length === 1 ? "" : "s"} into ${subassemblyNameFromSource()} · revision ${revision}.`, "ok");
+    showImportConfirmation("Custom import complete", `${selected.length} part${selected.length === 1 ? "" : "s"} synced to ${subassemblyNameFromSource()}${cotsLike.length ? `; ${cotsLike.length} COTS-like row${cotsLike.length === 1 ? "" : "s"} skipped.` : "."}`);
   } catch (error) {
     parts = previousParts;
     renderParts();
@@ -770,7 +830,9 @@ async function submitCotsParts(selectedParts) {
     parts = previousParts.map((item) => ({ ...item, selected: selected.some((part) => (part.id || part.name) === (item.id || item.name)) }));
     renderParts();
     await loadDashboard({ preserveParts: true, quiet: true });
-    setMessage(`Imported ${selected.length} COTS row${selected.length === 1 ? "" : "s"} into procurement.`, "ok");
+    const revision = Number(result.inventory?.revision || 1);
+    setMessage(`Imported ${selected.length} COTS row${selected.length === 1 ? "" : "s"} into procurement · revision ${revision}.`, "ok");
+    showImportConfirmation("COTS import complete", `${selected.length} BOM row${selected.length === 1 ? "" : "s"} synced to procurement.`);
   } catch (error) {
     parts = previousParts;
     renderParts();
@@ -826,7 +888,12 @@ async function loadInventory() {
 
 async function loadDashboard(options = {}) {
   const dashboard = await api("/api/dashboard");
+  applyDashboardState(dashboard, options);
+}
+
+function applyDashboardState(dashboard, options = {}) {
   dashboardState = dashboard;
+  normalizeSelectedTarget();
   renderInventory(dashboard.inventory);
   renderInventoryTable(dashboard.inventory.parts);
   renderRobots(dashboard.robots);
@@ -836,7 +903,7 @@ async function loadDashboard(options = {}) {
   renderRawMaterials(dashboard.rawMaterials);
   renderSettings(dashboard.settings);
   renderAudit(dashboard.admin.auditLogs);
-  await loadAdminUsers();
+  if (!options.skipAdminUsers) loadAdminUsers();
   renderSubsystemOptions();
   if (!options.preserveParts) {
     parts = dashboard.inventory.parts.map((part) => ({ ...part, selected: true }));
@@ -845,6 +912,28 @@ async function loadDashboard(options = {}) {
     if (!options.quiet && parts.length) setMessage(`Loaded ${parts.length} inventoried item${parts.length === 1 ? "" : "s"}.`, "ok");
   } else {
     renderCustomConfigurator();
+  }
+}
+
+function normalizeSelectedTarget() {
+  const robots = dashboardState?.robots || [];
+  if (!robots.length) {
+    selectedRobotId = "";
+    selectedSubassemblyId = "";
+    return;
+  }
+  let robot = robots.find((item) => item.id === selectedRobotId);
+  if (!robot) {
+    robot = robots[0];
+    selectedRobotId = robot.id;
+  }
+  const subassemblies = robotSubassemblies(robot);
+  if (!subassemblies.length) {
+    selectedSubassemblyId = "";
+    return;
+  }
+  if (!subassemblies.some((item) => item.id === selectedSubassemblyId)) {
+    selectedSubassemblyId = subassemblies[0].id;
   }
 }
 
@@ -931,6 +1020,7 @@ function renderOverview(dashboard) {
   }
   const robot = robots.find((item) => item.id === selectedRobotId) || robots[0];
   selectedRobotId = robot.id;
+  const robotCounts = readinessCounts(robot);
   const subassemblies = robotSubassemblies(robot);
   els.overviewRobotPanel.innerHTML = `
     <article class="overview-robot-card">
@@ -938,9 +1028,9 @@ function renderOverview(dashboard) {
         <div>
           <span class="eyebrow">Selected ${escapeHtml(targetLabel(robot))}</span>
           <h3>${escapeHtml(robot.name)}</h3>
-          <p>${escapeHtml(robot.season)} · ${Number(robot.counts.requirements)} requirements</p>
+          <p>${escapeHtml(robot.season)} · ${Number(robot.counts.requirements)} parts · ${robotCounts.label} ready</p>
         </div>
-        <strong>${Number(robot.readiness)}%</strong>
+        <strong>${escapeHtml(robotCounts.label)}</strong>
       </div>
       <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(robot.readiness)))}%"></span></div>
     </article>
@@ -959,7 +1049,6 @@ function renderInventory(inventory) {
   els.metricCots.textContent = String(inventory.totals.cots || 0);
   els.metricFabrication.textContent = String(inventory.totals.fabrication || 0);
   els.metricProcurement.textContent = String(inventory.totals.procurement || 0);
-  if (els.fabQueueCount) els.fabQueueCount.textContent = inventory.totals.fabrication ? `${inventory.totals.fabrication} custom part${inventory.totals.fabrication === 1 ? "" : "s"} on the fabrication board.` : "No custom parts queued.";
   if (els.procQueueCount) els.procQueueCount.textContent = inventory.totals.procurement ? `${inventory.totals.procurement} COTS item${inventory.totals.procurement === 1 ? "" : "s"} awaiting procurement review.` : "No COTS parts queued.";
 }
 
@@ -1015,7 +1104,7 @@ function renderInventoryTable(items) {
     <tr data-item-key="${escapeAttr(part.itemKey)}" data-source-type="${escapeAttr(part.sourceType || part.type || "custom")}">
       <td><img class="inventory-preview" src="${escapeAttr(part.previewUrl || "")}" alt="${escapeAttr(part.name)} preview" loading="lazy"></td>
       <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
-      <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span></td>
+      <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span><small class="revision-note" title="${escapeAttr(revisionTooltip(part))}">${escapeHtml(revisionLabel(part))}</small></td>
       <td><input class="part-name-input" data-field="name" size="${partNameInputSize(part.name)}" value="${escapeAttr(part.name || "")}" aria-label="Part name"></td>
       <td><input data-field="partNumber" value="${escapeAttr(inventoryPartNumber(part))}" aria-label="Part number or SKU"></td>
       <td><input data-field="category" value="${escapeAttr(part.category || "uncategorized")}" aria-label="Category"></td>
@@ -1054,6 +1143,25 @@ function inventoryPartNumber(part) {
   return part.partNumber || part.vendorSku || part.manufacturerSku || part.id || "";
 }
 
+function revisionLabel(part) {
+  const diff = part.lastDiff || {};
+  const added = Array.isArray(diff.added) ? diff.added.length : 0;
+  const changed = Array.isArray(diff.changed) ? diff.changed.length : 0;
+  const removed = Array.isArray(diff.removed) ? diff.removed.length : 0;
+  return `rev ${Number(part.revision || 1)} · +${added} Δ${changed} -${removed}`;
+}
+
+function revisionTooltip(part) {
+  const diff = part.lastDiff || {};
+  const lines = [
+    `Revision ${Number(part.revision || 1)}`,
+    `Added: ${(diff.added || []).join(", ") || "none"}`,
+    `Changed: ${(diff.changed || []).join(", ") || "none"}`,
+    `Removed: ${(diff.removed || []).join(", ") || "none"}`
+  ];
+  return lines.join("\n");
+}
+
 function neededCell(part) {
   const neededBy = Array.isArray(part.neededBy) ? part.neededBy : [];
   const total = neededBy.length ? neededBy.reduce((sum, item) => sum + Number(item.quantityNeeded || 0), 0) : Number(part.quantityNeeded ?? part.quantity ?? 0);
@@ -1077,9 +1185,9 @@ function renderRobots(robots) {
       <div class="card-head">
         <div>
           <h3>${escapeHtml(robot.name)}</h3>
-          <p>${escapeHtml(targetLabel(robot))} · ${escapeHtml(robot.season)} · ${Number(robot.counts.requirements)} requirements</p>
+          <p>${escapeHtml(targetLabel(robot))} · ${escapeHtml(robot.season)} · ${Number(robot.counts.requirements)} parts</p>
         </div>
-        <strong>${Number(robot.readiness)}%</strong>
+        <strong>${escapeHtml(readinessCounts(robot).label)}</strong>
       </div>
       <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(robot.readiness)))}%"></span></div>
       <dl class="mini-stats">
@@ -1089,7 +1197,7 @@ function renderRobots(robots) {
       </dl>
       <div class="subsystem-list">
         ${robotSubassemblies(robot).slice(0, 4).map((subsystem) => `
-          <span>${escapeHtml(subsystem.name)} <b>${Number(subsystem.readiness)}%</b></span>
+          <span>${escapeHtml(subsystem.name)} <b>${escapeHtml(readinessCounts(subsystem).label)}</b></span>
         `).join("") || `<span>No sub-assemblies yet</span>`}
       </div>
     </article>
@@ -1103,7 +1211,7 @@ function renderRobotWorkspace(robot) {
   if (!robot) return;
   const sources = dashboardState?.robotSources || [];
   els.robotWorkspaceTitle.textContent = robot.name;
-  els.robotWorkspaceMeta.textContent = `${targetLabel(robot)} · ${robot.season} · ${Number(robot.counts.requirements)} requirement${Number(robot.counts.requirements) === 1 ? "" : "s"} · ${Number(robot.readiness)}% ready`;
+  els.robotWorkspaceMeta.textContent = `${targetLabel(robot)} · ${robot.season} · ${Number(robot.counts.requirements)} part${Number(robot.counts.requirements) === 1 ? "" : "s"} · ${readinessCounts(robot).label} ready`;
   els.robotAssemblySelect.innerHTML = [
     `<option value="">Select synced Assembly BOM</option>`,
     ...sources.map((sourceItem) => `<option value="${escapeAttr(sourceItem.id)}">${escapeHtml(sourceItem.label)} · ${Number(sourceItem.partCount)} items</option>`)
@@ -1111,16 +1219,13 @@ function renderRobotWorkspace(robot) {
   const requirements = robot.requirements || [];
   const subassemblies = robotSubassemblies(robot);
   const requirementRows = requirements.map((requirement) => {
-    const received = Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1);
-    const installed = Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1);
     return `
-      <div class="requirement-row" data-requirement-id="${escapeAttr(requirement.id)}">
+      <div class="requirement-row compact" data-requirement-id="${escapeAttr(requirement.id)}">
         <div>
           <strong>${escapeHtml(requirement.name)}</strong>
-          <span>${escapeHtml(requirement.sourceDocument || "Assembly BOM")} · ${escapeHtml([requirement.vendor, requirement.vendorSku].filter(Boolean).join(" ") || "No vendor")} · qty ${Number(requirement.quantityNeeded || 1)}</span>
+          <span>${escapeHtml(requirement.sourceDocument || "Onshape")}</span>
         </div>
-        <label><input type="checkbox" data-field="received" ${received ? "checked" : ""}> Received</label>
-        <label><input type="checkbox" data-field="installed" ${installed ? "checked" : ""}> Installed</label>
+        <strong>qty ${Number(requirement.quantityNeeded || 1)}</strong>
       </div>
     `;
   }).join("");
@@ -1143,6 +1248,7 @@ function robotSubassemblies(robot) {
 }
 
 function renderSubassemblyCard(robot, subassembly) {
+  const counts = readinessCounts(subassembly);
   return `
     <article class="subassembly-card" data-robot-id="${escapeAttr(robot.id)}" data-subassembly-id="${escapeAttr(subassembly.id)}" tabindex="0">
       <div class="card-head">
@@ -1150,12 +1256,23 @@ function renderSubassemblyCard(robot, subassembly) {
           <h3>${escapeHtml(subassembly.name)}</h3>
           <p>${Number(subassembly.counts?.requirements || subassembly.partsNeeded || 0)} part${Number(subassembly.counts?.requirements || subassembly.partsNeeded || 0) === 1 ? "" : "s"} · ${Number(subassembly.counts?.fabricationJobs || 0)} fab</p>
         </div>
-        <strong>${Number(subassembly.readiness || 0)}%</strong>
+        <strong>${escapeHtml(counts.label)}</strong>
       </div>
       <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(subassembly.readiness || 0)))}%"></span></div>
       <button class="ghost small" type="button" data-action="open-subassembly">Open workspace</button>
     </article>
   `;
+}
+
+function readinessCounts(item) {
+  const counts = item?.counts || {};
+  const needed = Number(counts.quantityNeeded ?? item?.quantityNeeded ?? counts.requirements ?? item?.partsNeeded ?? 0);
+  const ready = Number(counts.quantityReady ?? item?.quantityReady ?? counts.ready ?? 0);
+  return {
+    needed,
+    ready,
+    label: `${ready}/${needed}`
+  };
 }
 
 function onSubassemblyOpen(event) {
@@ -1169,14 +1286,18 @@ function onSubassemblyOpen(event) {
 
 function selectedSubassemblyContext() {
   const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId) || (dashboardState?.robots || [])[0] || null;
-  const subassembly = robot ? (robot.subsystems || []).find((item) => item.id === selectedSubassemblyId) || robotSubassemblies(robot)[0] || null : null;
-  if (robot && subassembly && !selectedSubassemblyId) selectedSubassemblyId = subassembly.id;
+  const subassemblies = robotSubassemblies(robot);
+  const subassembly = robot ? (subassemblies.find((item) => item.id === selectedSubassemblyId) || subassemblies[0] || null) : null;
+  if (robot && selectedRobotId !== robot.id) selectedRobotId = robot.id;
+  if (robot && subassembly && selectedSubassemblyId !== subassembly.id) selectedSubassemblyId = subassembly.id;
+  if (robot && !subassembly) selectedSubassemblyId = "";
   return { robot, subassembly };
 }
 
 function renderFabrication(fabrication) {
   if (!els.fabricationJobs) return;
   const { robot, subassembly } = selectedSubassemblyContext();
+  renderFabricationSwitcher(robot, subassembly);
   const jobs = filterFabricationJobs(fabrication?.jobs || [], robot, subassembly);
   if (els.fabricationTitle) els.fabricationTitle.textContent = subassembly ? subassembly.name : "Custom part queue";
   if (els.fabQueueCount) {
@@ -1207,6 +1328,53 @@ function renderFabrication(fabrication) {
       }).join("")}
     </div>
   `;
+}
+
+function renderFabricationSwitcher(robot, subassembly) {
+  if (!els.fabricationSwitcher) return;
+  const robots = dashboardState?.robots || [];
+  if (!robots.length) {
+    els.fabricationSwitcher.classList.add("hidden");
+    els.fabricationSwitcher.innerHTML = "";
+    return;
+  }
+  els.fabricationSwitcher.classList.remove("hidden");
+  const subassemblies = robotSubassemblies(robot);
+  els.fabricationSwitcher.innerHTML = `
+    <label>
+      <span>Target</span>
+      <select data-action="fab-target">
+        ${robots.map((item) => `<option value="${escapeAttr(item.id)}"${item.id === robot?.id ? " selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(targetLabel(item))}</option>`).join("")}
+      </select>
+    </label>
+    <div class="fab-switcher-pills" aria-label="Sub-assembly boards">
+      ${subassemblies.length ? subassemblies.map((item) => `
+        <button class="ghost small ${item.id === subassembly?.id ? "active" : ""}" type="button" data-subassembly-id="${escapeAttr(item.id)}">
+          ${escapeHtml(item.name)} <span>${escapeHtml(readinessCounts(item).label)}</span>
+        </button>
+      `).join("") : `<span class="empty">No sub-assemblies for this target yet.</span>`}
+    </div>
+  `;
+}
+
+function onFabricationSwitcherChange(event) {
+  const select = event.target.closest("select[data-action='fab-target']");
+  if (!select) return;
+  selectedRobotId = select.value;
+  const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
+  selectedSubassemblyId = robotSubassemblies(robot)[0]?.id || "";
+  renderRobots(dashboardState?.robots || []);
+  renderOverview(dashboardState);
+  renderFabrication(dashboardState?.fabrication || { jobs: [] });
+}
+
+function onFabricationSwitcherClick(event) {
+  const button = event.target.closest("button[data-subassembly-id]");
+  if (!button) return;
+  selectedSubassemblyId = button.dataset.subassemblyId || "";
+  renderRobots(dashboardState?.robots || []);
+  renderOverview(dashboardState);
+  renderFabrication(dashboardState?.fabrication || { jobs: [] });
 }
 
 function filterFabricationJobs(jobs, robot, subassembly) {
@@ -1500,7 +1668,11 @@ function onRobotSelect(event) {
   const card = event.target.closest("[data-robot-id]");
   if (!card) return;
   selectedRobotId = card.dataset.robotId;
+  const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
+  selectedSubassemblyId = robotSubassemblies(robot)[0]?.id || "";
   renderRobots(dashboardState?.robots || []);
+  renderOverview(dashboardState);
+  renderFabrication(dashboardState?.fabrication || { jobs: [] });
 }
 
 async function onRobotCreate(event) {
@@ -1769,6 +1941,81 @@ function updateSummary() {
   els.summaryMaterials.textContent = materials.length ? materials.join(", ") : "None";
 }
 
+function startRealtime() {
+  if (embeddedMode || realtimeSource || !window.EventSource || realtimeReconnectTimer) return;
+  if (realtimePollTimer) {
+    clearInterval(realtimePollTimer);
+    realtimePollTimer = null;
+  }
+  realtimeSource = new EventSource("/api/events");
+  realtimeSource.addEventListener("dashboard", onRealtimeDashboard);
+  realtimeSource.addEventListener("auth", onRealtimeAuth);
+  realtimeSource.addEventListener("open", () => {
+    if (realtimePollTimer) {
+      clearInterval(realtimePollTimer);
+      realtimePollTimer = null;
+    }
+  });
+  realtimeSource.addEventListener("error", () => {
+    stopRealtimeSourceOnly();
+    if (!realtimePollTimer) realtimePollTimer = setInterval(refreshDashboardRealtimeFallback, 2500);
+    realtimeReconnectTimer = setTimeout(() => {
+      realtimeReconnectTimer = null;
+      startRealtime();
+    }, 2500);
+  });
+}
+
+function stopRealtime() {
+  stopRealtimeSourceOnly();
+  if (realtimePollTimer) {
+    clearInterval(realtimePollTimer);
+    realtimePollTimer = null;
+  }
+  if (realtimeReconnectTimer) {
+    clearTimeout(realtimeReconnectTimer);
+    realtimeReconnectTimer = null;
+  }
+}
+
+function stopRealtimeSourceOnly() {
+  if (!realtimeSource) return;
+  realtimeSource.close();
+  realtimeSource = null;
+}
+
+function onRealtimeDashboard(event) {
+  try {
+    const payload = JSON.parse(event.data || "{}");
+    if (!payload.dashboard) return;
+    const revision = Number(payload.revision || 0);
+    if (revision && revision <= dashboardRevision) return;
+    dashboardRevision = revision;
+    applyDashboardState(payload.dashboard, { preserveParts: true, quiet: true, skipAdminUsers: true });
+  } catch {
+    // Ignore malformed realtime frames; the polling fallback will recover if needed.
+  }
+}
+
+function onRealtimeAuth(event) {
+  try {
+    const payload = JSON.parse(event.data || "{}");
+    if (payload.authenticated === false) stopRealtime();
+  } catch {
+    stopRealtime();
+  }
+}
+
+async function refreshDashboardRealtimeFallback() {
+  if (embeddedMode || !dashboardState) return;
+  try {
+    const dashboard = await api("/api/dashboard");
+    applyDashboardState(dashboard, { preserveParts: true, quiet: true, skipAdminUsers: true });
+  } catch {
+    // Keep the retry loop quiet; visible errors belong to direct user actions.
+  }
+}
+
 async function api(url, options = {}, retry = {}) {
   const response = await fetch(url, {
     ...options,
@@ -1813,6 +2060,28 @@ function setMessage(text, type = "") {
       }, 850);
     }, 2000);
   }
+}
+
+function showImportConfirmation(title, detail = "") {
+  if (!els.importConfirmation) return;
+  if (importConfirmationTimer) {
+    clearTimeout(importConfirmationTimer);
+    importConfirmationTimer = null;
+  }
+  els.importConfirmation.innerHTML = `
+    <strong>${escapeHtml(title)}</strong>
+    ${detail ? `<span>${escapeHtml(detail)}</span>` : ""}
+  `;
+  els.importConfirmation.classList.remove("hidden", "fade-out");
+  importConfirmationTimer = setTimeout(() => {
+    els.importConfirmation.classList.add("fade-out");
+    importConfirmationTimer = setTimeout(() => {
+      els.importConfirmation.classList.add("hidden");
+      els.importConfirmation.classList.remove("fade-out");
+      els.importConfirmation.textContent = "";
+      importConfirmationTimer = null;
+    }, 700);
+  }, 3200);
 }
 
 function confirmAction(options = {}) {

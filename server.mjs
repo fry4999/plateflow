@@ -29,6 +29,9 @@ const storage = await createStorage();
 const store = await storage.load();
 const sessions = new Map();
 const rateBuckets = new Map();
+const eventClients = new Map();
+let storeRevision = 0;
+let realtimeTimer = null;
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -56,6 +59,7 @@ createServer(async (req, res) => {
     if (url.pathname === "/auth/onshape/callback") return await onshapeCallback(req, res, session, url);
     if (url.pathname === "/auth/logout") return await logout(res, session);
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
+    if (url.pathname === "/api/events") return subscribeEventStream(req, res, session);
     if (url.pathname === "/api/inventory") return withAppAccess(session, res, () => json(res, 200, inventorySnapshot()));
     if (url.pathname === "/api/inventory/items" && req.method === "POST") return withAppAccess(session, res, (user) => createInventoryItem(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
     if (url.pathname.startsWith("/api/inventory/items/") && url.pathname.endsWith("/thumbnail")) return withAppAccess(session, res, () => inventoryItemThumbnail(res, session, pathId(url.pathname, "/api/inventory/items/").replace(/\/thumbnail$/, "")));
@@ -334,13 +338,17 @@ function defaultStore() {
 
 async function persistStore() {
   await storage.save(store);
+  storeRevision += 1;
+  queueRealtimeBroadcast();
 }
 
 async function refreshStore() {
   const latest = await storage.load();
   for (const key of Object.keys(store)) delete store[key];
   Object.assign(store, latest);
-  if (ensureMissingCustomPartNumbers()) await persistStore();
+  let changed = ensureMissingCustomPartNumbers();
+  if (mergeDuplicateInventoryRecords()) changed = true;
+  if (changed) await persistStore();
 }
 
 function ensureMissingCustomPartNumbers() {
@@ -354,6 +362,82 @@ function ensureMissingCustomPartNumbers() {
     });
   }
   return changed;
+}
+
+function subscribeEventStream(req, res, session) {
+  if (store.users.length) {
+    const user = store.users.find((item) => item.id === session.appUserId && item.status === "active");
+    if (!user) return json(res, 401, { error: "Sign in to PlateFlow first" });
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  res.write("retry: 1500\n\n");
+
+  const id = randomBytes(8).toString("hex");
+  const client = {
+    id,
+    res,
+    sessionId: session.id,
+    appUserId: session.appUserId || "",
+    keepAlive: setInterval(() => {
+      try {
+        res.write(": keepalive\n\n");
+      } catch {
+        removeEventClient(id);
+      }
+    }, 25_000)
+  };
+  eventClients.set(id, client);
+  sendRealtimeSnapshot(client, "dashboard");
+  req.on("close", () => removeEventClient(id));
+}
+
+function removeEventClient(id) {
+  const client = eventClients.get(id);
+  if (!client) return;
+  clearInterval(client.keepAlive);
+  eventClients.delete(id);
+}
+
+function queueRealtimeBroadcast() {
+  if (realtimeTimer) return;
+  realtimeTimer = setTimeout(() => {
+    realtimeTimer = null;
+    broadcastRealtimeSnapshots();
+  }, 35);
+}
+
+function broadcastRealtimeSnapshots() {
+  for (const client of eventClients.values()) {
+    sendRealtimeSnapshot(client, "dashboard");
+  }
+}
+
+function sendRealtimeSnapshot(client, eventName) {
+  const user = client.appUserId ? store.users.find((item) => item.id === client.appUserId && item.status === "active") : null;
+  if (store.users.length && !user) {
+    writeSse(client, "auth", { authenticated: false, revision: storeRevision });
+    return;
+  }
+  writeSse(client, eventName, {
+    authenticated: true,
+    revision: storeRevision,
+    dashboard: dashboardSnapshot(user)
+  });
+}
+
+function writeSse(client, eventName, payload) {
+  try {
+    client.res.write(`event: ${eventName}\n`);
+    client.res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  } catch {
+    removeEventClient(client.id);
+  }
 }
 
 function audit(action, detail, actor = "system") {
@@ -776,19 +860,19 @@ async function importOnshape(req, res, session) {
   if (input.configuration) params.set("configuration", input.configuration);
 
   const parts = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}?${params}`);
-  const normalizedParts = await enrichPhysicalPartData(
+  const normalizedParts = markLikelyPurchasedParts(await enrichPhysicalPartData(
     accessToken,
     base,
     input,
     (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input)),
     configuredParts
-  );
+  ));
   if (body.previewOnly) return json(res, 200, { parts: normalizedParts, source: input });
 
   const normalized = withGeneratedCustomPartNumbers(
     configuredParts.length ? applyConfiguredParts(normalizedParts, configuredParts, input) : normalizedParts,
     input
-  );
+  ).filter((part) => !isLikelyPurchasedPart(part));
   if (!normalized.length) throw httpError(400, "Select at least one custom part to submit");
   const saved = await saveInventory(input, normalized, "custom", "Part Studio custom sync", { mergeParts: Boolean(configuredParts.length) });
   const requirementResult = input.robotId ? await syncRobotRequirementsFromRecord(input.robotId, saved, normalized, "custom", session.user?.label || "onshape") : { added: 0 };
@@ -1162,15 +1246,26 @@ function shortDocumentId(documentId) {
 }
 
 async function saveInventory(input, parts, sourceType, label, options = {}) {
-  const key = `${input.documentId}:${input.workspacePath}:${input.workspaceId}:${input.elementId}:${input.configuration || "default"}`;
-  const existingIndex = store.inventoryRecords.findIndex((item) => item.id === key);
+  const key = inventorySourceKey(input, sourceType);
+  const legacyKey = `${input.documentId}:${input.workspacePath}:${input.workspaceId}:${input.elementId}:${input.configuration || "default"}`;
+  const existingIndex = store.inventoryRecords.findIndex((item) => (
+    item.id === key ||
+    item.sourceKey === key ||
+    item.id === legacyKey ||
+    sameInventorySource(item, input, sourceType)
+  ));
   const existing = existingIndex >= 0 ? store.inventoryRecords[existingIndex] : null;
   const recordParts = options.mergeParts && existing ? mergeInventoryParts(existing.parts, parts) : parts;
   const batchId = `S-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex").toUpperCase()}`;
+  const diff = inventoryRevisionDiff(existing?.parts || [], recordParts);
   const record = {
-    id: key,
+    id: existing?.id || key,
+    sourceKey: key,
     batchId,
     sourceType,
+    revision: Number(existing?.revision || existing?.revisions?.length || 0) + 1,
+    revisions: revisionHistory(existing, batchId, diff),
+    lastDiff: diff,
     updatedAt: new Date().toISOString(),
     source: input,
     parts: recordParts
@@ -1196,6 +1291,114 @@ async function saveInventory(input, parts, sourceType, label, options = {}) {
   audit("sync.received", `${label}: ${recordParts.length} item${recordParts.length === 1 ? "" : "s"}`, "onshape");
   await persistStore();
   return record;
+}
+
+function inventorySourceKey(input, sourceType) {
+  return [
+    sourceType,
+    input.documentId,
+    input.elementId,
+    input.configuration || "default"
+  ].map((item) => String(item || "").trim()).join(":");
+}
+
+function recordSourceKey(record) {
+  const source = record?.source || {};
+  if (!source.documentId || !source.elementId) return record?.id || "";
+  return record.sourceKey || inventorySourceKey(source, record.sourceType);
+}
+
+function sameInventorySource(record, input, sourceType) {
+  if (!record || record.sourceType !== sourceType) return false;
+  const source = record.source || {};
+  return (
+    String(source.documentId || "") === String(input.documentId || "") &&
+    String(source.elementId || "") === String(input.elementId || "") &&
+    String(source.configuration || "default") === String(input.configuration || "default")
+  );
+}
+
+function mergeDuplicateInventoryRecords() {
+  const seen = new Map();
+  const merged = [];
+  let changed = false;
+  for (const record of store.inventoryRecords || []) {
+    const sourceKey = recordSourceKey(record);
+    if (!sourceKey) {
+      merged.push(record);
+      continue;
+    }
+    record.sourceKey = sourceKey;
+    const existing = seen.get(sourceKey);
+    if (!existing) {
+      seen.set(sourceKey, record);
+      merged.push(record);
+      continue;
+    }
+    changed = true;
+    existing.parts = mergeInventoryParts(record.parts || [], existing.parts || []);
+    existing.revision = Math.max(Number(existing.revision || 1), Number(record.revision || 1));
+    existing.revisions = [...(record.revisions || []), ...(existing.revisions || [])].slice(-20);
+    existing.updatedAt = String(existing.updatedAt || "").localeCompare(String(record.updatedAt || "")) >= 0 ? existing.updatedAt : record.updatedAt;
+    for (const requirement of store.requirements || []) {
+      if (requirement.inventoryRecordId !== record.id) continue;
+      requirement.inventoryRecordId = existing.id;
+      requirement.key = String(requirement.key || "").replace(record.id, existing.id);
+    }
+    if (record.batchId && record.batchId !== existing.batchId) removeOperationalQueue(record.batchId, record.sourceType);
+  }
+  if (changed) store.inventoryRecords = merged;
+  return changed;
+}
+
+function revisionHistory(existing, batchId, diff) {
+  const previous = Array.isArray(existing?.revisions) ? existing.revisions : [];
+  return [
+    ...previous,
+    {
+      revision: Number(existing?.revision || previous.length || 0) + 1,
+      batchId,
+      createdAt: new Date().toISOString(),
+      added: diff.added.length,
+      removed: diff.removed.length,
+      changed: diff.changed.length
+    }
+  ].slice(-20);
+}
+
+function inventoryRevisionDiff(previousParts = [], nextParts = []) {
+  const keyForPart = (part) => inventoryItemPartKey(part) || part.id || part.name;
+  const previous = new Map(previousParts.map((part) => [keyForPart(part), part]));
+  const next = new Map(nextParts.map((part) => [keyForPart(part), part]));
+  const added = [];
+  const removed = [];
+  const changed = [];
+  for (const [key, part] of next.entries()) {
+    if (!previous.has(key)) {
+      added.push(part.name || key);
+      continue;
+    }
+    const before = previous.get(key);
+    if (partRevisionFingerprint(before) !== partRevisionFingerprint(part)) changed.push(part.name || key);
+  }
+  for (const [key, part] of previous.entries()) {
+    if (!next.has(key)) removed.push(part.name || key);
+  }
+  return { added, removed, changed };
+}
+
+function partRevisionFingerprint(part) {
+  return JSON.stringify({
+    name: part.name || "",
+    partNumber: part.partNumber || "",
+    material: part.material || "",
+    thickness: part.thickness || "",
+    quantity: Number(part.quantityNeeded || part.quantity || 1),
+    vendor: part.vendor || "",
+    vendorSku: part.vendorSku || "",
+    process: part.process || part.machine || "",
+    stock: part.stock || ""
+  });
 }
 
 function mergeInventoryParts(existingParts = [], incomingParts = []) {
@@ -1241,6 +1444,8 @@ function inventorySnapshot() {
       importedAt: record.updatedAt,
       updatedAt: catalog.updatedAt || record.updatedAt,
       sourceType: record.sourceType,
+      revision: Number(record.revision || 1),
+      lastDiff: record.lastDiff || { added: [], removed: [], changed: [] },
       sourceDocument: part.sourceDocument || part.source?.sourceTag || record.source?.sourceTag || record.source?.documentName || shortDocumentId(record.source?.documentId),
       sourceDocumentName: part.sourceDocumentName || part.source?.documentName || record.source?.documentName || "",
       sourceDocumentId: part.source?.documentId || record.source?.documentId || "",
@@ -1570,20 +1775,24 @@ function robotSnapshot() {
     const requirements = store.requirements.filter((requirement) => requirement.robotId === robot.id);
     const customRequirements = requirements.filter((requirement) => requirement.sourceType === "custom");
     const cotsRequirements = requirements.filter((requirement) => requirement.sourceType === "cots");
-    const procurementProgress = requirements.length && !cotsRequirements.length ? 100 : percentComplete(cotsRequirements, (requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1));
-    const fabricationProgress = requirements.length && !customRequirements.length ? 100 : percentComplete(customRequirements, (requirement) => ["received", "installed"].includes(requirement.status));
+    const procurementProgress = percentComplete(cotsRequirements, (requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1));
+    const fabricationProgress = percentComplete(customRequirements, (requirement) => ["completed", "received", "installed"].includes(requirement.status));
     const receiveInstallProgress = percentComplete(requirements, (requirement) => Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1));
-    const readiness = Math.round(procurementProgress * 0.4 + fabricationProgress * 0.35 + receiveInstallProgress * 0.25);
+    const readiness = weightedReadiness({ requirements, customRequirements, cotsRequirements, procurementProgress, fabricationProgress, receiveInstallProgress });
+    const quantityNeeded = totalRequirementQuantity(requirements, "quantityNeeded");
+    const quantityReady = totalReadyQuantity(requirements);
     return {
       ...robot,
       targetType: robot.targetType || "robot",
       readiness,
       counts: {
         requirements: requirements.length,
+        quantityNeeded,
+        quantityReady,
         custom: customRequirements.length,
         cots: cotsRequirements.length,
         missing: requirements.filter((requirement) => Number(requirement.quantityReceived || 0) < Number(requirement.quantityNeeded || 1)).length,
-        inFabrication: customRequirements.filter((requirement) => !["received", "installed"].includes(requirement.status)).length,
+        inFabrication: customRequirements.filter((requirement) => !["completed", "received", "installed"].includes(requirement.status)).length,
         onOrder: cotsRequirements.filter((requirement) => ["ordered", "partially_received", "backordered"].includes(requirement.status)).length,
         ready: requirements.filter((requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1)).length
       },
@@ -1602,10 +1811,12 @@ function subsystemSnapshot(robot, subsystem, robotRequirements) {
   const requirements = robotRequirements.filter((requirement) => requirement.subsystemId === subsystem.id || requirement.subsystem === subsystem.name);
   const customRequirements = requirements.filter((requirement) => requirement.sourceType === "custom");
   const cotsRequirements = requirements.filter((requirement) => requirement.sourceType === "cots");
-  const procurementProgress = requirements.length && !cotsRequirements.length ? 100 : percentComplete(cotsRequirements, (requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1));
-  const fabricationProgress = requirements.length && !customRequirements.length ? 100 : percentComplete(customRequirements, (requirement) => ["received", "installed", "completed"].includes(requirement.status));
+  const procurementProgress = percentComplete(cotsRequirements, (requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1));
+  const fabricationProgress = percentComplete(customRequirements, (requirement) => ["received", "installed", "completed"].includes(requirement.status));
   const receiveInstallProgress = percentComplete(requirements, (requirement) => Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1));
-  const readiness = requirements.length ? Math.round(procurementProgress * 0.4 + fabricationProgress * 0.35 + receiveInstallProgress * 0.25) : 0;
+  const readiness = weightedReadiness({ requirements, customRequirements, cotsRequirements, procurementProgress, fabricationProgress, receiveInstallProgress });
+  const quantityNeeded = totalRequirementQuantity(requirements, "quantityNeeded");
+  const quantityReady = totalReadyQuantity(requirements);
   const jobs = store.fabricationJobs.filter((job) => {
     if (job.status === "canceled") return false;
     const line = Array.isArray(job.lines) ? job.lines[0] : {};
@@ -1615,11 +1826,15 @@ function subsystemSnapshot(robot, subsystem, robotRequirements) {
     ...subsystem,
     readiness,
     partsNeeded: requirements.length,
+    quantityNeeded,
+    quantityReady,
     procurementProgress,
     fabricationProgress,
     receivedInstalledProgress: receiveInstallProgress,
     counts: {
       requirements: requirements.length,
+      quantityNeeded,
+      quantityReady,
       custom: customRequirements.length,
       cots: cotsRequirements.length,
       fabricationJobs: jobs.length,
@@ -1631,6 +1846,35 @@ function subsystemSnapshot(robot, subsystem, robotRequirements) {
 function percentComplete(items, complete) {
   if (!items.length) return 0;
   return Math.round((items.filter(complete).length / items.length) * 100);
+}
+
+function weightedReadiness({ requirements, customRequirements, cotsRequirements, procurementProgress, fabricationProgress, receiveInstallProgress }) {
+  if (!requirements.length) return 0;
+  let weight = 0;
+  let score = 0;
+  if (cotsRequirements.length) {
+    weight += 40;
+    score += procurementProgress * 40;
+  }
+  if (customRequirements.length) {
+    weight += 35;
+    score += fabricationProgress * 35;
+  }
+  weight += 25;
+  score += receiveInstallProgress * 25;
+  return weight ? Math.round(score / weight) : 0;
+}
+
+function totalRequirementQuantity(requirements, field) {
+  return requirements.reduce((sum, requirement) => sum + Number(requirement[field] || 0), 0);
+}
+
+function totalReadyQuantity(requirements) {
+  return requirements.reduce((sum, requirement) => {
+    const needed = Number(requirement.quantityNeeded || 1);
+    const received = Number(requirement.quantityReceived || 0);
+    return sum + Math.min(needed, received);
+  }, 0);
 }
 
 function robotSourceSnapshot() {
@@ -1724,6 +1968,36 @@ function normalizePart(part, input) {
       previewHref: findThumbnailHref(part)
     }
   };
+}
+
+function markLikelyPurchasedParts(parts) {
+  return parts.map((part) => isLikelyPurchasedPart(part)
+    ? { ...part, type: "cots", sourceType: "cots", status: "COTS detected", procurementStatus: "needed" }
+    : part);
+}
+
+function isLikelyPurchasedPart(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.vendorSku,
+    part?.manufacturerSku,
+    part?.category,
+    part?.description
+  ].filter(Boolean).join(" ").toLowerCase();
+  return [
+    /\b\d+\s*t\s*5m\b/i,
+    /#\s*t\s*\d*\s*5m/i,
+    /\bwide\s+belt\b/i,
+    /\b\d+\s*mm\s+wide\s+belt\b/i,
+    /\bbelt\b/i,
+    /\bpulley\b/i,
+    /\bbearing\b/i,
+    /\bmotor\b/i,
+    /\bgearbox\b/i,
+    /\bsprocket\b/i,
+    /\bchain\b/i
+  ].some((pattern) => pattern.test(text));
 }
 
 function findThumbnailHref(value) {
