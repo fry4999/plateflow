@@ -97,6 +97,7 @@ const els = {
   procurementOrders: document.querySelector("#procurementOrders"),
   procurementProjectFilter: document.querySelector("#procurementProjectFilter"),
   refreshProcurementButton: document.querySelector("#refreshProcurementButton"),
+  procurementLineForm: document.querySelector("#procurementLineForm"),
   batchList: document.querySelector("#batchList"),
   rawMaterialForm: document.querySelector("#rawMaterialForm"),
   rawMaterialList: document.querySelector("#rawMaterialList"),
@@ -208,6 +209,8 @@ function bindEvents() {
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("dragover", onFabricationDragOver);
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("drop", onFabricationDrop);
   if (els.procurementOrders) els.procurementOrders.addEventListener("change", onProcurementOrderChange);
+  if (els.procurementOrders) els.procurementOrders.addEventListener("click", onProcurementLineAction);
+  if (els.procurementLineForm) els.procurementLineForm.addEventListener("submit", onProcurementLineCreate);
   if (els.procurementProjectFilter) els.procurementProjectFilter.addEventListener("change", () => renderProcurement(dashboardState?.procurement || { orders: [], projectBuckets: [], vendorBuckets: [] }));
   if (els.refreshProcurementButton) els.refreshProcurementButton.addEventListener("click", onProcurementRefresh);
   els.demoButton.addEventListener("click", loadDemo);
@@ -487,7 +490,7 @@ function loadDemo() {
 }
 
 function normalizePreviewPart(part, mode) {
-  const sourceType = mode === "cots" ? "cots" : likelyCotsPart(part) ? "cots" : "custom";
+  const sourceType = mode === "cots" ? part.sourceType || part.type || "cots" : likelyCotsPart(part) ? "cots" : "custom";
   return {
     ...part,
     type: sourceType,
@@ -498,6 +501,7 @@ function normalizePreviewPart(part, mode) {
 }
 
 function likelyCotsPart(part) {
+  if (likelyManufacturedPart(part)) return false;
   const text = [
     part?.name,
     part?.partNumber,
@@ -512,6 +516,25 @@ function likelyCotsPart(part) {
     /\bwide\s+belt\b/i,
     /\b\d+\s*mm\s+wide\s+belt\b/i,
     /\bbelt\b/i
+  ].some((pattern) => pattern.test(text));
+}
+
+function likelyManufacturedPart(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.vendorSku,
+    part?.manufacturerSku,
+    part?.category,
+    part?.description
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (!text || /\bshaft\s+collar\b/.test(text)) return false;
+  return [
+    /\bcustom\b.*\bpulley\b/,
+    /\bcustom\s+htd\s*5\b.*\bpulley\b/,
+    /\bshaft\s+lengths?\b/,
+    /\b(?:hex|rounded|round)?\s*shaft\b/,
+    /\b\d+(?:\.\d+)?\s*(?:in|inch|")\s+(?:hex\s+|round\s+|rounded\s+)?shaft\b/
   ].some((pattern) => pattern.test(text));
 }
 
@@ -984,8 +1007,10 @@ async function submitCotsParts(selectedParts) {
     renderParts();
     await loadDashboard({ preserveParts: true, quiet: true });
     const revision = Number(result.inventory?.revision || 1);
-    setMessage(`Imported ${selected.length} COTS row${selected.length === 1 ? "" : "s"} into procurement · revision ${revision}.`, "ok");
-    showImportConfirmation("COTS import complete", `${selected.length} BOM row${selected.length === 1 ? "" : "s"} synced to procurement.`);
+    const customCount = (result.parts || []).filter((part) => part.sourceType === "custom").length;
+    const cotsCount = Math.max(0, selected.length - customCount);
+    setMessage(`Imported ${cotsCount} COTS row${cotsCount === 1 ? "" : "s"} into procurement${customCount ? ` and ${customCount} custom row${customCount === 1 ? "" : "s"} into manufacturing` : ""} · revision ${revision}.`, "ok");
+    showImportConfirmation("BOM import complete", `${cotsCount} procurement row${cotsCount === 1 ? "" : "s"}${customCount ? `; ${customCount} custom manufacturing row${customCount === 1 ? "" : "s"}` : ""}.`);
   } catch (error) {
     parts = previousParts;
     renderParts();
@@ -1863,11 +1888,46 @@ function renderProcurementLine(line) {
   const neededBy = Array.isArray(line.neededBy) ? line.neededBy.map((item) => `${item.robotName || "Project"} / ${item.subassemblyName || "Unassigned"} x${Number(item.quantityNeeded || 0)}`).join("\n") : "";
   const actionUrl = line.productUrl || line.searchUrl || "";
   const actionLabel = line.productUrl ? "Open" : "Search";
+  const keys = line.lineKeys || (line.lineKey ? [line.lineKey] : []);
+  const lineKeys = JSON.stringify(keys);
+  const aggregate = keys.length > 1;
   return `
-    <div class="procurement-line">
+    <div class="procurement-line" data-line-keys="${escapeAttr(lineKeys)}">
       <div class="procurement-line-main">
-        <strong>${escapeHtml(name)}</strong>
-        <small>${escapeHtml(sku)}${line.variantTitle ? ` · ${escapeHtml(line.variantTitle)}` : ""}</small>
+        <label>
+          <span>Name</span>
+          <input data-field="name" value="${escapeAttr(name)}">
+        </label>
+        <div class="procurement-edit-grid">
+          <label>
+            <span>Vendor</span>
+            <select data-field="vendor">
+              ${procurementVendors(line.vendor).map((vendor) => `<option value="${escapeAttr(vendor)}"${vendor === (line.vendor || "") ? " selected" : ""}>${escapeHtml(vendor)}</option>`).join("")}
+            </select>
+          </label>
+          <label>
+            <span>SKU</span>
+            <input data-field="vendorSku" value="${escapeAttr(sku === "No SKU" ? "" : sku)}">
+          </label>
+          <label>
+            <span>Qty</span>
+            <input data-field="quantityNeeded" type="number" min="0" max="9999" value="${Number(line.quantityNeeded || 0)}" ${aggregate ? "disabled" : ""}>
+          </label>
+          <label>
+            <span>Unit</span>
+            <input data-field="unitPriceDollars" inputmode="decimal" value="${escapeAttr(line.unitPriceCents == null ? "" : (Number(line.unitPriceCents || 0) / 100).toFixed(2))}">
+          </label>
+          <label>
+            <span>Status</span>
+            <select data-field="status">
+              ${procurementStatuses.map((status) => `<option value="${escapeAttr(status)}"${status === (line.status || "needed") ? " selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>Link</span>
+          <input data-field="productUrl" value="${escapeAttr(line.productUrl || line.vendorUrl || "")}">
+        </label>
         ${neededBy ? `<span class="needed-tooltip compact" tabindex="0">Needed by<span role="tooltip">${escapeHtml(neededBy).replace(/\n/g, "<br>")}</span></span>` : ""}
       </div>
       <span class="match-chip ${escapeAttr(line.matchStatus || "unmatched")}">${escapeHtml(procurementMatchLabel(line.matchStatus))}</span>
@@ -1876,9 +1936,18 @@ function renderProcurementLine(line) {
         <b>${escapeHtml(unit)}</b>
         <strong>${escapeHtml(total)}</strong>
       </span>
-      ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
+      <span class="procurement-line-actions">
+        ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
+        <button class="ghost small" type="button" data-action="save-procurement-line">Save</button>
+        <button class="ghost small danger" type="button" data-action="delete-procurement-line">Delete</button>
+      </span>
     </div>
   `;
+}
+
+function procurementVendors(current = "") {
+  const vendors = ["REV", "The Thrifty Bot", "WCP", "Andymark", "McMaster-Carr", "Unassigned"];
+  return current && !vendors.includes(current) ? [...vendors, current] : vendors;
 }
 
 function renderProcurementOrderStatus(order) {
@@ -2399,6 +2468,85 @@ async function onProcurementOrderChange(event) {
     setMessage(error.message, "error");
     await loadDashboard();
   }
+}
+
+async function onProcurementLineCreate(event) {
+  event.preventDefault();
+  const body = Object.fromEntries(new FormData(els.procurementLineForm).entries());
+  try {
+    const result = await api("/api/procurement/lines", {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
+    els.procurementLineForm.reset();
+    renderProcurement(result.procurement);
+    setMessage("Procurement line added.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function onProcurementLineAction(event) {
+  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line']");
+  if (!button) return;
+  const row = button.closest(".procurement-line");
+  if (!row) return;
+  const lineKeys = parseLineKeys(row.dataset.lineKeys);
+  if (!lineKeys.length) {
+    setMessage("This procurement row is missing an edit key. Refresh and try again.", "error");
+    return;
+  }
+  if (button.dataset.action === "delete-procurement-line") {
+    const confirmed = await confirmAction({
+      title: "Delete procurement line?",
+      body: "This removes the selected procurement row from ordering. The catalog item stays in inventory.",
+      confirmLabel: "Delete line",
+      danger: true
+    });
+    if (!confirmed) return;
+    try {
+      const result = await api("/api/procurement/lines", {
+        method: "DELETE",
+        body: JSON.stringify({ lineKeys })
+      });
+      dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
+      renderProcurement(result.procurement);
+      setMessage("Procurement line deleted.", "ok");
+    } catch (error) {
+      setMessage(error.message, "error");
+    }
+    return;
+  }
+  try {
+    const result = await api("/api/procurement/lines", {
+      method: "PATCH",
+      body: JSON.stringify({ lineKeys, ...procurementLineFormData(row) })
+    });
+    dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
+    renderProcurement(result.procurement);
+    setMessage("Procurement line saved.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+function parseLineKeys(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function procurementLineFormData(row) {
+  const data = {};
+  row.querySelectorAll("[data-field]").forEach((input) => {
+    if (input.disabled) return;
+    data[input.dataset.field] = input.value;
+  });
+  return data;
 }
 
 async function onProcurementRefresh() {

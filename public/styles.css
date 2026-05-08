@@ -1656,6 +1656,13 @@ body.dialog-open {
   grid-column: 1 / -1;
 }
 
+.procurement-line-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(160px, .8fr) minmax(150px, .8fr) minmax(90px, .45fr) minmax(110px, .55fr) minmax(220px, 1.1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
 .section-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1793,9 +1800,9 @@ body.dialog-open {
 .procurement-line {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(150px, auto) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 0;
+  align-items: start;
+  gap: 12px;
+  padding: 12px 0;
   border-top: 1px solid var(--line);
   min-width: 0;
 }
@@ -1806,14 +1813,27 @@ body.dialog-open {
 
 .procurement-line-main {
   display: grid;
-  gap: 3px;
+  gap: 8px;
   min-width: 0;
 }
 
-.procurement-line-main strong,
-.procurement-line-main small {
+.procurement-line-main label,
+.procurement-line-main input,
+.procurement-line-main select {
   min-width: 0;
-  overflow-wrap: anywhere;
+}
+
+.procurement-edit-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, .8fr) minmax(120px, .9fr) minmax(80px, .45fr) minmax(90px, .5fr) minmax(130px, .7fr);
+  gap: 8px;
+}
+
+.procurement-line-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 6px;
 }
 
 .price-pack {
@@ -2364,7 +2384,9 @@ body.dialog-open {
   }
 
   .procurement-summary-grid,
-  .vendor-order-grid {
+  .vendor-order-grid,
+  .procurement-line-form,
+  .procurement-edit-grid {
     grid-template-columns: 1fr;
   }
 

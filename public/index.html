@@ -366,6 +366,39 @@
           </div>
         </div>
         <p id="procQueueCount" class="page-kicker">No COTS parts queued.</p>
+        <form id="procurementLineForm" class="tool-surface procurement-line-form">
+          <label>
+            <span>Name</span>
+            <input name="name" autocomplete="off" placeholder="REV NEO Brushless Motor">
+          </label>
+          <label>
+            <span>Vendor</span>
+            <select name="vendor">
+              <option>REV</option>
+              <option>The Thrifty Bot</option>
+              <option>WCP</option>
+              <option>Andymark</option>
+              <option>McMaster-Carr</option>
+            </select>
+          </label>
+          <label>
+            <span>SKU</span>
+            <input name="vendorSku" autocomplete="off" placeholder="REV-21-1650">
+          </label>
+          <label>
+            <span>Qty</span>
+            <input name="quantityNeeded" type="number" min="0" max="9999" value="1">
+          </label>
+          <label>
+            <span>Unit price</span>
+            <input name="unitPriceDollars" inputmode="decimal" placeholder="42.50">
+          </label>
+          <label>
+            <span>Link</span>
+            <input name="productUrl" type="url" autocomplete="off" placeholder="https://...">
+          </label>
+          <button class="button" type="submit">Add line</button>
+        </form>
         <article class="wide-card">
           <h3>Vendor order groups</h3>
           <div id="procurementOrders" class="batch-list">No procurement groups yet.</div>

@@ -37,6 +37,14 @@ const onshapeJsonCache = new Map();
 let storeRevision = 0;
 let realtimeTimer = null;
 
+const allowedProcurementVendorRules = [
+  { name: "REV", patterns: [/revrobotics/i, /\brev\b/i] },
+  { name: "The Thrifty Bot", patterns: [/thethriftybot/i, /thrifty\s*bot/i, /\bttb\b/i] },
+  { name: "WCP", patterns: [/wcproducts/i, /west\s*coast\s*products/i, /\bwcp\b/i] },
+  { name: "Andymark", patterns: [/andymark/i, /andy\s*mark/i] },
+  { name: "McMaster-Carr", patterns: [/mcmaster/i, /mcmaster-carr/i] }
+];
+
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -90,6 +98,9 @@ createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
     if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
     if (url.pathname === "/api/procurement/refresh" && req.method === "POST") return withAppAccess(session, res, (user) => refreshProcurement(req, res, session, user), ["admin", "mentor", "purchaser"]);
+    if (url.pathname === "/api/procurement/lines" && req.method === "POST") return withAppAccess(session, res, (user) => createProcurementLine(req, res, session, user), ["admin", "mentor", "purchaser"]);
+    if (url.pathname === "/api/procurement/lines" && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementLines(req, res, session, user), ["admin", "mentor", "purchaser"]);
+    if (url.pathname === "/api/procurement/lines" && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteProcurementLines(req, res, session, user), ["admin", "mentor", "purchaser"]);
     if (url.pathname.startsWith("/api/procurement/orders/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementOrder(req, res, session, user, pathId(url.pathname, "/api/procurement/orders/")), ["admin", "mentor", "purchaser"]);
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), ["admin", "mentor", "fabricator", "student"]);
     if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), ["admin", "mentor", "purchaser", "student"]);
@@ -1404,11 +1415,39 @@ async function importCots(req, res, session) {
   if (!rows.length) {
     throw httpError(404, "No Assembly BOM rows were returned by Onshape for this tab.");
   }
-  const normalized = rows.slice(0, 200).map((row, index) => normalizeCotsRow(row, input, index));
+  const normalized = normalizeAssemblyBomRows(rows, input);
   if (body.previewOnly) return json(res, 200, { parts: normalized, source: input });
-  const saved = await saveInventory(input, normalized, "cots", "Assembly BOM procurement sync");
-  const requirementResult = input.robotId ? await syncRobotRequirementsFromRecord(input.robotId, saved, normalized, "cots", session.user?.label || "onshape") : { added: 0 };
-  return json(res, 200, { parts: normalized, source: input, inventory: saved, requirements: requirementResult });
+  const cotsRows = normalized.filter((row) => row.sourceType !== "custom");
+  const customRows = normalized.filter((row) => row.sourceType === "custom");
+  let saved = null;
+  let customSaved = null;
+  let addedRequirements = 0;
+  if (cotsRows.length) {
+    saved = await saveInventory(input, cotsRows, "cots", "Assembly BOM procurement sync");
+    const result = input.robotId ? await syncRobotRequirementsFromRecord(input.robotId, saved, cotsRows, "cots", session.user?.label || "onshape") : { added: 0 };
+    addedRequirements += Number(result.added || 0);
+  }
+  if (customRows.length) {
+    customSaved = await saveInventory(input, customRows, "custom", "Assembly custom manufacturing sync", { mergeParts: true });
+    const result = input.robotId ? await syncRobotRequirementsFromRecord(input.robotId, customSaved, customRows, "custom", session.user?.label || "onshape") : { added: 0 };
+    addedRequirements += Number(result.added || 0);
+  }
+  if (!saved && !customSaved) throw httpError(400, "No BOM rows were eligible for import");
+  return json(res, 200, {
+    parts: normalized,
+    source: input,
+    inventory: saved || customSaved,
+    customInventory: customSaved,
+    procurementInventory: saved,
+    requirements: { added: addedRequirements }
+  });
+}
+
+function normalizeAssemblyBomRows(rows, input) {
+  return rows.slice(0, 200).map((row, index) => {
+    const cots = normalizeCotsRow(row, input, index);
+    return isAssemblyManufacturedPart(cots) ? normalizeAssemblyCustomPart(cots, input, index) : cots;
+  });
 }
 
 async function fetchAssemblyBomRows(accessToken, base, input) {
@@ -1969,7 +2008,8 @@ async function upsertOperationalQueue(batchId, sourceType, catalogParts, previou
     syncBatchId: batchId,
     status: "needed",
     vendorGroups: groupCotsParts(catalogParts),
-    lines: catalogParts.map((part) => ({
+    lines: catalogParts.map((part, index) => ({
+      id: `line-${createHash("sha1").update(`${batchId}:${part.id}:${index}`).digest("hex").slice(0, 14)}`,
       catalogPartId: part.id,
       name: part.name,
       vendor: part.vendor || "Unassigned",
@@ -2109,7 +2149,7 @@ function applyProcurementMatch(line, catalog, match) {
     line.matchError = match?.error || "";
     return;
   }
-  const vendor = match.vendor || line.vendor || catalog.vendor || "Unassigned";
+  const vendor = canonicalProcurementVendor(match.vendor || match.vendorHostname || match.productUrl) || match.vendor || line.vendor || catalog.vendor || "Unassigned";
   const sku = line.vendorSku || match.sku || catalog.vendorSku || catalog.manufacturerSku || "";
   Object.assign(line, {
     vendor,
@@ -2155,7 +2195,8 @@ async function frcToolsVendorMatch(part, options = {}) {
   if (
     cached &&
     !options.force &&
-    Number(cached.expiresAtMs || 0) > now
+    Number(cached.expiresAtMs || 0) > now &&
+    allowedProcurementVendor(cached)
   ) {
     return { ...cached, cached: true };
   }
@@ -2237,10 +2278,11 @@ function procurementSku(part) {
 }
 
 function chooseFrcToolsHit(hits, part) {
-  if (!hits.length) return null;
+  const allowedHits = hits.filter(allowedProcurementVendor);
+  if (!allowedHits.length) return null;
   const sku = normalizeSku(procurementSku(part));
   if (sku) {
-    const exact = hits.find((hit) => hitSkus(hit).some((hitSku) => normalizeSku(hitSku) === sku));
+    const exact = allowedHits.find((hit) => hitSkus(hit).some((hitSku) => normalizeSku(hitSku) === sku));
     if (exact) return { ...exact, _matchType: "sku_exact", _confidence: 1 };
   }
   return null;
@@ -2314,11 +2356,33 @@ function normalizeSku(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+function allowedProcurementVendor(value = {}) {
+  const text = [
+    value.vendor,
+    value.vendorName,
+    value.vendorHostname,
+    value.originalUrl,
+    value.productUrl,
+    value.url
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (!text) return false;
+  return allowedProcurementVendorRules.some((rule) => rule.patterns.some((pattern) => pattern.test(text)));
+}
+
+function canonicalProcurementVendor(value) {
+  const text = String(value || "").toLowerCase();
+  const match = allowedProcurementVendorRules.find((rule) => rule.patterns.some((pattern) => pattern.test(text)));
+  return match?.name || "";
+}
+
 function procurementSnapshot(cotsParts = []) {
   const lines = procurementLines();
   const vendorBuckets = buildVendorBuckets(lines);
   return {
-    orders: store.procurementOrders.slice(0, 20),
+    orders: store.procurementOrders.map((order) => {
+      const lines = (order.lines || []).filter((line) => !isAssemblyManufacturedPart(line));
+      return { ...order, lines, vendorGroups: groupCotsParts(lines) };
+    }).filter((order) => order.lines.length).slice(0, 20),
     items: cotsParts,
     lines,
     vendorBuckets,
@@ -2336,19 +2400,24 @@ function procurementSnapshot(cotsParts = []) {
 
 function procurementLines() {
   return (store.procurementOrders || []).flatMap((order) => {
-    const rawLines = Array.isArray(order.lines) ? order.lines : [];
-    return rawLines.map((line) => {
+    const rawLines = (Array.isArray(order.lines) ? order.lines : []).filter((line) => !isAssemblyManufacturedPart(line));
+    return rawLines.map((line, index) => {
+      line.id = line.id || procurementLineId(order, line, index);
+      const lineKey = procurementLineKey(order.id, line.id);
       const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
       const robot = store.robots.find((item) => item.id === (line.robotId || catalog.robotId));
       const subassemblyId = line.subsystemId || catalog.subsystemId || "";
       const subsystem = robot?.subsystems?.find((item) => item.id === subassemblyId);
       const quantity = Number(line.quantityNeeded || catalog.quantityNeeded || 1);
-      const trusted = trustedProcurementMatchStatus(line.matchStatus);
+      const trusted = trustedProcurementMatchStatus(line.matchStatus) && allowedProcurementVendor(line);
       const unitPriceCents = trusted ? line.unitPriceCents ?? catalog.unitPriceCents ?? null : null;
       const vendor = trusted ? line.vendor || catalog.vendor || "Unassigned" : inferredProcurementVendor(line, catalog);
       const sku = line.vendorSku || catalog.vendorSku || line.partNumber || catalog.partNumber || line.manufacturerSku || catalog.manufacturerSku || "";
       return {
         orderId: order.id,
+        lineId: line.id,
+        lineKey,
+        lineKeys: [lineKey],
         syncBatchId: order.syncBatchId || "",
         catalogPartId: line.catalogPartId || catalog.id || "",
         name: line.name || catalog.name || "Purchased item",
@@ -2386,6 +2455,42 @@ function procurementLines() {
   });
 }
 
+function procurementLineId(order, line, index = 0) {
+  return `line-${createHash("sha1").update([
+    order?.id,
+    line?.catalogPartId,
+    line?.source?.bomRowKey,
+    line?.name,
+    index
+  ].filter(Boolean).join(":")).digest("hex").slice(0, 14)}`;
+}
+
+function procurementLineKey(orderId, lineId) {
+  return Buffer.from(JSON.stringify({ orderId, lineId }), "utf8").toString("base64url");
+}
+
+function parseProcurementLineKey(value) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
+    return { orderId: String(parsed.orderId || ""), lineId: String(parsed.lineId || "") };
+  } catch {
+    return { orderId: "", lineId: "" };
+  }
+}
+
+function findProcurementLine(lineKey) {
+  const { orderId, lineId } = parseProcurementLineKey(lineKey);
+  if (!orderId || !lineId) return null;
+  const order = store.procurementOrders.find((item) => item.id === orderId);
+  if (!order || !Array.isArray(order.lines)) return null;
+  order.lines.forEach((line, index) => {
+    line.id = line.id || procurementLineId(order, line, index);
+  });
+  const lineIndex = order.lines.findIndex((line) => line.id === lineId);
+  if (lineIndex === -1) return null;
+  return { order, line: order.lines[lineIndex], lineIndex };
+}
+
 function inferredProcurementVendor(line, catalog) {
   const sku = String(line.vendorSku || catalog.vendorSku || line.partNumber || catalog.partNumber || line.manufacturerSku || catalog.manufacturerSku || "").trim();
   const normalized = sku.toLowerCase();
@@ -2393,6 +2498,7 @@ function inferredProcurementVendor(line, catalog) {
   if (/^wcp[-_]/.test(normalized)) return "WCP";
   if (/^am[-_]/.test(normalized)) return "Andymark";
   if (/^ttb[-_]/.test(normalized)) return "The Thrifty Bot";
+  if (/^mcmaster[-_]/.test(normalized) || /^\d+[a-z]\d+/i.test(sku)) return "McMaster-Carr";
   return line.vendor && line.vendor !== "Unassigned" ? line.vendor : catalog.vendor || "Unassigned";
 }
 
@@ -2432,6 +2538,7 @@ function aggregateProcurementLines(lines) {
       grouped.set(key, {
         ...line,
         neededBy: [],
+        lineKeys: [],
         quantityNeeded: 0,
         totalPriceCents: 0
       });
@@ -2439,6 +2546,7 @@ function aggregateProcurementLines(lines) {
     const existing = grouped.get(key);
     existing.quantityNeeded += Number(line.quantityNeeded || 0);
     existing.totalPriceCents += Number(line.totalPriceCents || 0);
+    existing.lineKeys = [...(existing.lineKeys || []), ...(line.lineKeys || (line.lineKey ? [line.lineKey] : []))];
     existing.neededBy.push({
       robotId: line.robotId,
       robotName: line.robotName,
@@ -2745,6 +2853,7 @@ function markLikelyPurchasedParts(parts) {
 }
 
 function isLikelyPurchasedPart(part) {
+  if (isManufacturedByName(part)) return false;
   const text = [
     part?.name,
     part?.partNumber,
@@ -2760,6 +2869,76 @@ function isLikelyPurchasedPart(part) {
     /\b\d+\s*mm\s+wide\s+belt\b/i,
     /\bbelt\b/i
   ].some((pattern) => pattern.test(text));
+}
+
+function isManufacturedByName(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.vendorSku,
+    part?.manufacturerSku,
+    part?.category,
+    part?.description
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (!text) return false;
+  if (/\bshaft\s+collar\b/.test(text)) return false;
+  return [
+    /\bcustom\b.*\bpulley\b/,
+    /\bcustom\s+htd\s*5\b.*\bpulley\b/,
+    /\bshaft\s+lengths?\b/,
+    /\b(?:hex|rounded|round)?\s*shaft\b/,
+    /\b\d+(?:\.\d+)?\s*(?:in|inch|")\s+(?:hex\s+|round\s+|rounded\s+)?shaft\b/
+  ].some((pattern) => pattern.test(text));
+}
+
+function isAssemblyManufacturedPart(part) {
+  if (isManufacturedByName(part)) return true;
+  const vendorIdentity = [part?.vendor, part?.vendorSku, part?.manufacturerSku, part?.partNumber].filter(Boolean).join(" ");
+  if (/\bbelt\b/i.test(part?.name || "")) return false;
+  return !vendorIdentity && /\bcustom\b/i.test(part?.name || "");
+}
+
+function normalizeAssemblyCustomPart(row, input, index) {
+  const text = String(row.name || "").toLowerCase();
+  const stock = text.includes("churro")
+    ? "Churro"
+    : text.includes("spacer")
+      ? "Spacer Stock"
+      : text.includes("shaft")
+        ? "Rounded Hex"
+        : "Sheet/Plate";
+  return ensureCustomPartNumber(applyAutoRouting({
+    ...row,
+    type: "custom",
+    sourceType: "custom",
+    category: text.includes("shaft") ? "shaft" : text.includes("pulley") ? "pulley" : stockCategory(stock),
+    vendor: "",
+    vendorSku: "",
+    manufacturer: "",
+    manufacturerSku: "",
+    partNumber: "",
+    material: row.material && row.material !== "Purchased" ? row.material : "Unassigned",
+    stock,
+    process: "Manual fabrication",
+    machine: "Manual fabrication",
+    fabricationIntent: "make_now",
+    status: "extracted",
+    procurementStatus: "",
+    vendorUrl: "",
+    productUrl: "",
+    sourceDocument: input.sourceTag,
+    sourceDocumentName: input.documentName || input.sourceTag,
+    source: {
+      ...(row.source || {}),
+      documentId: input.documentId,
+      workspaceId: input.workspaceId,
+      elementId: input.elementId,
+      partId: row.source?.bomRowKey || row.id || `bom-custom-${index + 1}`,
+      sourceTag: input.sourceTag,
+      documentName: input.documentName || "",
+      configuration: input.configuration || ""
+    }
+  }), input, index);
 }
 
 function partCustomProperty(part, aliases) {
@@ -2873,7 +3052,8 @@ function vendorLink(vendor, sku, name) {
   if (normalized.includes("wcp") || normalized.includes("west coast")) return `https://wcproducts.com/search?q=${query}`;
   if (normalized.includes("andymark")) return `https://andymark.com/search?q=${query}`;
   if (normalized.includes("ttb") || normalized.includes("thrifty")) return `https://www.thethriftybot.com/search?q=${query}`;
-  return query ? `https://www.google.com/search?q=${query}` : "";
+  if (normalized.includes("mcmaster")) return `https://www.mcmaster.com/${query}`;
+  return "";
 }
 
 async function exportStep(req, res, session) {
@@ -3547,6 +3727,90 @@ async function refreshProcurement(req, res, session, actor) {
   return json(res, 200, { procurement: dashboardSnapshot(actor).procurement, stats });
 }
 
+async function createProcurementLine(req, res, session, actor) {
+  requireCsrf(req, session);
+  const now = new Date().toISOString();
+  const body = await readJson(req);
+  const line = validateProcurementLineInput(body);
+  const catalog = upsertCatalogPart({
+    ...line,
+    type: "cots",
+    sourceType: "cots",
+    category: line.category || "purchased",
+    quantityNeeded: line.quantityNeeded,
+    status: line.status
+  }, "cots", "manual-procurement");
+  let order = store.procurementOrders.find((item) => item.id === "P-MANUAL");
+  if (!order) {
+    order = {
+      id: "P-MANUAL",
+      syncBatchId: "manual-procurement",
+      status: "needed",
+      vendorGroups: [],
+      lines: [],
+      createdAt: now,
+      updatedAt: now
+    };
+    store.procurementOrders.unshift(order);
+  }
+  order.lines.push({
+    id: `line-${randomBytes(7).toString("hex")}`,
+    catalogPartId: catalog.id,
+    ...line,
+    quantityOrdered: 0,
+    quantityReceived: 0,
+    matchStatus: line.productUrl || line.unitPriceCents !== null ? "manual" : "unmatched",
+    priceUpdatedAt: line.unitPriceCents !== null ? now : "",
+    sourceDocument: "Manual",
+    sourceDocumentName: "Manual procurement"
+  });
+  order.vendorGroups = groupCotsParts(order.lines);
+  order.updatedAt = now;
+  audit("procurement.line_created", `Created procurement line ${line.name}`, actor.email);
+  await persistStore();
+  return json(res, 201, { procurement: dashboardSnapshot(actor).procurement });
+}
+
+async function updateProcurementLines(req, res, session, actor) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const lineKeys = cleanLineKeys(body.lineKeys || body.lineKey);
+  if (!lineKeys.length) throw httpError(400, "Select at least one procurement line");
+  const matches = lineKeys.map(findProcurementLine).filter(Boolean);
+  if (!matches.length) throw httpError(404, "Procurement line not found");
+  const now = new Date().toISOString();
+  for (const match of matches) {
+    applyProcurementLineUpdate(match.line, body, now);
+    updateCatalogFromProcurementLine(match.line);
+    match.order.vendorGroups = groupCotsParts(match.order.lines);
+    match.order.updatedAt = now;
+  }
+  audit("procurement.line_updated", `Updated ${matches.length} procurement line${matches.length === 1 ? "" : "s"}`, actor.email);
+  await persistStore();
+  return json(res, 200, { procurement: dashboardSnapshot(actor).procurement });
+}
+
+async function deleteProcurementLines(req, res, session, actor) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const lineKeys = cleanLineKeys(body.lineKeys || body.lineKey);
+  if (!lineKeys.length) throw httpError(400, "Select at least one procurement line");
+  let removed = 0;
+  for (const lineKey of lineKeys) {
+    const match = findProcurementLine(lineKey);
+    if (!match) continue;
+    match.order.lines.splice(match.lineIndex, 1);
+    match.order.vendorGroups = groupCotsParts(match.order.lines);
+    match.order.updatedAt = new Date().toISOString();
+    removed += 1;
+  }
+  store.procurementOrders = store.procurementOrders.filter((order) => Array.isArray(order.lines) && order.lines.length);
+  if (!removed) throw httpError(404, "Procurement line not found");
+  audit("procurement.line_deleted", `Deleted ${removed} procurement line${removed === 1 ? "" : "s"}`, actor.email);
+  await persistStore();
+  return json(res, 200, { procurement: dashboardSnapshot(actor).procurement });
+}
+
 async function updateProcurementOrder(req, res, session, actor, orderId) {
   requireCsrf(req, session);
   const order = store.procurementOrders.find((item) => item.id === orderId);
@@ -3561,6 +3825,82 @@ async function updateProcurementOrder(req, res, session, actor, orderId) {
   audit("procurement.order_updated", `Updated ${order.id} to ${order.status}`, actor.email);
   await persistStore();
   return json(res, 200, { procurement: dashboardSnapshot().procurement });
+}
+
+function cleanLineKeys(value) {
+  const list = Array.isArray(value) ? value : [value];
+  return [...new Set(list.map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 100);
+}
+
+function validateProcurementLineInput(body = {}) {
+  const name = String(body.name || "").trim().slice(0, 140);
+  if (!name) throw httpError(400, "Part name is required");
+  const vendor = canonicalProcurementVendor(body.vendor) || String(body.vendor || "Unassigned").trim().slice(0, 100) || "Unassigned";
+  const vendorSku = String(body.vendorSku || body.partNumber || "").trim().slice(0, 100);
+  const partNumber = String(body.partNumber || vendorSku || "").trim().slice(0, 100);
+  const quantityNeeded = boundedInteger(body.quantityNeeded ?? body.quantity, 1, 0, 9999);
+  const unitPriceCents = body.unitPriceCents !== undefined && body.unitPriceCents !== ""
+    ? boundedInteger(body.unitPriceCents, null, 0, 99999999)
+    : procurementCents(body.unitPriceDollars ?? body.unitPrice, null);
+  const status = validateProcurementStatus(body.status || "needed");
+  return {
+    name,
+    vendor,
+    vendorSku,
+    manufacturer: String(body.manufacturer || "").trim().slice(0, 100),
+    manufacturerSku: String(body.manufacturerSku || "").trim().slice(0, 100),
+    partNumber,
+    category: String(body.category || "purchased").trim().slice(0, 80),
+    productUrl: String(body.productUrl || body.vendorUrl || "").trim().slice(0, 400),
+    vendorUrl: String(body.vendorUrl || body.productUrl || vendorLink(vendor, vendorSku || partNumber, name)).trim().slice(0, 400),
+    quantityNeeded,
+    unitPriceCents,
+    totalPriceCents: unitPriceCents === null ? null : unitPriceCents * quantityNeeded,
+    currency: "USD",
+    status
+  };
+}
+
+function applyProcurementLineUpdate(line, body = {}, now = new Date().toISOString()) {
+  const existing = { ...line };
+  const next = validateProcurementLineInput({ ...existing, ...body });
+  Object.assign(line, {
+    ...line,
+    ...next,
+    quantityNeeded: next.quantityNeeded,
+    totalPriceCents: next.unitPriceCents === null ? null : next.unitPriceCents * next.quantityNeeded,
+    matchStatus: next.productUrl || next.unitPriceCents !== null ? "manual" : line.matchStatus || "unmatched",
+    matchError: "",
+    priceUpdatedAt: next.unitPriceCents !== existing.unitPriceCents ? now : line.priceUpdatedAt || ""
+  });
+}
+
+function updateCatalogFromProcurementLine(line) {
+  const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId);
+  if (!catalog) return;
+  Object.assign(catalog, {
+    name: line.name,
+    vendor: line.vendor,
+    vendorSku: line.vendorSku,
+    manufacturer: line.manufacturer,
+    manufacturerSku: line.manufacturerSku,
+    partNumber: line.partNumber || line.vendorSku,
+    category: line.category || catalog.category,
+    productUrl: line.productUrl || "",
+    vendorUrl: line.vendorUrl || line.productUrl || "",
+    unitPriceCents: line.unitPriceCents,
+    priceUpdatedAt: line.priceUpdatedAt || catalog.priceUpdatedAt || "",
+    status: line.status || catalog.status,
+    quantityNeeded: Number(line.quantityNeeded || catalog.quantityNeeded || 1),
+    updatedAt: new Date().toISOString()
+  });
+}
+
+function procurementCents(value, fallback = null) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const number = Number(String(value).replace(/[^0-9.-]/g, ""));
+  if (!Number.isFinite(number) || number < 0) return fallback;
+  return Math.round(number * 100);
 }
 
 function activeAdminCount() {
