@@ -1799,10 +1799,8 @@ body.dialog-open {
 
 .procurement-line {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(150px, auto) auto;
-  align-items: start;
-  gap: 12px;
-  padding: 12px 0;
+  gap: 10px;
+  padding: 14px 0;
   border-top: 1px solid var(--line);
   min-width: 0;
 }
@@ -1811,22 +1809,59 @@ body.dialog-open {
   border-top: 0;
 }
 
-.procurement-line-main {
+.procurement-line-top {
   display: grid;
-  gap: 8px;
+  grid-template-columns: minmax(220px, 1fr) auto minmax(170px, auto) auto;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
 }
 
-.procurement-line-main label,
-.procurement-line-main input,
-.procurement-line-main select {
+.procurement-line-main {
+  display: grid;
+  gap: 5px;
   min-width: 0;
+}
+
+.procurement-line-main strong,
+.procurement-line-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.procurement-line-main small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.procurement-editor {
+  padding: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.procurement-editor summary {
+  color: var(--blue);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.procurement-editor[open] summary {
+  margin-bottom: 10px;
 }
 
 .procurement-edit-grid {
   display: grid;
-  grid-template-columns: minmax(120px, .8fr) minmax(120px, .9fr) minmax(80px, .45fr) minmax(90px, .5fr) minmax(130px, .7fr);
+  grid-template-columns: minmax(180px, 1.1fr) minmax(140px, .8fr) minmax(130px, .8fr) minmax(90px, .5fr) minmax(100px, .55fr) minmax(125px, .7fr) minmax(120px, auto);
   gap: 8px;
+  align-items: end;
+}
+
+.procurement-edit-grid .span-2 {
+  grid-column: span 2;
 }
 
 .procurement-line-actions {
@@ -1834,6 +1869,7 @@ body.dialog-open {
   flex-wrap: wrap;
   justify-content: end;
   gap: 6px;
+  align-items: center;
 }
 
 .price-pack {
@@ -2386,6 +2422,7 @@ body.dialog-open {
   .procurement-summary-grid,
   .vendor-order-grid,
   .procurement-line-form,
+  .procurement-line-top,
   .procurement-edit-grid {
     grid-template-columns: 1fr;
   }
@@ -2393,6 +2430,10 @@ body.dialog-open {
   .procurement-line {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .procurement-edit-grid .span-2 {
+    grid-column: span 1;
   }
 
   .price-pack {

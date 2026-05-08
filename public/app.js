@@ -1891,18 +1891,38 @@ function renderProcurementLine(line) {
   const keys = line.lineKeys || (line.lineKey ? [line.lineKey] : []);
   const lineKeys = JSON.stringify(keys);
   const aggregate = keys.length > 1;
+  const vendorOptions = procurementVendors();
+  const selectedVendor = vendorOptions.includes(line.vendor) ? line.vendor : "Unassigned";
   return `
     <div class="procurement-line" data-line-keys="${escapeAttr(lineKeys)}">
-      <div class="procurement-line-main">
-        <label>
-          <span>Name</span>
-          <input data-field="name" value="${escapeAttr(name)}">
-        </label>
+      <div class="procurement-line-top">
+        <div class="procurement-line-main">
+          <strong>${escapeHtml(name)}</strong>
+          <small>${escapeHtml([line.vendor || "", sku === "No SKU" ? "" : sku, line.variantTitle || ""].filter(Boolean).join(" · ") || "Vendor/SKU needed")}</small>
+          ${neededBy ? `<span class="needed-tooltip compact" tabindex="0">Needed by<span role="tooltip">${escapeHtml(neededBy).replace(/\n/g, "<br>")}</span></span>` : ""}
+        </div>
+        <span class="match-chip ${escapeAttr(line.matchStatus || "unmatched")}">${escapeHtml(procurementMatchLabel(line.matchStatus))}</span>
+        <span class="price-pack">
+          <b>qty ${Number(line.quantityNeeded || 0)}</b>
+          <b>${escapeHtml(unit)}</b>
+          <strong>${escapeHtml(total)}</strong>
+        </span>
+        <span class="procurement-line-actions">
+          ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
+          <button class="ghost small danger" type="button" data-action="delete-procurement-line">Delete</button>
+        </span>
+      </div>
+      <details class="procurement-editor">
+        <summary>Edit line</summary>
         <div class="procurement-edit-grid">
+          <label class="span-2">
+            <span>Name</span>
+            <input data-field="name" value="${escapeAttr(name)}">
+          </label>
           <label>
             <span>Vendor</span>
             <select data-field="vendor">
-              ${procurementVendors(line.vendor).map((vendor) => `<option value="${escapeAttr(vendor)}"${vendor === (line.vendor || "") ? " selected" : ""}>${escapeHtml(vendor)}</option>`).join("")}
+              ${vendorOptions.map((vendor) => `<option value="${escapeAttr(vendor)}"${vendor === selectedVendor ? " selected" : ""}>${escapeHtml(vendor)}</option>`).join("")}
             </select>
           </label>
           <label>
@@ -1923,31 +1943,20 @@ function renderProcurementLine(line) {
               ${procurementStatuses.map((status) => `<option value="${escapeAttr(status)}"${status === (line.status || "needed") ? " selected" : ""}>${escapeHtml(status)}</option>`).join("")}
             </select>
           </label>
+          <label class="span-2">
+            <span>Link</span>
+            <input data-field="productUrl" value="${escapeAttr(line.productUrl || line.vendorUrl || "")}">
+          </label>
+          <button class="primary small" type="button" data-action="save-procurement-line">Save changes</button>
         </div>
-        <label>
-          <span>Link</span>
-          <input data-field="productUrl" value="${escapeAttr(line.productUrl || line.vendorUrl || "")}">
-        </label>
-        ${neededBy ? `<span class="needed-tooltip compact" tabindex="0">Needed by<span role="tooltip">${escapeHtml(neededBy).replace(/\n/g, "<br>")}</span></span>` : ""}
-      </div>
-      <span class="match-chip ${escapeAttr(line.matchStatus || "unmatched")}">${escapeHtml(procurementMatchLabel(line.matchStatus))}</span>
-      <span class="price-pack">
-        <b>qty ${Number(line.quantityNeeded || 0)}</b>
-        <b>${escapeHtml(unit)}</b>
-        <strong>${escapeHtml(total)}</strong>
-      </span>
-      <span class="procurement-line-actions">
-        ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
-        <button class="ghost small" type="button" data-action="save-procurement-line">Save</button>
-        <button class="ghost small danger" type="button" data-action="delete-procurement-line">Delete</button>
-      </span>
+      </details>
     </div>
   `;
 }
 
-function procurementVendors(current = "") {
+function procurementVendors() {
   const vendors = ["REV", "The Thrifty Bot", "WCP", "Andymark", "McMaster-Carr", "Unassigned"];
-  return current && !vendors.includes(current) ? [...vendors, current] : vendors;
+  return vendors;
 }
 
 function renderProcurementOrderStatus(order) {

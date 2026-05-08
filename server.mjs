@@ -2499,7 +2499,7 @@ function inferredProcurementVendor(line, catalog) {
   if (/^am[-_]/.test(normalized)) return "Andymark";
   if (/^ttb[-_]/.test(normalized)) return "The Thrifty Bot";
   if (/^mcmaster[-_]/.test(normalized) || /^\d+[a-z]\d+/i.test(sku)) return "McMaster-Carr";
-  return line.vendor && line.vendor !== "Unassigned" ? line.vendor : catalog.vendor || "Unassigned";
+  return canonicalProcurementVendor(line.vendor || catalog.vendor || "") || "Unassigned";
 }
 
 function buildVendorBuckets(lines) {
@@ -3835,7 +3835,7 @@ function cleanLineKeys(value) {
 function validateProcurementLineInput(body = {}) {
   const name = String(body.name || "").trim().slice(0, 140);
   if (!name) throw httpError(400, "Part name is required");
-  const vendor = canonicalProcurementVendor(body.vendor) || String(body.vendor || "Unassigned").trim().slice(0, 100) || "Unassigned";
+  const vendor = canonicalProcurementVendor(body.vendor) || "Unassigned";
   const vendorSku = String(body.vendorSku || body.partNumber || "").trim().slice(0, 100);
   const partNumber = String(body.partNumber || vendorSku || "").trim().slice(0, 100);
   const quantityNeeded = boundedInteger(body.quantityNeeded ?? body.quantity, 1, 0, 9999);
