@@ -1125,13 +1125,12 @@ function renderInventoryTable(items) {
     .slice(0, 200);
 
   if (!visible.length) {
-    els.inventoryBody.innerHTML = `<tr><td colspan="11" class="empty">No matching inventory.</td></tr>`;
+    els.inventoryBody.innerHTML = `<tr><td colspan="10" class="empty">No matching inventory.</td></tr>`;
     return;
   }
 
   els.inventoryBody.innerHTML = visible.map((part) => `
     <tr data-item-key="${escapeAttr(part.itemKey)}" data-source-type="${escapeAttr(part.sourceType || part.type || "custom")}">
-      <td><img class="inventory-preview" src="${escapeAttr(part.previewUrl || "")}" alt="${escapeAttr(part.name)} preview" loading="lazy"></td>
       <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
       <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span><small class="revision-note" title="${escapeAttr(revisionTooltip(part))}">${escapeHtml(revisionLabel(part))}</small></td>
       <td><input class="part-name-input" data-field="name" size="${partNameInputSize(part.name)}" value="${escapeAttr(part.name || "")}" aria-label="Part name"></td>

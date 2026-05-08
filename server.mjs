@@ -21,7 +21,6 @@ const config = {
   onshapeApiBase: process.env.ONSHAPE_API_BASE || "https://cad.onshape.com",
   onshapeScope: process.env.ONSHAPE_OAUTH_SCOPE || "",
   onshapeCacheTtlMs: Number(process.env.ONSHAPE_CACHE_TTL_MS || 10 * 60 * 1000),
-  onshapeLivePreviews: process.env.ONSHAPE_LIVE_PREVIEWS === "true",
   trustProxy: process.env.TRUST_PROXY === "true",
   prod: process.env.NODE_ENV === "production"
 };
@@ -65,7 +64,6 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/events") return subscribeEventStream(req, res, session);
     if (url.pathname === "/api/inventory") return withAppAccess(session, res, () => json(res, 200, inventorySnapshot()));
     if (url.pathname === "/api/inventory/items" && req.method === "POST") return withAppAccess(session, res, (user) => createInventoryItem(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
-    if (url.pathname.startsWith("/api/inventory/items/") && url.pathname.endsWith("/thumbnail")) return withAppAccess(session, res, () => inventoryItemThumbnail(res, session, pathId(url.pathname, "/api/inventory/items/").replace(/\/thumbnail$/, "")));
     if (url.pathname.startsWith("/api/inventory/items/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), ["admin", "mentor", "purchaser", "fabricator"]);
     if (url.pathname.startsWith("/api/inventory/items/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), ["admin", "mentor", "purchaser", "fabricator"]);
     if (url.pathname === "/api/dashboard") return withAppAccess(session, res, (user) => json(res, 200, dashboardSnapshot(user)));
@@ -902,19 +900,17 @@ async function importOnshape(req, res, session) {
 
   const params = new URLSearchParams({
     elementId: input.elementId,
-    withThumbnails: "true",
+    withThumbnails: "false",
     includePropertyDefaults: "false"
   });
   if (input.configuration) params.set("configuration", input.configuration);
 
   const parts = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}?${params}`);
-  const normalizedParts = markLikelyPurchasedParts(await enrichPhysicalPartData(
-    accessToken,
-    base,
-    input,
-    (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input)),
-    configuredParts
-  ));
+  const listedParts = (Array.isArray(parts) ? parts : parts.parts || []).map((part) => normalizePart(part, input));
+  const enrichedParts = body.previewOnly
+    ? listedParts
+    : await enrichPhysicalPartData(accessToken, base, input, listedParts, configuredParts);
+  const normalizedParts = markLikelyPurchasedParts(enrichedParts);
   if (body.previewOnly) return json(res, 200, { parts: normalizedParts, source: input });
 
   const normalized = withGeneratedCustomPartNumbers(
@@ -1508,8 +1504,7 @@ function inventorySnapshot() {
       quantityNeeded: Number(catalog.quantityNeeded ?? part.quantityNeeded ?? part.quantity ?? 1),
       defaultLocation: catalog.defaultLocation || part.defaultLocation || "",
       tags: Array.isArray(catalog.tags) ? catalog.tags : Array.isArray(part.tags) ? part.tags : [],
-      neededBy: neededByForInventoryPart(record, part),
-      previewUrl: `/api/inventory/items/${itemKey}/thumbnail`
+      neededBy: neededByForInventoryPart(record, part)
     };
   })).sort((a, b) => `${a.sourceDocument || ""}:${a.name || ""}`.localeCompare(`${b.sourceDocument || ""}:${b.name || ""}`));
   return {
@@ -2008,7 +2003,6 @@ function normalizePart(part, input) {
     finish: "Deburred",
     sourceDocument: input.sourceTag,
     sourceDocumentName: input.documentName || input.sourceTag,
-    previewHref: findThumbnailHref(part),
     source: {
       documentId: input.documentId,
       workspaceId: input.workspaceId,
@@ -2016,8 +2010,7 @@ function normalizePart(part, input) {
       partId,
       sourceTag: input.sourceTag,
       documentName: input.documentName || "",
-      configuration: input.configuration || "",
-      previewHref: findThumbnailHref(part)
+      configuration: input.configuration || ""
     }
   };
 }
@@ -2044,29 +2037,6 @@ function isLikelyPurchasedPart(part) {
     /\b\d+\s*mm\s+wide\s+belt\b/i,
     /\bbelt\b/i
   ].some((pattern) => pattern.test(text));
-}
-
-function findThumbnailHref(value) {
-  const direct = value?.thumbnail?.href || value?.thumbnailInfo?.href || value?.thumbnailUrl || value?.thumbnail?.url;
-  if (direct) return String(direct);
-  const seen = new Set();
-  function walk(item, depth = 0, thumbnailContext = false) {
-    if (!item || depth > 5) return "";
-    if (typeof item === "string") {
-      return thumbnailContext && /^(https?:\/\/|\/api\/|api\/)/i.test(item) ? item : "";
-    }
-    if (typeof item !== "object" || seen.has(item)) return "";
-    seen.add(item);
-    for (const [key, nested] of Object.entries(item)) {
-      const lower = key.toLowerCase();
-      const nextContext = thumbnailContext || lower.includes("thumbnail");
-      if (nextContext && typeof nested === "string" && (lower === "href" || lower === "url" || /thumbnail/i.test(nested))) return nested;
-      const found = walk(nested, depth + 1, nextContext);
-      if (found) return found;
-    }
-    return "";
-  }
-  return walk(value);
 }
 
 function partCustomProperty(part, aliases) {
@@ -2881,208 +2851,6 @@ function downloadBlob(res, session, id) {
     "Cache-Control": "private, no-store"
   });
   return res.end(download.bytes);
-}
-
-async function inventoryItemThumbnail(res, session, itemKey) {
-  const match = findInventoryItem(itemKey);
-  if (!match) return placeholderThumbnail(res, "Missing");
-  const canUseCached = match.record.sourceType !== "custom" || match.part.source?.previewScope === "part";
-  const cached = canUseCached ? imageFromDataUrl(match.part.previewDataUrl || match.part.source?.previewDataUrl) : null;
-  if (cached?.bytes?.length) {
-    res.writeHead(200, {
-      "Content-Type": cached.contentType,
-      "Cache-Control": "private, max-age=86400"
-    });
-    return res.end(cached.bytes);
-  }
-  if (match.record.sourceType === "custom" && session.token && config.onshapeLivePreviews) {
-    try {
-      const preview = await fetchOnshapePartPreview(session, match.record, match.part);
-      if (preview?.bytes?.length) {
-        await cacheInventoryPreview(match, preview);
-        res.writeHead(200, {
-          "Content-Type": preview.contentType || "image/png",
-          "Cache-Control": "private, max-age=300"
-        });
-        return res.end(preview.bytes);
-      }
-    } catch (error) {
-      console.warn("Onshape preview failed", error.message);
-    }
-  }
-  return placeholderThumbnail(res, match.part.name || match.part.id || "Part", match.record.sourceType);
-}
-
-function imageFromDataUrl(value) {
-  const match = String(value || "").match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
-  if (!match) return null;
-  return {
-    contentType: match[1],
-    bytes: Buffer.from(match[2], "base64")
-  };
-}
-
-async function cacheInventoryPreview(match, preview) {
-  const contentType = preview.contentType || "image/png";
-  if (!/^image\//i.test(contentType) || !preview.bytes?.length || preview.bytes.length > 350_000) return;
-  const dataUrl = `data:${contentType};base64,${preview.bytes.toString("base64")}`;
-  match.part.previewDataUrl = dataUrl;
-  match.part.source = { ...(match.part.source || {}), previewDataUrl: dataUrl, previewScope: "part" };
-  match.record.updatedAt = new Date().toISOString();
-  const catalog = findCatalogPartForInventoryPart(match.part, match.record.sourceType);
-  if (catalog) {
-    catalog.previewDataUrl = dataUrl;
-    catalog.updatedAt = match.record.updatedAt;
-  }
-  await persistStore();
-}
-
-async function fetchOnshapePartPreview(session, record, part) {
-  const source = part.source || record.source || {};
-  if (!source.documentId || !source.workspaceId || !source.elementId) return null;
-  const accessToken = await ensureAccessToken(session);
-  const base = normalizeOnshapeBase(source.baseUrl || record.source?.baseUrl || config.onshapeApiBase);
-  const baseParams = new URLSearchParams({
-    outputWidth: "160",
-    outputHeight: "160",
-    pixelSize: "0"
-  });
-  if (source.configuration) baseParams.set("configuration", source.configuration);
-  const workspacePath = source.workspacePath || record.source?.workspacePath || "w";
-  const workspaceId = source.workspaceId || record.source?.workspaceId;
-  const encodedPartId = encodeURIComponent(source.partId || "");
-  const urls = [];
-  if (source.partId) {
-    for (const key of ["partIds", "partId", "ids"]) {
-      const params = new URLSearchParams(baseParams);
-      params.set(key, source.partId);
-      urls.push(`${base}/api/v6/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`);
-      urls.push(`${base}/api/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`);
-    }
-    urls.push(`${base}/api/v6/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/partid/${encodedPartId}/shadedviews?${baseParams}`);
-    urls.push(`${base}/api/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/partid/${encodedPartId}/shadedviews?${baseParams}`);
-  }
-  urls.push(`${base}/api/v6/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${baseParams}`);
-  for (const url of urls) {
-    const image = await fetchOnshapeShadedView(accessToken, url, source.partId);
-    if (image?.bytes?.length) return image;
-  }
-  const storedPreview = await fetchOnshapePreviewHref(accessToken, base, part.previewHref || source.previewHref);
-  if (storedPreview?.bytes?.length) return storedPreview;
-  return null;
-}
-
-async function fetchOnshapeShadedView(accessToken, url, partId = "") {
-  try {
-    const response = await fetch(url, {
-      headers: {
-        Accept: "image/*,application/json;q=0.8,*/*;q=0.4",
-        Authorization: `Bearer ${accessToken}`
-      }
-    });
-    if (!response.ok) {
-      if ([400, 404].includes(response.status)) return null;
-      throw httpError(response.status, await response.text());
-    }
-    const contentType = response.headers.get("content-type") || "";
-    if (/^image\//i.test(contentType)) {
-      return { bytes: Buffer.from(await response.arrayBuffer()), contentType };
-    }
-    const text = await response.text();
-    const data = text ? JSON.parse(text) : {};
-    return normalizeImagePayload(extractShadedImagePayload(data, partId));
-  } catch (error) {
-    if ([400, 404].includes(Number(error.status || 0))) return null;
-    throw error;
-  }
-}
-
-async function fetchOnshapePreviewHref(accessToken, base, href) {
-  if (!href) return null;
-  const url = resolveOnshapeHref(base, href);
-  const response = await fetch(url, {
-    headers: {
-      Accept: "image/*,application/json;q=0.8,*/*;q=0.4",
-      Authorization: `Bearer ${accessToken}`
-    }
-  });
-  if (!response.ok) return null;
-  const contentType = response.headers.get("content-type") || "";
-  if (/json/i.test(contentType)) {
-    const data = await response.json();
-    return normalizeImagePayload(extractShadedImagePayload(data));
-  }
-  return {
-    bytes: Buffer.from(await response.arrayBuffer()),
-    contentType: contentType || "image/png"
-  };
-}
-
-function resolveOnshapeHref(base, href) {
-  const value = String(href || "").trim();
-  if (/^https?:\/\//i.test(value)) return value;
-  return `${base}${value.startsWith("/") ? value : `/${value}`}`;
-}
-
-function extractShadedImagePayload(value, partId = "", depth = 0) {
-  if (!value || depth > 6) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = extractShadedImagePayload(item, partId, depth + 1);
-      if (found) return found;
-    }
-    return "";
-  }
-  if (typeof value !== "object") return "";
-  if (partId && value[partId]) {
-    const found = extractShadedImagePayload(value[partId], partId, depth + 1);
-    if (found) return found;
-  }
-  for (const key of ["image", "data", "base64", "imageData", "thumbnail", "href", "url"]) {
-    const found = extractShadedImagePayload(value[key], partId, depth + 1);
-    if (found) return found;
-  }
-  for (const nested of Object.values(value)) {
-    const found = extractShadedImagePayload(nested, partId, depth + 1);
-    if (found) return found;
-  }
-  return "";
-}
-
-function normalizeImagePayload(raw) {
-  if (!raw) return null;
-  const value = String(raw).trim();
-  const match = value.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
-  const contentType = match?.[1] || "image/png";
-  const base64 = match ? match[2] : value;
-  if (!/^[a-z0-9+/=\s_-]{80,}$/i.test(base64)) return null;
-  const compact = base64.replace(/\s/g, "").replace(/-/g, "+").replace(/_/g, "/");
-  return {
-    bytes: Buffer.from(compact, "base64"),
-    contentType
-  };
-}
-
-function placeholderThumbnail(res, label, sourceType = "custom") {
-  const initials = String(label || "PF").trim().slice(0, 2).toUpperCase().replace(/[<&>]/g, "");
-  const accent = sourceType === "cots" ? "#22c55e" : "#60a5fa";
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160" role="img" aria-label="${escapeXml(label)} preview"><rect width="160" height="160" rx="18" fill="#0b1020"/><path d="M36 52h88v56H36z" rx="8" fill="#111827" stroke="${accent}" stroke-width="5"/><circle cx="58" cy="74" r="5" fill="${accent}"/><circle cx="102" cy="74" r="5" fill="${accent}"/><circle cx="58" cy="96" r="5" fill="${accent}"/><circle cx="102" cy="96" r="5" fill="${accent}"/><text x="80" y="86" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="800" fill="#f8fafc">${escapeXml(initials)}</text></svg>`;
-  res.writeHead(200, {
-    "Content-Type": "image/svg+xml; charset=utf-8",
-    "Cache-Control": "private, max-age=300"
-  });
-  return res.end(svg);
-}
-
-function escapeXml(value) {
-  return String(value).replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&apos;"
-  }[char]));
 }
 
 function validateImport(body) {
