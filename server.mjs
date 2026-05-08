@@ -3082,10 +3082,10 @@ function procurementLines() {
         matchError: line.matchError || "",
         priceUpdatedAt: line.priceUpdatedAt || catalog.priceUpdatedAt || "",
         robotId: line.robotId || catalog.robotId || "",
-        robotName: robot?.name || (line.robotId || catalog.robotId ? "Project" : "Unassigned"),
-        targetType: robot?.targetType || "project",
+        robotName: robot?.name || (line.robotId || catalog.robotId ? "Project" : ""),
+        targetType: robot?.targetType || (line.robotId || catalog.robotId ? "project" : "unassigned"),
         subsystemId: subassemblyId,
-        subassemblyName: line.subassemblyName || catalog.subassemblyName || subsystem?.name || line.subsystem || catalog.subsystem || "Unassigned",
+        subassemblyName: line.subassemblyName || catalog.subassemblyName || subsystem?.name || line.subsystem || catalog.subsystem || "",
         sourceDocument: line.sourceDocument || catalog.sourceDocument || "",
         sourceDocumentName: line.sourceDocumentName || catalog.sourceDocumentName || ""
       };
@@ -3193,12 +3193,14 @@ function aggregateProcurementLines(lines) {
 function buildProcurementProjectBuckets(lines) {
   const projects = new Map();
   for (const line of lines) {
-    const projectKey = line.robotId || "unassigned";
+    const unassigned = !line.robotId;
+    const projectKey = line.robotId || "__unassigned";
     if (!projects.has(projectKey)) {
       projects.set(projectKey, {
         robotId: line.robotId,
-        name: line.robotName || "Unassigned",
-        targetType: line.targetType || "project",
+        name: unassigned ? "Rows not attached to a project" : line.robotName || "Project",
+        targetType: unassigned ? "unassigned" : line.targetType || "project",
+        unassigned,
         quantity: 0,
         estimatedTotalCents: 0,
         subassemblies: new Map()
@@ -3207,11 +3209,11 @@ function buildProcurementProjectBuckets(lines) {
     const project = projects.get(projectKey);
     project.quantity += Number(line.quantityNeeded || 0);
     project.estimatedTotalCents += Number(line.totalPriceCents || 0);
-    const subKey = line.subsystemId || line.subassemblyName || "unassigned";
+    const subKey = line.subsystemId || line.subassemblyName || "__unassigned";
     if (!project.subassemblies.has(subKey)) {
       project.subassemblies.set(subKey, {
         id: line.subsystemId || subKey,
-        name: line.subassemblyName || "Unassigned",
+        name: line.subassemblyName || "No subassembly selected",
         quantity: 0,
         estimatedTotalCents: 0,
         vendorBuckets: new Map()

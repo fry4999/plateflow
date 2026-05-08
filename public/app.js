@@ -1766,9 +1766,9 @@ function renderProcurement(procurement) {
 function renderProcurementProjectFilter(projects) {
   if (!els.procurementProjectFilter) return;
   const current = els.procurementProjectFilter.value;
-  const options = projects.map((project) => ({
+  const options = projects.filter((project) => !project.unassigned).map((project) => ({
     value: procurementProjectValue(project),
-    label: `${project.name || "Unassigned"} · ${targetLabel(project)}`
+    label: `${project.name || "Project"} · ${targetLabel(project)}`
   }));
   els.procurementProjectFilter.innerHTML = [
     `<option value="">All projects</option>`,
@@ -1778,7 +1778,7 @@ function renderProcurementProjectFilter(projects) {
 }
 
 function procurementProjectValue(project) {
-  return project?.robotId || "__unassigned";
+  return project?.robotId || "";
 }
 
 function procurementTotals(vendorBuckets, lines) {
@@ -1848,12 +1848,13 @@ function renderVendorBucket(bucket) {
 }
 
 function renderProcurementProject(project) {
+  const unassigned = Boolean(project.unassigned);
   return `
-    <article class="procurement-project">
+    <article class="procurement-project${unassigned ? " unassigned" : ""}">
       <header>
         <div>
-          <span class="eyebrow">${escapeHtml(targetLabel(project))}</span>
-          <h3>${escapeHtml(project.name || "Unassigned")}</h3>
+          <span class="eyebrow">${escapeHtml(unassigned ? "Needs project assignment" : targetLabel(project))}</span>
+          <h3>${escapeHtml(project.name || "Project")}</h3>
         </div>
         <strong>${formatMoney(project.estimatedTotalCents || 0)}</strong>
       </header>
@@ -1866,7 +1867,7 @@ function renderProcurementSubassembly(subassembly) {
   return `
     <details class="procurement-subassembly" open>
       <summary>
-        <span>${escapeHtml(subassembly.name || "Unassigned")}</span>
+        <span>${escapeHtml(subassembly.name || "No subassembly selected")}</span>
         <b>${Number(subassembly.quantity || 0)} needed · ${formatMoney(subassembly.estimatedTotalCents || 0)}</b>
       </summary>
       ${(subassembly.vendorBuckets || []).map((bucket) => `
@@ -1885,7 +1886,7 @@ function renderProcurementLine(line) {
   const sku = line.vendorSku || line.partNumber || line.manufacturerSku || "No SKU";
   const unit = line.unitPriceCents == null ? "price n/a" : formatMoney(line.unitPriceCents);
   const total = line.totalPriceCents == null ? "n/a" : formatMoney(line.totalPriceCents);
-  const neededBy = Array.isArray(line.neededBy) ? line.neededBy.map((item) => `${item.robotName || "Project"} / ${item.subassemblyName || "Unassigned"} x${Number(item.quantityNeeded || 0)}`).join("\n") : "";
+  const neededBy = Array.isArray(line.neededBy) ? line.neededBy.map((item) => `${item.robotName || "No project"} / ${item.subassemblyName || "No subassembly"} x${Number(item.quantityNeeded || 0)}`).join("\n") : "";
   const actionUrl = line.productUrl || line.searchUrl || "";
   const actionLabel = line.productUrl ? "Open" : "Search";
   const keys = line.lineKeys || (line.lineKey ? [line.lineKey] : []);

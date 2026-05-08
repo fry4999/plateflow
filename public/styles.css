@@ -1765,6 +1765,11 @@ body.dialog-open {
   padding: 18px;
 }
 
+.procurement-project.unassigned {
+  border-style: dashed;
+  background: var(--soft);
+}
+
 .procurement-subassembly {
   overflow: clip;
 }
