@@ -2434,13 +2434,25 @@ function procurementFallbackUrl(vendor, sku, name = "") {
   if (!query) return "";
   const encoded = encodeURIComponent(query);
   const normalized = String(vendor || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  if (normalized.includes("rev")) return `https://www.revrobotics.com/search.php?search_query=${encoded}`;
+  if (normalized.includes("rev")) return revProductUrl(query) || `https://www.revrobotics.com/search.php?search_query=${encoded}`;
   if (normalized.includes("wcp") || normalized.includes("westcoast")) return wcpProductUrl(query) || `https://wcproducts.com/search?q=${encoded}`;
   if (normalized.includes("thrifty") || normalized.includes("ttb")) return `https://www.thethriftybot.com/search?q=${encoded}`;
   if (normalized.includes("andy")) return `https://www.andymark.com/search?q=${encoded}`;
   if (normalized.includes("mcmaster")) return `https://www.mcmaster.com/${encoded}`;
   if (normalized.includes("vbelt") || normalized.includes("beltguys")) return `https://www.vbeltguys.com/search?q=${encoded}`;
   return "";
+}
+
+function normalizeRevSku(value) {
+  const text = String(value || "").trim();
+  const explicit = text.match(/\bREV[-_\s]*(\d{2})[-_\s]*(\d{3,5}[A-Z]?)\b/i);
+  if (explicit) return `REV-${explicit[1]}-${explicit[2].toUpperCase()}`;
+  return "";
+}
+
+function revProductUrl(value) {
+  const sku = normalizeRevSku(value);
+  return sku ? `https://www.revrobotics.com/${sku.toLowerCase()}/` : "";
 }
 
 function normalizeWcpSku(value) {

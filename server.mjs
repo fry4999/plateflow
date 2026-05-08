@@ -2788,6 +2788,11 @@ async function lookupShopifyVendor(adapter, part, query, sku, updatedAt) {
 }
 
 async function lookupRevVendor(adapter, part, query, sku, updatedAt) {
+  const revSku = normalizeRevSku(sku || query || part?.partNumber || part?.vendorSku || part?.manufacturerSku);
+  if (revSku) {
+    const direct = await lookupRevDirectVendor(adapter, part, revSku, updatedAt);
+    if (direct) return direct;
+  }
   if (!sku) return null;
   const url = new URL("/search.php", adapter.baseUrl);
   url.searchParams.set("search_query", sku);
@@ -2815,6 +2820,41 @@ async function lookupRevVendor(adapter, part, query, sku, updatedAt) {
     };
   }
   return null;
+}
+
+async function lookupRevDirectVendor(adapter, part, revSku, updatedAt) {
+  const productUrl = revProductUrl(revSku);
+  if (!productUrl) return null;
+  try {
+    const html = await fetchVendorText(productUrl);
+    const pageSku = htmlDecode((html.match(/"sku"\s*:\s*"([^"]+)"/i)?.[1] || "").trim()) || revSku;
+    const pageHasSku = normalizeSku(pageSku) === normalizeSku(revSku) || html.toLowerCase().includes(revSku.toLowerCase());
+    if (!pageHasSku) return null;
+    const title = stripHtml(htmlDecode(
+      html.match(/<h1[^>]*class="[^"]*productView-title[^"]*"[^>]*>([\s\S]*?)<\/h1>/i)?.[1]
+      || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+      || part?.name
+      || revSku
+    )).replace(/\s+-\s+REV Robotics\s*$/i, "");
+    const price = html.match(/<meta property="product:price:amount" content="([^"]+)"/i)?.[1]
+      || html.match(/data-product-price-without-tax[^>]*>\s*([^<]+)\s*<\/span>/i)?.[1]
+      || "";
+    return {
+      source: "plateflow-vendor",
+      title: String(title || part?.name || revSku).slice(0, 180),
+      sku: String(pageSku || revSku).slice(0, 100),
+      vendor: adapter.vendor,
+      productUrl,
+      searchUrl: productUrl,
+      unitPriceCents: centsFromPrice(price),
+      currency: "USD",
+      confidence: 1,
+      matchType: "sku_exact",
+      updatedAt
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function lookupVBeltGuysVendor(adapter, part, query, sku, updatedAt) {
@@ -3182,7 +3222,7 @@ function vendorSearchLink(vendor, query) {
   const canonical = canonicalProcurementVendor(vendor) || vendor;
   const value = String(query || "").trim();
   const encoded = encodeURIComponent(value);
-  if (canonical === "REV") return `https://www.revrobotics.com/search.php?search_query=${encoded}`;
+  if (canonical === "REV") return revProductUrl(value) || `https://www.revrobotics.com/search.php?search_query=${encoded}`;
   if (canonical === "WCP") return wcpProductUrl(value) || `https://wcproducts.com/search?q=${encoded}`;
   if (canonical === "Andymark") return `https://www.andymark.com/search?q=${encoded}`;
   if (canonical === "The Thrifty Bot") return `https://www.thethriftybot.com/search?q=${encoded}`;
@@ -3358,6 +3398,18 @@ function stripHtml(value) {
 
 function normalizeSku(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeRevSku(value) {
+  const text = String(value || "").trim();
+  const explicit = text.match(/\bREV[-_\s]*(\d{2})[-_\s]*(\d{3,5}[A-Z]?)\b/i);
+  if (explicit) return `REV-${explicit[1]}-${explicit[2].toUpperCase()}`;
+  return "";
+}
+
+function revProductUrl(value) {
+  const sku = normalizeRevSku(value);
+  return sku ? `https://www.revrobotics.com/${sku.toLowerCase()}/` : "";
 }
 
 function normalizeWcpSku(value) {
