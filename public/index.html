@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=19">
+    <link rel="stylesheet" href="/styles.css?v=20">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -24,11 +24,11 @@
         <a href="#fabrication">Fabrication</a>
         <a href="#procurement">Procurement</a>
         <a href="#raw-material">Raw</a>
+        <a href="#settings">Settings</a>
         <a href="#admin">Admin</a>
       </nav>
       <div class="auth">
         <span id="appAuthStatus" class="status-pill">Checking</span>
-        <span id="storageStatus" class="status-pill">Storage checking</span>
         <span id="authStatus" class="status-pill">Onshape checking</span>
         <a id="loginLink" class="button small" href="/auth/onshape">Connect Onshape</a>
         <a id="appLogoutLink" class="ghost small hidden" href="/auth/plateflow/logout">Log out</a>
@@ -357,6 +357,37 @@
         </aside>
       </section>
 
+      <section id="settings" class="workspace app-page" data-page hidden>
+        <div class="section-heading">
+          <span class="eyebrow">Settings</span>
+          <h2>Global configuration</h2>
+        </div>
+        <form id="settingsForm" class="tool-surface settings-form">
+          <label class="wide">
+            <span>Part number template</span>
+            <input name="template" autocomplete="off" placeholder="{prefix}-{source}-{subsystem}-{part}">
+            <small>Available tokens: {prefix}, {source}, {subsystem}, {part}</small>
+          </label>
+          <label>
+            <span>Prefix</span>
+            <input name="prefix" autocomplete="off" placeholder="PF">
+          </label>
+          <label>
+            <span>Source length</span>
+            <input name="sourceLength" type="number" min="1" max="12">
+          </label>
+          <label>
+            <span>Subsystem length</span>
+            <input name="subsystemLength" type="number" min="1" max="12">
+          </label>
+          <label>
+            <span>Part code length</span>
+            <input name="partLength" type="number" min="1" max="16">
+          </label>
+          <button class="button" type="submit">Save settings</button>
+        </form>
+      </section>
+
       <section id="admin" class="band security app-page" data-page hidden>
         <div>
           <span class="eyebrow">Admin</span>
@@ -388,6 +419,7 @@
             </label>
             <button class="button" type="submit">Create invite</button>
           </form>
+          <div id="storageAdminStatus" class="admin-counts">Storage status unavailable.</div>
           <div id="userList" class="batch-list audit-list">No users loaded.</div>
           <div id="auditLog" class="batch-list audit-list">No audit activity yet.</div>
         </div>
@@ -395,6 +427,6 @@
       </div>
     </main>
 
-    <script src="/app.js?v=19"></script>
+    <script src="/app.js?v=20"></script>
   </body>
 </html>

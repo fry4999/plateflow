@@ -304,7 +304,9 @@ body.locked #loginLink,
 body.locked #logoutLink,
 body.locked #appLogoutLink,
 body:not(.admin-user) .nav a[href="#admin"],
-body:not(.admin-user) #admin {
+body:not(.admin-user) .nav a[href="#settings"],
+body:not(.admin-user) #admin,
+body:not(.admin-user) #settings {
   display: none;
 }
 
@@ -753,6 +755,10 @@ td {
   margin-bottom: 18px;
 }
 
+.settings-form {
+  grid-template-columns: minmax(260px, 2fr) repeat(4, minmax(120px, 1fr)) auto;
+}
+
 label span {
   display: block;
   margin-bottom: 7px;
@@ -1042,6 +1048,16 @@ td select {
   padding: 12px;
   border-radius: 8px;
   background: var(--soft);
+  opacity: 1;
+  transition: opacity .8s ease;
+}
+
+.message:empty {
+  display: none;
+}
+
+.message.fade-out {
+  opacity: 0;
 }
 
 .global-message {
@@ -1082,8 +1098,8 @@ td select {
 
 .fabrication-page {
   grid-template-columns: 1fr;
-  max-width: none;
-  padding: 42px 40px 56px;
+  max-width: 1180px;
+  padding: 42px 32px 56px;
 }
 
 .queue-grid .section-heading {
@@ -1152,7 +1168,7 @@ td select {
   display: grid;
   grid-template-columns: repeat(3, minmax(260px, 1fr));
   gap: 18px;
-  min-height: calc(100vh - 220px);
+  min-height: 480px;
 }
 
 .kanban-column {
@@ -1176,6 +1192,11 @@ td select {
 
 .kanban-column.green {
   border-top: 4px solid #22c55e;
+}
+
+.kanban-column.drag-over {
+  outline: 3px solid rgba(96, 165, 250, .55);
+  outline-offset: 2px;
 }
 
 .kanban-column-head {
@@ -1215,6 +1236,15 @@ td select {
   border-left: 5px solid var(--blue);
   border-radius: 8px;
   background: var(--panel);
+  cursor: grab;
+}
+
+.kanban-card:active {
+  cursor: grabbing;
+}
+
+.kanban-card.dragging {
+  opacity: .52;
 }
 
 .kanban-card.todo {
@@ -1368,6 +1398,7 @@ td select {
 .embedded #procurement,
 .embedded #raw-material,
 .embedded #selection,
+.embedded #settings,
 .embedded #admin {
   display: none;
 }
@@ -1491,6 +1522,7 @@ td select {
   .tool-surface,
   .configurator,
   .detected-grid,
+  .settings-form,
   .robot-form,
   .robot-source-row,
   .requirement-row,

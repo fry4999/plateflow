@@ -6,6 +6,7 @@ let bootstrapRequired = false;
 let inviteToken = "";
 let dashboardState = null;
 let selectedRobotId = "";
+let messageTimer = null;
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -75,6 +76,8 @@ const els = {
   inviteForm: document.querySelector("#inviteForm"),
   userList: document.querySelector("#userList"),
   auditLog: document.querySelector("#auditLog"),
+  settingsForm: document.querySelector("#settingsForm"),
+  storageAdminStatus: document.querySelector("#storageAdminStatus"),
   summaryParts: document.querySelector("#summaryParts"),
   summaryQty: document.querySelector("#summaryQty"),
   summaryMaterials: document.querySelector("#summaryMaterials"),
@@ -161,6 +164,10 @@ function bindEvents() {
   if (els.userList) els.userList.addEventListener("click", onAdminUserAction);
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("change", onFabricationJobChange);
   if (els.fabricationJobs) els.fabricationJobs.addEventListener("click", onFabricationJobAction);
+  if (els.fabricationJobs) els.fabricationJobs.addEventListener("dragstart", onFabricationDragStart);
+  if (els.fabricationJobs) els.fabricationJobs.addEventListener("dragend", onFabricationDragEnd);
+  if (els.fabricationJobs) els.fabricationJobs.addEventListener("dragover", onFabricationDragOver);
+  if (els.fabricationJobs) els.fabricationJobs.addEventListener("drop", onFabricationDrop);
   if (els.procurementOrders) els.procurementOrders.addEventListener("change", onProcurementOrderChange);
   els.demoButton.addEventListener("click", loadDemo);
   els.configPartSelect?.addEventListener("change", onConfigPartChange);
@@ -174,6 +181,7 @@ function bindEvents() {
   els.exportButton.addEventListener("click", onExport);
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
   if (els.rawMaterialForm) els.rawMaterialForm.addEventListener("submit", onRawMaterialAdd);
+  if (els.settingsForm) els.settingsForm.addEventListener("submit", onSettingsSave);
   if (els.robotForm) els.robotForm.addEventListener("submit", onRobotCreate);
   if (els.robotList) els.robotList.addEventListener("click", onRobotSelect);
   if (els.attachAssemblyButton) els.attachAssemblyButton.addEventListener("click", onRobotAttachAssembly);
@@ -191,7 +199,7 @@ function syncPageFromHash() {
     setupEmbeddedPage();
     return;
   }
-  const visiblePages = [...els.pages].filter((page) => page.id !== "admin" || document.body.classList.contains("admin-user"));
+  const visiblePages = [...els.pages].filter((page) => !["admin", "settings"].includes(page.id) || document.body.classList.contains("admin-user"));
   if (!visiblePages.length) return;
   const requested = (location.hash || "#dashboard").slice(1);
   const fallback = visiblePages[0].id;
@@ -246,7 +254,7 @@ function renderAppAccess(session) {
     els.plateflowLoginForm.elements.inviteToken.value = inviteToken;
     if (inviteToken && !session.bootstrapRequired) els.nameField?.classList.remove("hidden");
   }
-  if ((!session.appUser || session.appUser.role !== "admin") && location.hash === "#admin") {
+  if ((!session.appUser || session.appUser.role !== "admin") && ["#admin", "#settings"].includes(location.hash)) {
     history.replaceState(null, "", "#dashboard");
   }
   if (embeddedMode) setupEmbeddedPage();
@@ -270,6 +278,13 @@ function renderAppAccess(session) {
     els.storageStatus.textContent = postgres ? "Postgres connected" : "Local storage";
     els.storageStatus.classList.toggle("ok", postgres);
     els.storageStatus.classList.toggle("warn", !postgres);
+  }
+  if (els.storageAdminStatus && session.appUser?.role === "admin") {
+    const postgres = session.storage?.kind === "postgres";
+    els.storageAdminStatus.innerHTML = `
+      <strong>${postgres ? "Postgres connected" : "Local file storage"}</strong>
+      <span>${session.storage?.databaseUrlConfigured ? "DATABASE_URL configured" : "DATABASE_URL not configured"}${session.storage?.error ? ` · ${escapeHtml(session.storage.error)}` : ""}</span>
+    `;
   }
   if (els.appLogoutLink) els.appLogoutLink.classList.toggle("hidden", !session.appAuthenticated);
 }
@@ -481,15 +496,38 @@ function onGeneratePartNumber() {
 }
 
 function generateClientPartNumber(part) {
-  const sourceCode = partNumberCode(source?.sourceTag || source?.documentName || "PF", 3);
-  const subsystemCode = partNumberCode(els.configSubsystem?.value || "GEN", 3);
-  const partCode = partNumberCode(part.id || part.name || "part", 4);
-  return `PF-${sourceCode}-${subsystemCode}-${partCode}`;
+  const settings = dashboardState?.settings?.partNumber || defaultPartNumberSettings();
+  return formatPartNumber(settings, {
+    prefix: settings.prefix || "PF",
+    source: partNumberCode(source?.sourceTag || source?.documentName || "SRC", settings.sourceLength),
+    subsystem: partNumberCode(els.configSubsystem?.value || "GEN", settings.subsystemLength),
+    part: partNumberCode(part.id || part.name || "part", settings.partLength)
+  });
 }
 
 function partNumberCode(value, length) {
   const normalized = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
   return (normalized || "X").slice(0, length).padEnd(length, "X");
+}
+
+function defaultPartNumberSettings() {
+  return {
+    template: "{prefix}-{source}-{subsystem}-{part}",
+    prefix: "PF",
+    sourceLength: 3,
+    subsystemLength: 3,
+    partLength: 4
+  };
+}
+
+function formatPartNumber(settings, tokens) {
+  return String(settings.template || "{prefix}-{source}-{subsystem}-{part}")
+    .replace(/\{prefix\}/g, tokens.prefix || "PF")
+    .replace(/\{source\}/g, tokens.source || "SRC")
+    .replace(/\{subsystem\}/g, tokens.subsystem || "GEN")
+    .replace(/\{part\}/g, tokens.part || "PART")
+    .replace(/[^a-zA-Z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function onClearConfig() {
@@ -600,6 +638,7 @@ async function loadDashboard(options = {}) {
   renderFabrication(dashboard.fabrication);
   renderProcurement(dashboard.procurement);
   renderRawMaterials(dashboard.rawMaterials);
+  renderSettings(dashboard.settings);
   renderAudit(dashboard.admin.auditLogs);
   await loadAdminUsers();
   renderSubsystemOptions();
@@ -665,6 +704,16 @@ function renderAdminUsers(result) {
       </div>
     `)
   ].join("") || "No users loaded.";
+}
+
+function renderSettings(settings) {
+  if (!els.settingsForm) return;
+  const partNumber = settings?.partNumber || defaultPartNumberSettings();
+  els.settingsForm.elements.template.value = partNumber.template || "";
+  els.settingsForm.elements.prefix.value = partNumber.prefix || "PF";
+  els.settingsForm.elements.sourceLength.value = Number(partNumber.sourceLength || 3);
+  els.settingsForm.elements.subsystemLength.value = Number(partNumber.subsystemLength || 3);
+  els.settingsForm.elements.partLength.value = Number(partNumber.partLength || 4);
 }
 
 function renderInventory(inventory) {
@@ -800,7 +849,7 @@ function renderFabrication(fabrication) {
   }
   const columns = [
     { status: "todo", label: "To make", tone: "red" },
-    { status: "in_progress", label: "Making", tone: "yellow" },
+    { status: "in_progress", label: "Manufacturing", tone: "yellow" },
     { status: "completed", label: "Ready", tone: "green" }
   ];
   els.fabricationJobs.innerHTML = `
@@ -808,7 +857,7 @@ function renderFabrication(fabrication) {
       ${columns.map(({ status, label, tone }) => {
         const jobs = fabrication.jobs.filter((job) => displayFabricationStatus(job.status) === status);
         return `
-          <section class="kanban-column ${escapeAttr(tone)}" aria-label="${escapeAttr(label)} fabrication parts">
+          <section class="kanban-column ${escapeAttr(tone)}" data-status="${escapeAttr(status)}" aria-label="${escapeAttr(label)} fabrication parts">
             <div class="kanban-column-head">
               <h4>${escapeHtml(label)}</h4>
               <span>${jobs.length}</span>
@@ -831,21 +880,13 @@ function renderFabricationCard(job) {
   const material = [line.material, line.thickness].filter(Boolean).join(" / ") || grouping[0]?.key || "Material unknown";
   const route = [line.stock, line.machine || line.process].filter(Boolean).join(" · ") || "Route not set";
   return `
-    <article class="kanban-card ${escapeAttr(status)}">
+    <article class="kanban-card ${escapeAttr(status)}" draggable="true" data-job-id="${escapeAttr(job.id)}">
       <div>
         <strong>${escapeHtml(line.name || job.name || job.id)}</strong>
         <small>${escapeHtml(material)}</small>
       </div>
       <p>${escapeHtml(route)}</p>
       <span class="kanban-line">${escapeHtml(line.subsystem || "No subsystem")} · qty ${Number(line.quantityNeeded || 1)}</span>
-      <label class="inline-select">
-        <span>Move to</span>
-        <select data-job-id="${escapeAttr(job.id)}">
-          <option value="todo"${status === "todo" ? " selected" : ""}>To make</option>
-          <option value="in_progress"${status === "in_progress" ? " selected" : ""}>Making</option>
-          <option value="completed"${status === "completed" ? " selected" : ""}>Ready</option>
-        </select>
-      </label>
       <button class="ghost small danger" type="button" data-action="delete-fab-job" data-job-id="${escapeAttr(job.id)}">Delete</button>
     </article>
   `;
@@ -931,6 +972,31 @@ async function onRawMaterialAdd(event) {
     els.rawMaterialForm.reset();
     await loadDashboard();
     setMessage("Raw stock added to inventory.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function onSettingsSave(event) {
+  event.preventDefault();
+  const form = Object.fromEntries(new FormData(els.settingsForm).entries());
+  try {
+    const result = await api("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        partNumber: {
+          template: form.template,
+          prefix: form.prefix,
+          sourceLength: Number(form.sourceLength),
+          subsystemLength: Number(form.subsystemLength),
+          partLength: Number(form.partLength)
+        }
+      })
+    });
+    dashboardState = { ...(dashboardState || {}), settings: result.settings };
+    renderSettings(result.settings);
+    onGeneratePartNumber();
+    setMessage("Settings saved for all users.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -1090,6 +1156,49 @@ async function onFabricationJobAction(event) {
   }
 }
 
+function onFabricationDragStart(event) {
+  const card = event.target.closest(".kanban-card[data-job-id]");
+  if (!card) return;
+  card.classList.add("dragging");
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", card.dataset.jobId);
+}
+
+function onFabricationDragOver(event) {
+  const column = event.target.closest(".kanban-column[data-status]");
+  if (!column) return;
+  event.preventDefault();
+  column.classList.add("drag-over");
+  for (const other of els.fabricationJobs.querySelectorAll(".kanban-column.drag-over")) {
+    if (other !== column) other.classList.remove("drag-over");
+  }
+}
+
+function onFabricationDragEnd() {
+  els.fabricationJobs.querySelectorAll(".dragging, .drag-over").forEach((item) => item.classList.remove("dragging", "drag-over"));
+}
+
+async function onFabricationDrop(event) {
+  const column = event.target.closest(".kanban-column[data-status]");
+  if (!column) return;
+  event.preventDefault();
+  const jobId = event.dataTransfer.getData("text/plain");
+  const status = column.dataset.status;
+  els.fabricationJobs.querySelectorAll(".dragging, .drag-over").forEach((item) => item.classList.remove("dragging", "drag-over"));
+  if (!jobId || !status) return;
+  try {
+    const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status })
+    });
+    renderFabrication(result.fabrication);
+    setMessage("Fabrication card moved.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+    await loadDashboard();
+  }
+}
+
 async function onProcurementOrderChange(event) {
   const select = event.target.closest("select[data-order-id]");
   if (!select) return;
@@ -1162,8 +1271,22 @@ async function refreshSession() {
 }
 
 function setMessage(text, type = "") {
+  if (messageTimer) {
+    clearTimeout(messageTimer);
+    messageTimer = null;
+  }
   els.message.textContent = text;
   els.message.className = `message ${type}`;
+  if (type === "ok") {
+    messageTimer = setTimeout(() => {
+      els.message.classList.add("fade-out");
+      messageTimer = setTimeout(() => {
+        els.message.textContent = "";
+        els.message.className = "message";
+        messageTimer = null;
+      }, 850);
+    }, 2000);
+  }
 }
 
 function escapeHtml(value) {

@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
-import { randomBytes, timingSafeEqual, createHmac, scryptSync } from "node:crypto";
+import { randomBytes, timingSafeEqual, createHmac, scryptSync, createHash, createCipheriv, createDecipheriv } from "node:crypto";
 
 const root = new URL(".", import.meta.url).pathname;
 const publicDir = join(root, "public");
@@ -53,10 +53,11 @@ createServer(async (req, res) => {
     if (url.pathname === "/auth/plateflow/logout") return logoutPlateFlow(res, session);
     if (url.pathname === "/auth/onshape") return onshapeStart(req, res, session, url);
     if (url.pathname === "/auth/onshape/callback") return await onshapeCallback(req, res, session, url);
-    if (url.pathname === "/auth/logout") return logout(res, session);
+    if (url.pathname === "/auth/logout") return await logout(res, session);
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
     if (url.pathname === "/api/inventory") return withAppAccess(session, res, () => json(res, 200, inventorySnapshot()));
     if (url.pathname === "/api/dashboard") return withAppAccess(session, res, (user) => json(res, 200, dashboardSnapshot(user)));
+    if (url.pathname === "/api/settings" && req.method === "PATCH") return withAppAccess(session, res, (user) => updateSettings(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/sync-batches") return withAppAccess(session, res, () => json(res, 200, syncBatchSnapshot()));
     if (url.pathname === "/api/raw-materials" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, { rawMaterials: store.rawMaterials }));
     if (url.pathname === "/api/raw-materials" && req.method === "POST") return withAppAccess(session, res, () => addRawMaterial(req, res, session), ["admin", "mentor", "fabricator"]);
@@ -192,7 +193,32 @@ function mergeStore(parsed) {
     vendorMatches: Array.isArray(parsed.vendorMatches) ? parsed.vendorMatches : fallback.vendorMatches,
     rawMaterials: Array.isArray(parsed.rawMaterials) ? parsed.rawMaterials : fallback.rawMaterials,
     inventoryLocations: Array.isArray(parsed.inventoryLocations) ? parsed.inventoryLocations : fallback.inventoryLocations,
+    settings: mergeSettings(parsed.settings || fallback.settings),
     auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : fallback.auditLogs
+  };
+}
+
+function defaultSettings() {
+  return {
+    partNumber: {
+      template: "{prefix}-{source}-{subsystem}-{part}",
+      prefix: "PF",
+      sourceLength: 3,
+      subsystemLength: 3,
+      partLength: 4
+    }
+  };
+}
+
+function mergeSettings(value) {
+  const fallback = defaultSettings();
+  return {
+    ...fallback,
+    ...(value && typeof value === "object" ? value : {}),
+    partNumber: {
+      ...fallback.partNumber,
+      ...(value?.partNumber && typeof value.partNumber === "object" ? value.partNumber : {})
+    }
   };
 }
 
@@ -200,6 +226,7 @@ function defaultStore() {
   const now = new Date().toISOString();
   return {
     teams: [{ id: "team-default", name: "FRC Team", status: "active" }],
+    settings: defaultSettings(),
     invites: [],
     users: [],
     robots: [
@@ -385,6 +412,7 @@ function cookie(name, value, opts) {
 }
 
 function publicSession(session) {
+  restoreOnshapeToken(session);
   return {
     authenticated: Boolean(session.token),
     appAuthenticated: Boolean(session.appUserId),
@@ -405,6 +433,8 @@ function publicSession(session) {
 
 function logoutPlateFlow(res, session) {
   session.appUserId = null;
+  session.token = null;
+  session.user = null;
   audit("auth.logout", "PlateFlow logout", "user");
   return redirect(res, "/");
 }
@@ -449,6 +479,7 @@ async function registerPlateFlow(req, res, session) {
     invite.acceptedBy = user.id;
   }
   session.appUserId = user.id;
+  await saveOnshapeTokenForSession(session);
   audit(bootstrap ? "auth.bootstrap_admin" : "auth.invite_accepted", `Created PlateFlow ${user.role} ${user.email}`, user.email);
   await persistStore();
   return json(res, 201, { user: publicAppUser(user), session: publicSession(session) });
@@ -461,6 +492,9 @@ async function loginPlateFlow(req, res, session) {
   if (!user || !verifyPassword(input.password, user.passwordHash)) throw httpError(401, "Invalid email or password");
   if (user.status !== "active") throw httpError(403, "This account is not active yet");
   session.appUserId = user.id;
+  session.token = null;
+  session.user = null;
+  restoreOnshapeToken(session);
   audit("auth.login", `PlateFlow login ${user.email}`, user.email);
   await persistStore();
   return json(res, 200, { user: publicAppUser(user), session: publicSession(session) });
@@ -512,8 +546,56 @@ function publicAppUser(user) {
     email: user.email,
     name: user.name,
     role: user.role,
-    status: user.status
+    status: user.status,
+    onshapeConnected: Boolean(user.onshapeToken)
   };
+}
+
+function restoreOnshapeToken(session) {
+  if (session.token || !session.appUserId) return Boolean(session.token);
+  const user = store.users.find((item) => item.id === session.appUserId);
+  const token = decryptJson(user?.onshapeToken);
+  if (!token?.refreshToken) return false;
+  session.token = token;
+  session.user = { provider: "onshape", label: "Onshape connected" };
+  return true;
+}
+
+async function saveOnshapeTokenForSession(session) {
+  if (!session.appUserId || !session.token?.refreshToken) return;
+  const user = store.users.find((item) => item.id === session.appUserId);
+  if (!user) return;
+  user.onshapeToken = encryptJson(session.token);
+  user.updatedAt = new Date().toISOString();
+  await persistStore();
+}
+
+function encryptJson(value) {
+  try {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", secretKey(), iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+    return ["v1", iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), encrypted.toString("base64url")].join(":");
+  } catch {
+    return "";
+  }
+}
+
+function decryptJson(value) {
+  try {
+    const [version, ivRaw, tagRaw, encryptedRaw] = String(value || "").split(":");
+    if (version !== "v1" || !ivRaw || !tagRaw || !encryptedRaw) return null;
+    const decipher = createDecipheriv("aes-256-gcm", secretKey(), Buffer.from(ivRaw, "base64url"));
+    decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
+    const decrypted = Buffer.concat([decipher.update(Buffer.from(encryptedRaw, "base64url")), decipher.final()]);
+    return JSON.parse(decrypted.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function secretKey() {
+  return createHash("sha256").update(config.sessionSecret).digest();
 }
 
 function onshapeStart(_req, res, session, url) {
@@ -557,6 +639,7 @@ async function onshapeCallback(_req, res, session, url) {
     session.token = normalizeToken(token);
     session.oauthState = null;
     session.user = { provider: "onshape", label: "Onshape connected" };
+    await saveOnshapeTokenForSession(session);
     return redirect(res, addQuery(session.returnTo || "/", "auth", "ok"));
   } catch (error) {
     console.error("Onshape OAuth callback failed", error);
@@ -565,10 +648,17 @@ async function onshapeCallback(_req, res, session, url) {
   }
 }
 
-function logout(res, session) {
+async function logout(res, session) {
   session.token = null;
   session.user = null;
   session.oauthState = null;
+  const user = store.users.find((item) => item.id === session.appUserId);
+  if (user?.onshapeToken) {
+    delete user.onshapeToken;
+    user.updatedAt = new Date().toISOString();
+    audit("auth.onshape_disconnected", `Disconnected Onshape for ${user.email}`, user.email);
+    await persistStore();
+  }
   return redirect(res, "/");
 }
 
@@ -607,7 +697,10 @@ async function ensureAccessToken(session) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body
   });
+  const previousRefreshToken = session.token.refreshToken;
   session.token = normalizeToken(token);
+  if (!session.token.refreshToken) session.token.refreshToken = previousRefreshToken;
+  await saveOnshapeTokenForSession(session);
   return session.token.accessToken;
 }
 
@@ -696,15 +789,28 @@ function applyConfiguredParts(parts, configuredParts, input) {
 }
 
 function generatePartNumber(input, part, config, index) {
-  const source = partNumberCode(input.sourceTag || input.documentName || "PF", 3);
-  const subsystem = partNumberCode(config.subsystem || "GEN", 3);
-  const suffix = partNumberCode(part.id || part.name || String(index + 1), 4);
-  return `PF-${source}-${subsystem}-${suffix}`;
+  const settings = settingsSnapshot().partNumber;
+  return formatPartNumber(settings, {
+    prefix: settings.prefix,
+    source: partNumberCode(input.sourceTag || input.documentName || "SRC", settings.sourceLength),
+    subsystem: partNumberCode(config.subsystem || "GEN", settings.subsystemLength),
+    part: partNumberCode(part.id || part.name || String(index + 1), settings.partLength)
+  });
 }
 
 function partNumberCode(value, length) {
   const normalized = normalizeKey(value).replace(/-/g, "").toUpperCase();
   return (normalized || "X").slice(0, length).padEnd(length, "X");
+}
+
+function formatPartNumber(settings, tokens) {
+  return String(settings.template || "{prefix}-{source}-{subsystem}-{part}")
+    .replace(/\{prefix\}/g, tokens.prefix || "PF")
+    .replace(/\{source\}/g, tokens.source || "SRC")
+    .replace(/\{subsystem\}/g, tokens.subsystem || "GEN")
+    .replace(/\{part\}/g, tokens.part || "PART")
+    .replace(/[^a-zA-Z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function stockCategory(stock) {
@@ -1239,6 +1345,7 @@ function dashboardSnapshot(user = null) {
     },
     robotSources: robotSourceSnapshot(),
     rawMaterials: store.rawMaterials,
+    settings: settingsSnapshot(),
     admin: {
       roles: adminVisible ? ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"] : [],
       locations: adminVisible ? store.inventoryLocations : [],
@@ -1322,6 +1429,19 @@ function publicRequirement(requirement) {
     quantityInstalled: Number(requirement.quantityInstalled || 0),
     status: requirement.status || "needed"
   };
+}
+
+function settingsSnapshot() {
+  return mergeSettings(store.settings);
+}
+
+async function updateSettings(req, res, session, actor) {
+  requireCsrf(req, session);
+  const next = validateSettings(await readJson(req));
+  store.settings = mergeSettings({ ...store.settings, ...next });
+  audit("settings.updated", "Updated global PlateFlow settings", actor.email);
+  await persistStore();
+  return json(res, 200, { settings: settingsSnapshot() });
 }
 
 function normalizePart(part, input) {
@@ -1840,6 +1960,32 @@ function validateProcurementStatus(value) {
   const statuses = new Set(["needed", "sourcing", "ready_to_order", "ordered", "partially_received", "received", "backordered", "canceled"]);
   if (!statuses.has(status)) throw httpError(400, "Invalid procurement status");
   return status;
+}
+
+function validateSettings(body) {
+  const existing = settingsSnapshot();
+  const partNumber = body?.partNumber || body || {};
+  const template = String(partNumber.template || existing.partNumber.template).trim().slice(0, 120);
+  const prefix = String(partNumber.prefix ?? existing.partNumber.prefix).trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12) || "PF";
+  const sourceLength = boundedInteger(partNumber.sourceLength, existing.partNumber.sourceLength, 1, 12);
+  const subsystemLength = boundedInteger(partNumber.subsystemLength, existing.partNumber.subsystemLength, 1, 12);
+  const partLength = boundedInteger(partNumber.partLength, existing.partNumber.partLength, 1, 16);
+  if (!template.includes("{part}")) throw httpError(400, "Part number template must include {part}");
+  return {
+    partNumber: {
+      template,
+      prefix,
+      sourceLength,
+      subsystemLength,
+      partLength
+    }
+  };
+}
+
+function boundedInteger(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isInteger(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
 }
 
 function validateInvite(body) {
