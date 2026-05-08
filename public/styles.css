@@ -1735,9 +1735,21 @@ body.dialog-open {
 
 .procurement-line-form {
   display: grid;
-  grid-template-columns: minmax(220px, 1.4fr) minmax(160px, .8fr) minmax(150px, .8fr) minmax(90px, .45fr) minmax(110px, .55fr) minmax(220px, 1.1fr) auto;
+  grid-template-columns: minmax(130px, .45fr) minmax(220px, 1.4fr) minmax(150px, .7fr) minmax(140px, .7fr) minmax(80px, .35fr) minmax(110px, .5fr) minmax(210px, 1fr) auto;
   gap: 10px;
   align-items: end;
+}
+
+.manual-additions-label {
+  align-self: stretch;
+  display: grid;
+  place-items: center start;
+  min-height: 48px;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .04em;
+  text-transform: uppercase;
 }
 
 .section-actions {
@@ -1803,8 +1815,8 @@ body.dialog-open {
 
 .vendor-order-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-  gap: 10px;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }
 
 .vendor-bucket,
@@ -1816,7 +1828,10 @@ body.dialog-open {
 }
 
 .queue-grid .vendor-bucket {
-  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(150px, .2fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 12px;
 }
 
 .vendor-bucket header,
@@ -1825,7 +1840,7 @@ body.dialog-open {
   align-items: start;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
 
 .vendor-bucket h4,
@@ -1836,7 +1851,7 @@ body.dialog-open {
 .vendor-lines,
 .project-order-list {
   display: grid;
-  gap: 10px;
+  gap: 4px;
 }
 
 .batch-list .procurement-scope-note {
@@ -1913,8 +1928,8 @@ body.dialog-open {
 }
 
 .procurement-line-top {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto minmax(150px, auto) auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -1942,20 +1957,11 @@ body.dialog-open {
 
 .procurement-editor {
   overflow: hidden;
+  margin-top: 8px;
   padding: 6px 8px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--soft);
-}
-
-.procurement-editor summary {
-  color: var(--blue);
-  font-weight: 900;
-  cursor: pointer;
-}
-
-.procurement-editor[open] summary {
-  margin-bottom: 10px;
 }
 
 .procurement-edit-grid {
@@ -1975,7 +1981,7 @@ body.dialog-open {
 
 .procurement-line-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: end;
   gap: 6px;
   align-items: center;
@@ -2017,6 +2023,34 @@ body.dialog-open {
   border-color: rgba(239, 68, 68, .35);
   color: #ef4444;
   background: rgba(239, 68, 68, .12);
+}
+
+.procurement-status {
+  display: inline-flex;
+  justify-content: center;
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--soft);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.procurement-status.ordered,
+.procurement-status.partially_received {
+  color: #2563eb;
+  border-color: rgba(37, 99, 235, .32);
+  background: rgba(37, 99, 235, .12);
+}
+
+.procurement-status.received {
+  color: #16a34a;
+  border-color: rgba(34, 197, 94, .35);
+  background: rgba(34, 197, 94, .12);
 }
 
 .needed-tooltip.compact {
@@ -2590,14 +2624,21 @@ body.dialog-open {
 
   .procurement-summary-grid,
   .vendor-order-grid,
+  .queue-grid .vendor-bucket,
   .procurement-line-form,
   .procurement-edit-grid {
     grid-template-columns: 1fr;
   }
 
-  .procurement-line {
+  .procurement-line,
+  .procurement-line-top {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .procurement-line-actions {
+    flex-wrap: wrap;
+    justify-content: start;
   }
 
   .price-pack {

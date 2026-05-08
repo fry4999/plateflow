@@ -2061,7 +2061,7 @@ function renderVendorBucket(bucket) {
   const lines = Array.isArray(bucket.lines) ? bucket.lines : [];
   const total = lines.reduce((sum, line) => sum + Number(line.totalPriceCents || 0), 0);
   return `
-    <article class="vendor-bucket">
+    <section class="vendor-bucket">
       <header>
         <div>
           <h4>${escapeHtml(bucket.vendor || "Unassigned")}</h4>
@@ -2070,9 +2070,9 @@ function renderVendorBucket(bucket) {
         <strong>${formatMoney(total)}</strong>
       </header>
       <div class="vendor-lines">
-        ${lines.slice(0, 10).map(renderProcurementLine).join("")}
+        ${lines.map(renderProcurementLine).join("")}
       </div>
-    </article>
+    </section>
   `;
 }
 
@@ -2116,15 +2116,17 @@ function renderProcurementLine(line) {
   const unit = line.unitPriceCents == null ? "price n/a" : formatMoney(line.unitPriceCents);
   const total = line.totalPriceCents == null ? "n/a" : formatMoney(line.totalPriceCents);
   const neededBy = Array.isArray(line.neededBy) ? line.neededBy.map((item) => `${item.robotName || "No project"} / ${item.subassemblyName || "No subassembly"} x${Number(item.quantityNeeded || 0)}`).join("\n") : "";
-  const actionUrl = line.productUrl || line.searchUrl || "";
-  const actionLabel = line.productUrl ? "Open" : "Search";
+  const fallbackUrl = procurementFallbackUrl(line.vendor, sku, name);
+  const actionUrl = line.productUrl || line.vendorUrl || line.searchUrl || fallbackUrl;
+  const actionLabel = line.productUrl || line.vendorUrl ? "Open" : "Find";
   const keys = line.lineKeys || (line.lineKey ? [line.lineKey] : []);
   const lineKeys = JSON.stringify(keys);
   const aggregate = keys.length > 1;
   const vendorOptions = procurementVendors();
   const selectedVendor = vendorOptions.includes(line.vendor) ? line.vendor : "Unassigned";
+  const status = line.status || "needed";
   return `
-    <div class="procurement-line" data-line-keys="${escapeAttr(lineKeys)}">
+    <div class="procurement-line ${escapeAttr(status)}" data-line-keys="${escapeAttr(lineKeys)}">
       <div class="procurement-line-top">
         <div class="procurement-line-main">
           <strong>${escapeHtml(name)}</strong>
@@ -2132,6 +2134,7 @@ function renderProcurementLine(line) {
           ${neededBy ? `<span class="needed-tooltip compact" tabindex="0">Needed by<span role="tooltip">${escapeHtml(neededBy).replace(/\n/g, "<br>")}</span></span>` : ""}
         </div>
         <span class="match-chip ${escapeAttr(line.matchStatus || "unmatched")}">${escapeHtml(procurementMatchLabel(line.matchStatus))}</span>
+        <span class="procurement-status ${escapeAttr(status)}">${escapeHtml(procurementStatusLabel(status))}</span>
         <span class="price-pack">
           <b>qty ${Number(line.quantityNeeded || 0)}</b>
           <b>${escapeHtml(unit)}</b>
@@ -2139,11 +2142,13 @@ function renderProcurementLine(line) {
         </span>
         <span class="procurement-line-actions">
           ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
+          <button class="ghost small" type="button" data-action="quick-procurement-status" data-status="ordered">Bought</button>
+          <button class="ghost small" type="button" data-action="quick-procurement-status" data-status="received">Arrived</button>
+          <button class="ghost small" type="button" data-action="toggle-procurement-edit">Edit</button>
           <button class="ghost small danger" type="button" data-action="delete-procurement-line">Delete</button>
         </span>
       </div>
-      <details class="procurement-editor">
-        <summary>Edit line</summary>
+      <div class="procurement-editor hidden">
         <div class="procurement-edit-grid">
           <label class="span-2">
             <span>Name</span>
@@ -2175,11 +2180,11 @@ function renderProcurementLine(line) {
           </label>
           <label class="span-2">
             <span>Link</span>
-            <input data-field="productUrl" value="${escapeAttr(line.productUrl || line.vendorUrl || "")}">
+            <input data-field="productUrl" value="${escapeAttr(actionUrl)}">
           </label>
           <button class="primary small" type="button" data-action="save-procurement-line">Save changes</button>
         </div>
-      </details>
+      </div>
     </div>
   `;
 }
@@ -2187,6 +2192,20 @@ function renderProcurementLine(line) {
 function procurementVendors() {
   const vendors = ["REV", "The Thrifty Bot", "WCP", "Andymark", "McMaster-Carr", "V-Belt Guys", "Unassigned"];
   return vendors;
+}
+
+function procurementFallbackUrl(vendor, sku, name = "") {
+  const query = String(sku && sku !== "No SKU" ? sku : name || "").trim();
+  if (!query) return "";
+  const encoded = encodeURIComponent(query);
+  const normalized = String(vendor || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (normalized.includes("rev")) return `https://www.revrobotics.com/search.php?search_query=${encoded}`;
+  if (normalized.includes("wcp") || normalized.includes("westcoast")) return `https://wcproducts.com/search?q=${encoded}`;
+  if (normalized.includes("thrifty") || normalized.includes("ttb")) return `https://www.thethriftybot.com/search?q=${encoded}`;
+  if (normalized.includes("andy")) return `https://www.andymark.com/search?q=${encoded}`;
+  if (normalized.includes("mcmaster")) return `https://www.mcmaster.com/${encoded}`;
+  if (normalized.includes("vbelt") || normalized.includes("beltguys")) return `https://www.vbeltguys.com/search?q=${encoded}`;
+  return "";
 }
 
 function renderProcurementOrderStatus(order) {
@@ -2213,6 +2232,10 @@ function procurementMatchLabel(status) {
   if (status === "manual") return "Manual";
   if (status === "lookup_failed") return "Lookup failed";
   return "Needs review";
+}
+
+function procurementStatusLabel(status) {
+  return String(status || "needed").replace(/_/g, " ");
 }
 
 function formatMoney(cents) {
@@ -2727,13 +2750,25 @@ async function onProcurementLineCreate(event) {
 }
 
 async function onProcurementLineAction(event) {
-  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line']");
+  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line'], button[data-action='toggle-procurement-edit'], button[data-action='quick-procurement-status']");
   if (!button) return;
   const row = button.closest(".procurement-line");
   if (!row) return;
   const lineKeys = parseLineKeys(row.dataset.lineKeys);
   if (!lineKeys.length) {
     setMessage("This procurement row is missing an edit key. Refresh and try again.", "error");
+    return;
+  }
+  if (button.dataset.action === "toggle-procurement-edit") {
+    const editor = row.querySelector(".procurement-editor");
+    if (!editor) return;
+    const open = editor.classList.toggle("hidden");
+    button.textContent = open ? "Edit" : "Close";
+    return;
+  }
+  if (button.dataset.action === "quick-procurement-status") {
+    const status = button.dataset.status || "needed";
+    await updateProcurementLineStatus(row, lineKeys, status);
     return;
   }
   if (button.dataset.action === "delete-procurement-line") {
@@ -2771,6 +2806,36 @@ async function onProcurementLineAction(event) {
     setMessage("Procurement line saved.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
+  }
+}
+
+async function updateProcurementLineStatus(row, lineKeys, status) {
+  const previous = row.querySelector("[data-field='status']")?.value || "";
+  row.querySelectorAll(".procurement-status").forEach((badge) => {
+    badge.textContent = procurementStatusLabel(status);
+    badge.className = `procurement-status ${status}`;
+  });
+  row.classList.remove(...procurementStatuses);
+  row.classList.add(status);
+  row.querySelectorAll("[data-field='status']").forEach((select) => {
+    select.value = status;
+  });
+  try {
+    const result = await api("/api/procurement/lines", {
+      method: "PATCH",
+      body: JSON.stringify({ lineKeys, status })
+    });
+    dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
+    renderProcurement(result.procurement);
+    setMessage(status === "received" ? "Procurement line marked arrived." : "Procurement line marked bought.", "ok");
+  } catch (error) {
+    if (previous) {
+      row.querySelectorAll("[data-field='status']").forEach((select) => {
+        select.value = previous;
+      });
+    }
+    setMessage(error.message, "error");
+    await loadDashboard();
   }
 }
 
