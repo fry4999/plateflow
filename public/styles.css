@@ -1726,7 +1726,7 @@ body.dialog-open {
 
 #procurement {
   grid-template-columns: 1fr;
-  max-width: 1320px;
+  max-width: 1240px;
 }
 
 #procurement .wide-card {
@@ -1748,13 +1748,14 @@ body.dialog-open {
 }
 
 .section-actions select {
-  min-width: 220px;
+  min-width: 190px;
 }
 
 .batch-list .empty-panel,
 .batch-list .procurement-summary-grid,
 .batch-list .vendor-order-grid,
 .batch-list .project-order-list,
+.batch-list .procurement-scope-note,
 .batch-list .vendor-lines,
 .batch-list .procurement-line,
 .batch-list .procurement-line-main,
@@ -1776,11 +1777,11 @@ body.dialog-open {
 .procurement-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(140px, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .batch-list .procurement-summary-grid div {
-  padding: 16px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--soft);
@@ -1788,7 +1789,7 @@ body.dialog-open {
 
 .procurement-summary-grid strong {
   display: block;
-  font-size: clamp(24px, 4vw, 36px);
+  font-size: clamp(22px, 3vw, 30px);
   line-height: 1;
 }
 
@@ -1802,8 +1803,8 @@ body.dialog-open {
 
 .vendor-order-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 10px;
 }
 
 .vendor-bucket,
@@ -1814,8 +1815,8 @@ body.dialog-open {
   background: var(--panel);
 }
 
-.vendor-bucket {
-  padding: 16px;
+.queue-grid .vendor-bucket {
+  padding: 12px;
 }
 
 .vendor-bucket header,
@@ -1823,8 +1824,8 @@ body.dialog-open {
   display: flex;
   align-items: start;
   justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 14px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .vendor-bucket h4,
@@ -1835,10 +1836,20 @@ body.dialog-open {
 .vendor-lines,
 .project-order-list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
-.procurement-project {
+.batch-list .procurement-scope-note {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--soft);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.queue-grid .procurement-project {
   padding: 18px;
 }
 
@@ -1881,10 +1892,20 @@ body.dialog-open {
 
 .procurement-line {
   display: grid;
-  gap: 10px;
-  padding: 14px 0;
+  gap: 8px;
+  padding: 10px 0;
   border-top: 1px solid var(--line);
   min-width: 0;
+  transition: opacity .12s ease, transform .12s ease, max-height .16s ease, padding .16s ease;
+  max-height: 320px;
+}
+
+.procurement-line.removing {
+  max-height: 0;
+  padding: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateX(10px);
 }
 
 .procurement-line:first-child {
@@ -1895,14 +1916,14 @@ body.dialog-open {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
 }
 
 .procurement-line-main {
   display: grid;
-  gap: 5px;
-  flex: 1 1 280px;
+  gap: 3px;
+  flex: 1 1 240px;
   min-width: 0;
 }
 
@@ -1921,7 +1942,7 @@ body.dialog-open {
 
 .procurement-editor {
   overflow: hidden;
-  padding: 8px 10px 10px;
+  padding: 6px 8px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--soft);
@@ -1964,7 +1985,7 @@ body.dialog-open {
   display: flex;
   flex-wrap: wrap;
   justify-content: end;
-  gap: 10px;
+  gap: 8px;
   color: var(--ink);
   font-weight: 900;
   text-align: right;

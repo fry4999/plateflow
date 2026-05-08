@@ -99,6 +99,8 @@ const els = {
   fabricationJobs: document.querySelector("#fabricationJobs"),
   procurementOrders: document.querySelector("#procurementOrders"),
   procurementProjectFilter: document.querySelector("#procurementProjectFilter"),
+  procurementSubassemblyFilter: document.querySelector("#procurementSubassemblyFilter"),
+  procurementVendorFilter: document.querySelector("#procurementVendorFilter"),
   refreshProcurementButton: document.querySelector("#refreshProcurementButton"),
   procurementLineForm: document.querySelector("#procurementLineForm"),
   batchList: document.querySelector("#batchList"),
@@ -215,7 +217,21 @@ function bindEvents() {
   if (els.procurementOrders) els.procurementOrders.addEventListener("change", onProcurementOrderChange);
   if (els.procurementOrders) els.procurementOrders.addEventListener("click", onProcurementLineAction);
   if (els.procurementLineForm) els.procurementLineForm.addEventListener("submit", onProcurementLineCreate);
-  if (els.procurementProjectFilter) els.procurementProjectFilter.addEventListener("change", () => renderProcurement(dashboardState?.procurement || { orders: [], projectBuckets: [], vendorBuckets: [] }));
+  if (els.procurementProjectFilter) els.procurementProjectFilter.addEventListener("change", () => {
+    els.procurementProjectFilter.dataset.touched = "1";
+    if (els.procurementSubassemblyFilter) els.procurementSubassemblyFilter.value = "";
+    if (els.procurementVendorFilter) els.procurementVendorFilter.value = "__all";
+    renderProcurement(dashboardState?.procurement || { orders: [], projectBuckets: [], vendorBuckets: [] });
+  });
+  if (els.procurementSubassemblyFilter) els.procurementSubassemblyFilter.addEventListener("change", () => {
+    els.procurementSubassemblyFilter.dataset.touched = "1";
+    if (els.procurementVendorFilter) els.procurementVendorFilter.value = "__all";
+    renderProcurement(dashboardState?.procurement || { orders: [], projectBuckets: [], vendorBuckets: [] });
+  });
+  if (els.procurementVendorFilter) els.procurementVendorFilter.addEventListener("change", () => {
+    els.procurementVendorFilter.dataset.touched = "1";
+    renderProcurement(dashboardState?.procurement || { orders: [], projectBuckets: [], vendorBuckets: [] });
+  });
   if (els.refreshProcurementButton) els.refreshProcurementButton.addEventListener("click", onProcurementRefresh);
   els.demoButton.addEventListener("click", loadDemo);
   els.syncRobotSelect?.addEventListener("change", onSyncRobotChange);
@@ -1807,27 +1823,40 @@ function renderProcurement(procurement) {
     : (dashboardState?.robots || []).map((robot) => ({ robotId: robot.id, name: robot.name, targetType: robot.targetType, season: robot.season, quantity: 0, estimatedTotalCents: 0 }));
   const orders = Array.isArray(safe.orders) ? safe.orders : [];
   renderProcurementProjectFilter(availableProjects, projects);
-  const selectedProject = els.procurementProjectFilter?.value || "";
-  const scopedProjects = selectedProject
+  const selectedProject = els.procurementProjectFilter?.value || "__all";
+  const allProjects = selectedProject === "__all";
+  let scopedProjects = !allProjects && selectedProject
     ? projects.filter((project) => procurementProjectValue(project) === selectedProject)
     : projects;
-  if (selectedProject && !scopedProjects.length) {
+  if (!allProjects && selectedProject && !scopedProjects.length) {
     const emptyProject = availableProjects.find((project) => procurementProjectValue(project) === selectedProject);
     if (emptyProject) scopedProjects.push({ ...emptyProject, subassemblies: [] });
   }
-  const scopedVendorBuckets = selectedProject ? vendorBucketsFromProjects(scopedProjects) : (Array.isArray(safe.vendorBuckets) ? safe.vendorBuckets : []);
+  renderProcurementSubassemblyFilter(scopedProjects, allProjects);
+  const selectedSubassembly = els.procurementSubassemblyFilter?.value || "__all";
+  if (!allProjects && selectedSubassembly !== "__all") scopedProjects = filterProcurementSubassemblies(scopedProjects, selectedSubassembly);
+  let baseVendorBuckets = vendorBucketsFromProjects(scopedProjects);
+  renderProcurementVendorFilter(baseVendorBuckets);
+  const selectedVendor = els.procurementVendorFilter?.value || "__all";
+  if (selectedVendor !== "__all") {
+    baseVendorBuckets = baseVendorBuckets.filter((bucket) => procurementVendorValue(bucket.vendor) === selectedVendor);
+    scopedProjects = filterProcurementVendors(scopedProjects, selectedVendor);
+  }
+  const scopedVendorBuckets = baseVendorBuckets;
   const scopedLines = scopedProjects.flatMap((project) => project.subassemblies || []).flatMap((subassembly) => subassembly.vendorBuckets || []).flatMap((bucket) => bucket.lines || []);
   const totals = procurementTotals(scopedVendorBuckets, scopedLines);
+  const selectedProjectName = !allProjects ? (availableProjects.find((project) => procurementProjectValue(project) === selectedProject)?.name || scopedProjects[0]?.name || "Selected project") : "All projects";
+  const selectedSubassemblyName = selectedSubassembly !== "__all" ? (scopedProjects.flatMap((project) => project.subassemblies || []).find((subassembly) => procurementSubassemblyValue(subassembly) === selectedSubassembly)?.name || "Selected sub-assembly") : "All sub-assemblies";
   if (els.procQueueCount) {
     els.procQueueCount.textContent = totals.lines
-      ? `${totals.quantity} COTS part${totals.quantity === 1 ? "" : "s"} needed · ${totals.matched}/${totals.lines} matched · ${formatMoney(totals.estimatedTotalCents)} estimated`
+      ? `${selectedProjectName} · ${selectedSubassemblyName} · ${totals.quantity} needed · ${totals.matched}/${totals.lines} matched · ${formatMoney(totals.estimatedTotalCents)} estimated`
       : "No COTS parts queued.";
   }
   if (!totals.lines) {
     els.procurementOrders.innerHTML = `
       <div class="empty-panel">
-        <strong>${selectedProject ? "No procurement lines for this project yet." : "No procurement lines yet."}</strong>
-        <span>${selectedProject ? "Import an Assembly BOM while this project is selected in the Onshape panel." : "Import Assembly BOM rows to create vendor order groups."}</span>
+        <strong>No procurement lines in this view.</strong>
+        <span>Pick another project, sub-assembly, or vendor, or import an Assembly BOM from the Onshape panel.</span>
       </div>
     `;
     return;
@@ -1842,9 +1871,15 @@ function renderProcurement(procurement) {
     <div class="vendor-order-grid">
       ${scopedVendorBuckets.map(renderVendorBucket).join("")}
     </div>
-    <div class="project-order-list">
-      ${scopedProjects.map(renderProcurementProject).join("")}
-    </div>
+    ${allProjects ? `
+      <div class="project-order-list">
+        ${scopedProjects.map(renderProcurementProject).join("")}
+      </div>
+    ` : `
+      <div class="procurement-scope-note">
+        Showing ${escapeHtml(selectedProjectName)} / ${escapeHtml(selectedSubassemblyName)} COTS BOM grouped by vendor.
+      </div>
+    `}
     ${orders.length ? `
       <details class="procurement-sync-list">
         <summary>Sync batches and status</summary>
@@ -1859,17 +1894,102 @@ function renderProcurementProjectFilter(availableProjects, projectBuckets = []) 
   const current = els.procurementProjectFilter.value;
   const options = procurementProjectOptions(availableProjects, projectBuckets).map((project) => ({
     value: procurementProjectValue(project),
-    label: `${project.name || "Project"} · ${targetLabel(project)}${Number(project.quantity || 0) ? ` · ${Number(project.quantity)} needed` : ""}`
+    label: `${project.name || "Project"}${Number(project.quantity || 0) ? ` · ${Number(project.quantity)} needed` : ""}`
   }));
+  const preferred = current === "__all" && els.procurementProjectFilter.dataset.touched === "1"
+    ? "__all"
+    : options.some((option) => option.value === current)
+      ? current
+      : options.find((option) => option.value === selectedRobotId)?.value || options[0]?.value || "__all";
   els.procurementProjectFilter.innerHTML = [
-    `<option value="">All projects</option>`,
-    ...options.map((option) => `<option value="${escapeAttr(option.value)}"${option.value === current ? " selected" : ""}>${escapeHtml(option.label)}</option>`)
+    `<option value="__all"${preferred === "__all" ? " selected" : ""}>All projects</option>`,
+    ...options.map((option) => `<option value="${escapeAttr(option.value)}"${option.value === preferred ? " selected" : ""}>${escapeHtml(option.label)}</option>`)
   ].join("");
-  if (current && !options.some((option) => option.value === current)) els.procurementProjectFilter.value = "";
+  els.procurementProjectFilter.value = preferred;
 }
 
 function procurementProjectValue(project) {
   return project?.robotId || "";
+}
+
+function procurementSubassemblyValue(subassembly) {
+  return subassembly?.id || subassembly?.name || "";
+}
+
+function procurementVendorValue(vendor) {
+  return String(vendor || "Unassigned").trim().toLowerCase();
+}
+
+function renderProcurementSubassemblyFilter(projects = [], allProjects = false) {
+  if (!els.procurementSubassemblyFilter) return;
+  const current = els.procurementSubassemblyFilter.value;
+  const subassemblies = allProjects ? [] : projects.flatMap((project) => project.subassemblies || []);
+  const options = subassemblies.map((subassembly) => ({
+    value: procurementSubassemblyValue(subassembly),
+    label: `${subassembly.name || "Sub-assembly"}${Number(subassembly.quantity || 0) ? ` · ${Number(subassembly.quantity)} needed` : ""}`
+  })).filter((option, index, list) => option.value && list.findIndex((item) => item.value === option.value) === index);
+  const preferred = current === "__all" && els.procurementSubassemblyFilter.dataset.touched === "1"
+    ? "__all"
+    : options.some((option) => option.value === current)
+      ? current
+      : options[0]?.value || "__all";
+  els.procurementSubassemblyFilter.innerHTML = [
+    `<option value="__all"${preferred === "__all" ? " selected" : ""}>${allProjects ? "Choose a project for sub-assemblies" : "All sub-assemblies"}</option>`,
+    ...options.map((option) => `<option value="${escapeAttr(option.value)}"${option.value === preferred ? " selected" : ""}>${escapeHtml(option.label)}</option>`)
+  ].join("");
+  els.procurementSubassemblyFilter.disabled = allProjects || !options.length;
+  els.procurementSubassemblyFilter.value = preferred;
+}
+
+function renderProcurementVendorFilter(vendorBuckets = []) {
+  if (!els.procurementVendorFilter) return;
+  const current = els.procurementVendorFilter.value || "__all";
+  const options = vendorBuckets.map((bucket) => ({
+    value: procurementVendorValue(bucket.vendor),
+    label: `${bucket.vendor || "Unassigned"}${Number(bucket.quantity || 0) ? ` · qty ${Number(bucket.quantity)}` : ""}`
+  })).filter((option, index, list) => option.value && list.findIndex((item) => item.value === option.value) === index)
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const preferred = options.some((option) => option.value === current) ? current : "__all";
+  els.procurementVendorFilter.innerHTML = [
+    `<option value="__all"${preferred === "__all" ? " selected" : ""}>All vendors</option>`,
+    ...options.map((option) => `<option value="${escapeAttr(option.value)}"${option.value === preferred ? " selected" : ""}>${escapeHtml(option.label)}</option>`)
+  ].join("");
+  els.procurementVendorFilter.disabled = !options.length;
+  els.procurementVendorFilter.value = preferred;
+}
+
+function filterProcurementSubassemblies(projects = [], selectedSubassembly) {
+  return projects.map((project) => recalculateProcurementProject({
+    ...project,
+    subassemblies: (project.subassemblies || []).filter((subassembly) => procurementSubassemblyValue(subassembly) === selectedSubassembly)
+  })).filter((project) => (project.subassemblies || []).length);
+}
+
+function filterProcurementVendors(projects = [], selectedVendor) {
+  return projects.map((project) => recalculateProcurementProject({
+    ...project,
+    subassemblies: (project.subassemblies || []).map((subassembly) => ({
+      ...subassembly,
+      vendorBuckets: (subassembly.vendorBuckets || []).filter((bucket) => procurementVendorValue(bucket.vendor) === selectedVendor)
+    })).filter((subassembly) => (subassembly.vendorBuckets || []).length)
+  })).filter((project) => (project.subassemblies || []).length);
+}
+
+function recalculateProcurementProject(project) {
+  const subassemblies = (project.subassemblies || []).map((subassembly) => {
+    const lines = (subassembly.vendorBuckets || []).flatMap((bucket) => bucket.lines || []);
+    return {
+      ...subassembly,
+      quantity: lines.reduce((sum, line) => sum + Number(line.quantityNeeded || 0), 0),
+      estimatedTotalCents: lines.reduce((sum, line) => sum + Number(line.totalPriceCents || 0), 0)
+    };
+  });
+  return {
+    ...project,
+    subassemblies,
+    quantity: subassemblies.reduce((sum, subassembly) => sum + Number(subassembly.quantity || 0), 0),
+    estimatedTotalCents: subassemblies.reduce((sum, subassembly) => sum + Number(subassembly.estimatedTotalCents || 0), 0)
+  };
 }
 
 function procurementProjectOptions(availableProjects = [], projectBuckets = []) {
@@ -2617,13 +2737,16 @@ async function onProcurementLineAction(event) {
     return;
   }
   if (button.dataset.action === "delete-procurement-line") {
-    const confirmed = await confirmAction({
-      title: "Delete procurement line?",
-      body: "This removes the selected procurement row from ordering. The catalog item stays in inventory.",
-      confirmLabel: "Delete line",
-      danger: true
-    });
-    if (!confirmed) return;
+    const matchingRows = [...els.procurementOrders.querySelectorAll(".procurement-line")]
+      .filter((item) => item.dataset.lineKeys === row.dataset.lineKeys);
+    for (const item of matchingRows) {
+      item.classList.add("removing");
+      item.querySelectorAll("button, a, input, select").forEach((control) => {
+        if ("disabled" in control) control.disabled = true;
+      });
+    }
+    setTimeout(() => matchingRows.forEach((item) => item.remove()), 120);
+    setMessage("Deleting procurement line...");
     try {
       const result = await api("/api/procurement/lines", {
         method: "DELETE",
@@ -2634,6 +2757,7 @@ async function onProcurementLineAction(event) {
       setMessage("Procurement line deleted.", "ok");
     } catch (error) {
       setMessage(error.message, "error");
+      await loadDashboard();
     }
     return;
   }
@@ -2677,7 +2801,7 @@ async function onProcurementRefresh() {
     const result = await api("/api/procurement/refresh", {
       method: "POST",
       body: JSON.stringify({
-        robotId: els.procurementProjectFilter?.value && els.procurementProjectFilter.value !== "__unassigned" ? els.procurementProjectFilter.value : ""
+        robotId: els.procurementProjectFilter?.value && !["__all", "__unassigned"].includes(els.procurementProjectFilter.value) ? els.procurementProjectFilter.value : ""
       })
     });
     dashboardState = {

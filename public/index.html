@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
     <link rel="icon" href="/plateflow-logo.png">
-    <link rel="stylesheet" href="/styles.css?v=32">
+    <link rel="stylesheet" href="/styles.css?v=33">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -362,7 +362,13 @@
           </div>
           <div class="section-actions">
             <select id="procurementProjectFilter" aria-label="Filter procurement by project">
-              <option value="">All projects</option>
+              <option value="__all">All projects</option>
+            </select>
+            <select id="procurementSubassemblyFilter" aria-label="Filter procurement by sub-assembly">
+              <option value="__all">All sub-assemblies</option>
+            </select>
+            <select id="procurementVendorFilter" aria-label="Filter procurement by vendor">
+              <option value="__all">All vendors</option>
             </select>
             <button id="refreshProcurementButton" class="ghost small" type="button">Refresh vendor matches</button>
           </div>
@@ -532,6 +538,6 @@
       </section>
     </div>
 
-    <script src="/app.js?v=30"></script>
+    <script src="/app.js?v=31"></script>
   </body>
 </html>
