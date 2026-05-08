@@ -415,6 +415,8 @@ async function refreshStore() {
   if (ensureSubassemblyNumbers()) changed = true;
   if (mergeDuplicateInventoryRecords()) changed = true;
   if (removeLikelyPurchasedFromCustomPipeline()) changed = true;
+  if (removeKnownCustomFromProcurementPipeline()) changed = true;
+  if (normalizeShaftProcurementVendors()) changed = true;
   if (changed) await persistStore();
 }
 
@@ -494,6 +496,81 @@ function removeLikelyPurchasedFromCustomPipeline() {
   store.catalogParts = store.catalogParts.filter((part) => !removedCatalogIds.has(part.id) && !(part.sourceType === "custom" && isLikelyPurchasedPart(part)));
   audit("inventory.custom_cots_cleanup", "Removed belt/COTS-like rows from custom fabrication inventory; import them from Assembly BOM instead", "system");
   return true;
+}
+
+function removeKnownCustomFromProcurementPipeline() {
+  const removedCatalogIds = new Set();
+  let changed = false;
+
+  for (const record of store.inventoryRecords || []) {
+    if (record.sourceType !== "cots" || !Array.isArray(record.parts)) continue;
+    const keep = [];
+    for (const part of record.parts) {
+      if (!shouldRouteAssemblyRowToManufacturing(part, record.source || part.source || {})) {
+        keep.push(part);
+        continue;
+      }
+      changed = true;
+      const catalog = findCatalogPartForInventoryPart(part, "cots");
+      if (catalog?.id) removedCatalogIds.add(catalog.id);
+    }
+    record.parts = keep;
+  }
+
+  for (const order of store.procurementOrders || []) {
+    if (!Array.isArray(order.lines)) continue;
+    const before = order.lines.length;
+    order.lines = order.lines.filter((line) => (
+      line.shaftStockRollup ||
+      (!removedCatalogIds.has(line.catalogPartId) && !shouldRouteAssemblyRowToManufacturing(line, line.source || {}))
+    ));
+    if (order.lines.length !== before) {
+      changed = true;
+      order.vendorGroups = groupCotsParts(order.lines);
+      order.updatedAt = new Date().toISOString();
+    }
+  }
+
+  if (!changed) return false;
+
+  store.inventoryRecords = store.inventoryRecords.filter((record) => record.sourceType !== "cots" || record.parts.length);
+  store.procurementOrders = store.procurementOrders.filter((order) => Array.isArray(order.lines) && order.lines.length);
+  store.requirements = store.requirements.filter((requirement) => (
+    requirement.sourceType !== "cots" ||
+    (!removedCatalogIds.has(requirement.catalogPartId) && !shouldRouteAssemblyRowToManufacturing(requirement, {}))
+  ));
+  store.catalogParts = store.catalogParts.filter((part) => !removedCatalogIds.has(part.id) && !(part.sourceType === "cots" && shouldRouteAssemblyRowToManufacturing(part, part.source || {})));
+  audit("procurement.custom_cleanup", "Removed custom Part Studio matches from procurement; custom rows stay in manufacturing only", "system");
+  return true;
+}
+
+function normalizeShaftProcurementVendors() {
+  let changed = false;
+  const apply = (item) => {
+    if (!item || !(item.shaftStockRollup || isShaftStockProcurementText([item.name, item.category, item.description, item.stock].join(" ")))) return;
+    if (item.vendor !== "WCP") {
+      item.vendor = "WCP";
+      changed = true;
+    }
+    if (!item.vendorUrl && !item.productUrl) {
+      item.vendorUrl = vendorLink("WCP", item.vendorSku || item.partNumber || "", item.name);
+      changed = true;
+    }
+  };
+  for (const record of store.inventoryRecords || []) {
+    if (record.sourceType !== "cots") continue;
+    for (const part of record.parts || []) apply(part);
+  }
+  for (const part of store.catalogParts || []) {
+    if (part.sourceType === "cots") apply(part);
+  }
+  for (const order of store.procurementOrders || []) {
+    if (!Array.isArray(order.lines)) continue;
+    for (const line of order.lines) apply(line);
+    if (changed) order.vendorGroups = groupCotsParts(order.lines);
+  }
+  if (changed) audit("procurement.shaft_vendor_normalized", "Forced shaft stock procurement rows to WCP", "system");
+  return changed;
 }
 
 function subscribeEventStream(req, res, session) {
@@ -1437,9 +1514,12 @@ async function importCots(req, res, session) {
   if (!rows.length) {
     throw httpError(404, "No Assembly BOM rows were returned by Onshape for this tab.");
   }
-  const normalized = normalizeAssemblyBomRows(rows, input);
-  if (body.previewOnly) return json(res, 200, { parts: normalized, source: input });
-  const cotsRows = normalized.filter((row) => row.sourceType !== "custom");
+  const customReferenceIndex = suppliedRows ? null : await fetchDocumentCustomPartReferenceIndex(accessToken, base, input);
+  const normalized = normalizeAssemblyBomRows(rows, input, customReferenceIndex);
+  const shaftStockRows = aggregateShaftStockProcurementRows(normalized, input);
+  const importRows = [...normalized, ...shaftStockRows];
+  if (body.previewOnly) return json(res, 200, { parts: importRows, source: input });
+  const cotsRows = importRows.filter((row) => row.sourceType !== "custom");
   const customRows = normalized.filter((row) => row.sourceType === "custom");
   let saved = null;
   let customSaved = null;
@@ -1456,7 +1536,7 @@ async function importCots(req, res, session) {
   }
   if (!saved && !customSaved) throw httpError(400, "No BOM rows were eligible for import");
   return json(res, 200, {
-    parts: normalized,
+    parts: importRows,
     source: input,
     inventory: saved || customSaved,
     customInventory: customSaved,
@@ -1465,10 +1545,10 @@ async function importCots(req, res, session) {
   });
 }
 
-function normalizeAssemblyBomRows(rows, input) {
+function normalizeAssemblyBomRows(rows, input, customReferenceIndex = null) {
   return rows.slice(0, 200).map((row, index) => {
     const cots = normalizeCotsRow(row, input, index);
-    return isAssemblyManufacturedPart(cots) ? normalizeAssemblyCustomPart(cots, input, index) : cots;
+    return shouldRouteAssemblyRowToManufacturing(cots, { ...input, customReferenceIndex }) ? normalizeAssemblyCustomPart(cots, input, index) : cots;
   });
 }
 
@@ -1502,6 +1582,24 @@ function extractBomRows(data) {
   if (Array.isArray(data.bomTable?.rows)) return data.bomTable.rows;
   if (Array.isArray(data.table?.items)) return data.table.items;
   return [];
+}
+
+async function fetchDocumentCustomPartReferenceIndex(accessToken, base, input) {
+  const params = new URLSearchParams({
+    withThumbnails: "false",
+    includePropertyDefaults: "false"
+  });
+  if (input.configuration) params.set("configuration", input.configuration);
+  try {
+    const data = await onshapeJson(accessToken, `${base}/api/v6/parts/d/${input.documentId}/${input.workspacePath}/${input.workspaceId}?${params}`);
+    const parts = (Array.isArray(data) ? data : data.parts || []).map((part) => normalizePart(part, input));
+    const index = newCustomPartReferenceIndex();
+    for (const part of parts) addCustomReference(index, part, part.source || input);
+    return index;
+  } catch (error) {
+    if (![400, 403, 404].includes(Number(error.status || 0))) console.warn(`Could not cross-reference document custom parts`, error.message);
+    return null;
+  }
 }
 
 async function enrichSourceInfo(accessToken, base, input) {
@@ -3219,6 +3317,7 @@ async function updateSettings(req, res, session, actor) {
 
 function normalizePart(part, input) {
   const partId = String(part.partId || part.id || part.partid || "").trim();
+  const elementId = String(part.elementId || part.elementid || part.elementID || input.elementId || "").trim();
   const material = part.material || {};
   const materialName = material.displayName || material.name || material.id || partCustomProperty(part, ["material"]) || "Unassigned";
   const thickness = partCustomProperty(part, ["thickness", "plate thickness", "sheet thickness"]);
@@ -3251,7 +3350,7 @@ function normalizePart(part, input) {
     source: {
       documentId: input.documentId,
       workspaceId: input.workspaceId,
-      elementId: input.elementId,
+      elementId,
       partId,
       sourceTag: input.sourceTag,
       documentName: input.documentName || "",
@@ -3296,20 +3395,111 @@ function isManufacturedByName(part) {
   ].filter(Boolean).join(" ").toLowerCase();
   if (!text) return false;
   if (/\bshaft\s+collar\b/.test(text)) return false;
+  if (/\bshaft\s+stock\b|\bstock\s+shaft\b/.test(text)) return false;
   return [
     /\bcustom\b.*\bpulley\b/,
     /\bcustom\s+htd\s*5\b.*\bpulley\b/,
     /\bshaft\s+lengths?\b/,
     /\b(?:hex|rounded|round)?\s*shaft\b/,
-    /\b\d+(?:\.\d+)?\s*(?:in|inch|")\s+(?:hex\s+|round\s+|rounded\s+)?shaft\b/
+    /\b\d+(?:\.\d+)?\s*(?:in|inch|")\s+(?:hex\s+|round\s+|rounded\s+)?shaft\b/,
+    /\b(plate|gusset|bracket|bellypan|belly\s+pan)\b/
   ].some((pattern) => pattern.test(text));
 }
 
 function isAssemblyManufacturedPart(part) {
+  return shouldRouteAssemblyRowToManufacturing(part, part?.source || {});
+}
+
+function shouldRouteAssemblyRowToManufacturing(part, input = {}) {
+  if (part?.shaftStockRollup) return false;
+  if (isLikelyPurchasedPart(part)) return false;
+  if (matchesKnownCustomPart(part, input)) return true;
+  if (isTeamCustomPartNumber(part?.partNumber || part?.vendorSku || part?.manufacturerSku)) return true;
+  if (hasProcurementIdentity(part)) return false;
   if (isManufacturedByName(part)) return true;
-  const vendorIdentity = [part?.vendor, part?.vendorSku, part?.manufacturerSku, part?.partNumber].filter(Boolean).join(" ");
-  if (/\bbelt\b/i.test(part?.name || "")) return false;
-  return !vendorIdentity && /\bcustom\b/i.test(part?.name || "");
+  const text = [part?.name, part?.category, part?.description].filter(Boolean).join(" ").toLowerCase();
+  return /\bcustom\b/i.test(text) || /\b(plate|gusset|bracket|tube|rail|spacer|standoff)\b/.test(text);
+}
+
+function hasProcurementIdentity(part) {
+  if (canonicalProcurementVendor(part?.vendor || part?.vendorUrl || part?.productUrl)) return true;
+  const sku = procurementSku(part);
+  if (inferredVendorFromSku(sku)) return true;
+  const vendor = String(part?.vendor || "").trim();
+  if (vendor && !/^(unassigned|unknown|purchased)$/i.test(vendor)) return true;
+  return false;
+}
+
+function isTeamCustomPartNumber(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (parsePlatformPartNumber(text)) return true;
+  const prefix = String(settingsSnapshot().partNumber.prefix || "4999").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${prefix}-\\d{2}-[AP]-\\d{4}-[A-Z0-9]{2,}$`, "i").test(text);
+}
+
+function matchesKnownCustomPart(part, input = {}) {
+  if (!part || part.shaftStockRollup || isLikelyPurchasedPart(part)) return false;
+  const references = mergeCustomReferenceIndexes(customPartReferenceIndex(), input.customReferenceIndex);
+  const docId = String(input.documentId || part?.source?.documentId || "").trim();
+  const elementId = String(input.elementId || part?.source?.elementId || "").trim();
+  const partId = String(part?.source?.partId || part?.id || "").trim();
+  const nameKey = normalizeKey(part?.name);
+  const numberKeys = [
+    part?.partNumber,
+    part?.vendorSku,
+    part?.manufacturerSku
+  ].map(normalizeSku).filter(Boolean);
+  if (docId && elementId && partId && references.sourceKeys.has(`${docId}:${elementId}:${partId}`)) return true;
+  if (docId && nameKey && references.documentNameKeys.has(`${docId}:${nameKey}`)) return true;
+  if (docId && numberKeys.some((key) => references.documentNumberKeys.has(`${docId}:${key}`))) return true;
+  if (numberKeys.some((key) => references.partNumbers.has(key))) return true;
+  return false;
+}
+
+function customPartReferenceIndex() {
+  const index = newCustomPartReferenceIndex();
+  for (const record of store.inventoryRecords || []) {
+    if (record.sourceType !== "custom") continue;
+    for (const part of record.parts || []) addCustomReference(index, part, { ...(record.source || {}), ...(part.source || {}) });
+  }
+  for (const part of store.catalogParts || []) {
+    if (part.sourceType === "custom") addCustomReference(index, part, part.source || {});
+  }
+  return index;
+}
+
+function newCustomPartReferenceIndex() {
+  return {
+    sourceKeys: new Set(),
+    documentNameKeys: new Set(),
+    documentNumberKeys: new Set(),
+    partNumbers: new Set()
+  };
+}
+
+function addCustomReference(index, part, source = {}) {
+  if (!index || !part || isLikelyPurchasedPart(part)) return;
+  const docId = String(source.documentId || part.source?.documentId || "").trim();
+  const elementId = String(source.elementId || part.source?.elementId || "").trim();
+  const partId = String(source.partId || part.source?.partId || part.id || "").trim();
+  const nameKey = normalizeKey(part.name);
+  const numberKey = normalizeSku(part.partNumber);
+  if (docId && elementId && partId) index.sourceKeys.add(`${docId}:${elementId}:${partId}`);
+  if (docId && nameKey) index.documentNameKeys.add(`${docId}:${nameKey}`);
+  if (docId && numberKey) index.documentNumberKeys.add(`${docId}:${numberKey}`);
+  if (numberKey && isTeamCustomPartNumber(part.partNumber)) index.partNumbers.add(numberKey);
+}
+
+function mergeCustomReferenceIndexes(...indexes) {
+  const merged = newCustomPartReferenceIndex();
+  for (const index of indexes) {
+    if (!index) continue;
+    for (const key of ["sourceKeys", "documentNameKeys", "documentNumberKeys", "partNumbers"]) {
+      for (const value of index[key] || []) merged[key].add(value);
+    }
+  }
+  return merged;
 }
 
 function normalizeAssemblyCustomPart(row, input, index) {
@@ -3346,13 +3536,159 @@ function normalizeAssemblyCustomPart(row, input, index) {
       ...(row.source || {}),
       documentId: input.documentId,
       workspaceId: input.workspaceId,
-      elementId: input.elementId,
-      partId: row.source?.bomRowKey || row.id || `bom-custom-${index + 1}`,
+      elementId: row.source?.elementId || input.elementId,
+      assemblyElementId: input.elementId,
+      partId: row.source?.partId || row.source?.bomRowKey || row.id || `bom-custom-${index + 1}`,
       sourceTag: input.sourceTag,
       documentName: input.documentName || "",
       configuration: input.configuration || ""
     }
   }), input, index);
+}
+
+function aggregateShaftStockProcurementRows(rows, input) {
+  const groups = new Map();
+  for (const row of rows) {
+    if (row.sourceType !== "custom") continue;
+    const profile = shaftStockProfile(row);
+    if (!profile) continue;
+    const lengthInches = extractShaftLengthInches(row);
+    if (!Number.isFinite(lengthInches) || lengthInches <= 0) continue;
+    const quantity = Math.max(1, Number(row.quantityNeeded || row.quantity || 1));
+    const totalInches = lengthInches * quantity;
+    const key = normalizeKey([profile.diameter, profile.shape, profile.material].filter(Boolean).join(" "));
+    if (!groups.has(key)) {
+      groups.set(key, {
+        ...profile,
+        totalInches: 0,
+        sourceRows: []
+      });
+    }
+    const group = groups.get(key);
+    group.totalInches += totalInches;
+    group.sourceRows.push({ name: row.name, quantity, lengthInches });
+  }
+
+  return [...groups.values()].map((group, index) => {
+    const stockLengthInches = group.stockLengthInches || 36;
+    const sticks = Math.max(1, Math.ceil(group.totalInches / stockLengthInches));
+    const name = `${group.label} (${formatInches(group.totalInches)} needed)`;
+    return {
+      id: `shaft-stock-${normalizeKey(group.label)}-${index + 1}`,
+      name,
+      type: "cots",
+      sourceType: "cots",
+      category: "shaft_stock",
+      vendor: "WCP",
+      vendorSku: "",
+      manufacturer: "",
+      manufacturerSku: "",
+      partNumber: "",
+      material: "Purchased",
+      thickness: "",
+      quantity: sticks,
+      quantityNeeded: sticks,
+      totalShaftLengthInches: Number(group.totalInches.toFixed(3)),
+      stockLengthInches,
+      shaftStockRollup: true,
+      shaftSourceRows: group.sourceRows,
+      status: "needed",
+      procurementStatus: "sourcing",
+      vendorUrl: vendorLink("WCP", "", group.label),
+      robotId: input.robotId || "",
+      subsystemId: input.subassemblyId || "",
+      subsystem: input.subassemblyName || input.documentName || input.sourceTag,
+      subassemblyName: input.subassemblyName || input.documentName || input.sourceTag,
+      sourceDocument: input.sourceTag,
+      sourceDocumentName: input.documentName || input.sourceTag,
+      source: {
+        documentId: input.documentId,
+        workspaceId: input.workspaceId,
+        elementId: input.elementId,
+        bomRowKey: `shaft-stock:${normalizeKey(group.label)}`,
+        sourceTag: input.sourceTag,
+        documentName: input.documentName || "",
+        configuration: input.configuration || ""
+      }
+    };
+  });
+}
+
+function shaftStockProfile(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.category,
+    part?.description,
+    part?.stock
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (!/\bshaft\b/.test(text) || /\bshaft\s+collar\b/.test(text)) return null;
+  const diameter = shaftDiameterLabel(text);
+  const shape = /\b(churro|rounded\s+hex)\b/.test(text)
+    ? "Rounded Hex"
+    : /\bhex\b/.test(text)
+      ? "Hex"
+      : /\bround\b/.test(text)
+        ? "Round"
+        : "Shaft";
+  const material = /\bsteel\b/.test(text) ? "Steel" : /\baluminum|aluminium|6061|7075\b/.test(text) ? "Aluminum" : "";
+  return {
+    diameter,
+    shape,
+    material,
+    label: [diameter, material, shape === "Shaft" ? "" : shape, "Shaft Stock"].filter(Boolean).join(" "),
+    stockLengthInches: 36
+  };
+}
+
+function shaftDiameterLabel(text) {
+  const match = String(text || "").match(/\b(1\s*\/\s*2|3\s*\/\s*8|5\s*\/\s*8|1\s*\/\s*4|0\.5|0\.375|0\.625|0\.25)\s*(?:in|inch|")?\b/i);
+  if (!match) return "";
+  const value = match[1].replace(/\s+/g, "");
+  if (value === "0.5") return "1/2 in";
+  if (value === "0.375") return "3/8 in";
+  if (value === "0.625") return "5/8 in";
+  if (value === "0.25") return "1/4 in";
+  return `${value} in`;
+}
+
+function extractShaftLengthInches(part) {
+  const text = [
+    part?.name,
+    part?.partNumber,
+    part?.description
+  ].filter(Boolean).join(" ").toLowerCase();
+  const patterns = [
+    /\b(?:length|long)\s*(?:is|:|=|-)?\s*(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\s*(?:in|inch|")\b/i,
+    /\b(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\s*(?:in|inch|")\s*(?:long|length)\b/i,
+    /\bshaft\b[^\d]*(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\s*(?:in|inch|")\b/i,
+    /\b(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\s*(?:in|inch|")\s+(?:rounded\s+|round\s+|hex\s+)?shaft\b/i,
+    /\bshaft\s+lengths?\b[^\d]*(\d+(?:\.\d+)?|\d+\s*\/\s*\d+)\b/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const inches = parseInchesValue(match[1]);
+    if (Number.isFinite(inches) && inches > 0.75) return inches;
+  }
+  return 0;
+}
+
+function parseInchesValue(value) {
+  const text = String(value || "").trim();
+  const fraction = text.match(/^(\d+)\s*\/\s*(\d+)$/);
+  if (fraction) {
+    const numerator = Number(fraction[1]);
+    const denominator = Number(fraction[2]);
+    return denominator ? numerator / denominator : 0;
+  }
+  const number = Number(text);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function formatInches(value) {
+  const rounded = Number(Number(value || 0).toFixed(2));
+  return `${rounded} in`;
 }
 
 function partCustomProperty(part, aliases) {
@@ -3366,12 +3702,17 @@ function partCustomProperty(part, aliases) {
 
 function normalizeCotsRow(row, input, index) {
   const name = rowValue(row, ["name", "component name", "part name", "title", "description"]) || "Purchased item";
-  const vendor = rowValue(row, ["vendor", "supplier", "supplier name"]);
+  const rawVendor = rowValue(row, ["vendor", "supplier", "supplier name"]);
   const vendorSku = rowValue(row, ["vendor sku", "vendor part number", "vendor part no", "sku", "catalog number", "part number"]);
   const manufacturer = rowValue(row, ["manufacturer", "mfg", "maker"]);
   const manufacturerSku = rowValue(row, ["manufacturer sku", "manufacturer part number", "mpn", "manufacturer part no"]);
   const quantity = numericRowValue(row, ["quantity", "qty", "count"]) || 1;
   const rowKey = rowValue(row, ["id", "row id", "rowId", "item", "item number"]) || `bom-${index + 1}`;
+  const sourceElementId = rowValue(row, ["element id", "elementId", "part studio id", "part studio element id"]) || input.elementId;
+  const sourcePartId = rowValue(row, ["part id", "partId", "part studio part id", "body id"]) || "";
+  const vendor = isShaftStockProcurementText([name, rowValue(row, ["category", "classification"]), vendorSku, manufacturerSku].join(" "))
+    ? "WCP"
+    : rawVendor;
   return {
     id: String(rowKey).slice(0, 80),
     name: String(name).slice(0, 120),
@@ -3397,13 +3738,22 @@ function normalizeCotsRow(row, input, index) {
     source: {
       documentId: input.documentId,
       workspaceId: input.workspaceId,
-      elementId: input.elementId,
+      elementId: sourceElementId,
+      assemblyElementId: input.elementId,
+      partId: sourcePartId,
       bomRowKey: String(rowKey),
       sourceTag: input.sourceTag,
       documentName: input.documentName || "",
       configuration: input.configuration || ""
     }
   };
+}
+
+function isShaftStockProcurementText(value) {
+  const text = String(value || "").toLowerCase();
+  if (!/\bshaft\b/.test(text)) return false;
+  if (/\b(collar|bearing|gearbox|motor)\b/.test(text)) return false;
+  return /\b(stock|hex|round|rounded|churro|tube|bar|rod)\b/.test(text);
 }
 
 function rowValue(row, aliases) {
