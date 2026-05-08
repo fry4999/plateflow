@@ -16,6 +16,12 @@ let realtimeSource = null;
 let realtimePollTimer = null;
 let realtimeReconnectTimer = null;
 let selectedInventoryItems = new Set();
+let pointerFrame = 0;
+let pointerX = 0;
+let pointerY = 0;
+let dashboardApplyFrame = 0;
+let pendingDashboard = null;
+let pendingDashboardOptions = {};
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -286,7 +292,9 @@ function bindEvents() {
   if (els.inventorySelectAll) els.inventorySelectAll.addEventListener("change", onInventorySelectAllChange);
   if (els.inventoryBulkDeleteButton) els.inventoryBulkDeleteButton.addEventListener("click", onInventoryBulkDelete);
   if (els.clearCatalogButton) els.clearCatalogButton.addEventListener("click", onClearCatalog);
-  window.addEventListener("pointermove", onPagePointerMove, { passive: true });
+  if (window.matchMedia?.("(pointer: fine)")?.matches && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+    window.addEventListener("pointermove", onPagePointerMove, { passive: true });
+  }
   if (els.dialogCancel) els.dialogCancel.addEventListener("click", () => closeDialog(false));
   if (els.dialogConfirm) els.dialogConfirm.addEventListener("click", () => closeDialog(true));
   if (els.dialogBackdrop) els.dialogBackdrop.addEventListener("click", (event) => {
@@ -320,6 +328,7 @@ function syncPageFromHash() {
     link.classList.toggle("active", selected);
     link.setAttribute("aria-current", selected ? "page" : "false");
   });
+  if (dashboardState) renderActiveDashboardPage();
 }
 
 function setupEmbeddedPage() {
@@ -503,8 +512,14 @@ function toggleTheme() {
 }
 
 function onPagePointerMove(event) {
-  document.body.style.setProperty("--page-glow-x", `${Math.max(0, Math.min(window.innerWidth, event.clientX))}px`);
-  document.body.style.setProperty("--page-glow-y", `${Math.max(0, Math.min(window.innerHeight, event.clientY))}px`);
+  pointerX = Math.max(0, Math.min(window.innerWidth, event.clientX));
+  pointerY = Math.max(0, Math.min(window.innerHeight, event.clientY));
+  if (pointerFrame) return;
+  pointerFrame = requestAnimationFrame(() => {
+    pointerFrame = 0;
+    document.body.style.setProperty("--page-glow-x", `${pointerX}px`);
+    document.body.style.setProperty("--page-glow-y", `${pointerY}px`);
+  });
 }
 
 function hasOnshapeContext() {
@@ -1166,18 +1181,8 @@ async function loadDashboard(options = {}) {
 function applyDashboardState(dashboard, options = {}) {
   dashboardState = dashboard;
   normalizeSelectedTarget();
-  renderInventory(dashboard.inventory);
-  renderInventoryTable(dashboard.inventory.parts);
-  renderRobots(dashboard.robots);
-  renderOverview(dashboard);
-  renderFabrication(dashboard.fabrication);
-  renderProcurement(dashboard.procurement);
-  renderRawMaterials(dashboard.rawMaterials);
-  renderSettings(dashboard.settings);
-  renderSyncTargetOptions();
-  renderAudit(dashboard.admin.auditLogs);
-  if (!options.skipAdminUsers) loadAdminUsers();
-  renderSubsystemOptions();
+  renderDashboardChrome(dashboard);
+  renderActiveDashboardPage(options);
   if (!options.preserveParts) {
     parts = dashboard.inventory.parts.map((part) => ({ ...part, selected: true }));
     source = null;
@@ -1186,6 +1191,54 @@ function applyDashboardState(dashboard, options = {}) {
   } else {
     renderCustomConfigurator();
   }
+}
+
+function renderDashboardChrome(dashboard) {
+  renderInventory(dashboard.inventory);
+  renderSyncTargetOptions();
+  renderSubsystemOptions();
+}
+
+function activePageId() {
+  if (embeddedMode) return "parts";
+  const active = [...els.pages].find((page) => page.classList.contains("active-page") && !page.hidden);
+  if (active) return active.id;
+  return (location.hash || "#dashboard").slice(1) || "dashboard";
+}
+
+function renderActiveDashboardPage(options = {}) {
+  if (!dashboardState) return;
+  const page = activePageId();
+  if (page === "inventory") {
+    renderInventoryTable(dashboardState.inventory.parts);
+    return;
+  }
+  if (page === "robots") {
+    renderRobots(dashboardState.robots);
+    return;
+  }
+  if (page === "fabrication") {
+    renderFabrication(dashboardState.fabrication);
+    return;
+  }
+  if (page === "procurement") {
+    renderProcurement(dashboardState.procurement);
+    return;
+  }
+  if (page === "settings") {
+    renderSettings(dashboardState.settings);
+    return;
+  }
+  if (page === "admin") {
+    renderAudit(dashboardState.admin.auditLogs);
+    if (!options.skipAdminUsers) loadAdminUsers();
+    return;
+  }
+  if (page === "raw") {
+    renderRawMaterials(dashboardState.rawMaterials);
+    return;
+  }
+  renderOverview(dashboardState);
 }
 
 function normalizeSelectedTarget() {
@@ -1549,14 +1602,23 @@ function onInventorySelectionChange(event) {
   if (!key) return;
   if (input.checked) selectedInventoryItems.add(key);
   else selectedInventoryItems.delete(key);
-  renderCurrentInventoryTable();
+  updateInventorySelectionControls(visibleInventoryItemsFromDom());
 }
 
 function onInventorySelectAllChange(event) {
   const keys = [...els.inventoryBody.querySelectorAll("tr[data-item-key]")].map((row) => row.dataset.itemKey).filter(Boolean);
   if (event.target.checked) keys.forEach((key) => selectedInventoryItems.add(key));
   else keys.forEach((key) => selectedInventoryItems.delete(key));
-  renderCurrentInventoryTable();
+  els.inventoryBody.querySelectorAll("input[data-action='select-inventory']").forEach((input) => {
+    input.checked = event.target.checked;
+  });
+  updateInventorySelectionControls(visibleInventoryItemsFromDom());
+}
+
+function visibleInventoryItemsFromDom() {
+  return [...els.inventoryBody.querySelectorAll("tr[data-item-key]")]
+    .map((row) => ({ itemKey: row.dataset.itemKey }))
+    .filter((item) => item.itemKey);
 }
 
 function partNameInputSize(value) {
@@ -1978,15 +2040,11 @@ function renderProcurement(procurement) {
     <div class="vendor-order-grid">
       ${scopedVendorBuckets.map(renderVendorBucket).join("")}
     </div>
-    ${allProjects ? `
-      <div class="project-order-list">
-        ${scopedProjects.map(renderProcurementProject).join("")}
-      </div>
-    ` : `
-      <div class="procurement-scope-note">
-        Showing ${escapeHtml(selectedProjectName)} / ${escapeHtml(selectedSubassemblyName)} COTS BOM grouped by vendor.
-      </div>
-    `}
+    <div class="procurement-scope-note">
+      ${allProjects
+        ? "Showing vendor totals across projects. Choose a project and sub-assembly above for the detailed purchasing workspace."
+        : `Showing ${escapeHtml(selectedProjectName)} / ${escapeHtml(selectedSubassemblyName)} COTS BOM grouped by vendor.`}
+    </div>
     ${orders.length ? `
       <details class="procurement-sync-list">
         <summary>Sync batches and status</summary>
@@ -3316,10 +3374,24 @@ function onRealtimeDashboard(event) {
     const revision = Number(payload.revision || 0);
     if (revision && revision <= dashboardRevision) return;
     dashboardRevision = revision;
-    applyDashboardState(payload.dashboard, { preserveParts: true, quiet: true, skipAdminUsers: true });
+    scheduleDashboardApply(payload.dashboard, { preserveParts: true, quiet: true, skipAdminUsers: true });
   } catch {
     // Ignore malformed realtime frames; the polling fallback will recover if needed.
   }
+}
+
+function scheduleDashboardApply(dashboard, options = {}) {
+  pendingDashboard = dashboard;
+  pendingDashboardOptions = { ...pendingDashboardOptions, ...options };
+  if (dashboardApplyFrame) return;
+  dashboardApplyFrame = requestAnimationFrame(() => {
+    dashboardApplyFrame = 0;
+    const nextDashboard = pendingDashboard;
+    const nextOptions = pendingDashboardOptions;
+    pendingDashboard = null;
+    pendingDashboardOptions = {};
+    if (nextDashboard) applyDashboardState(nextDashboard, nextOptions);
+  });
 }
 
 function onRealtimeAuth(event) {
@@ -3335,7 +3407,7 @@ async function refreshDashboardRealtimeFallback() {
   if (embeddedMode || !dashboardState) return;
   try {
     const dashboard = await api("/api/dashboard");
-    applyDashboardState(dashboard, { preserveParts: true, quiet: true, skipAdminUsers: true });
+    scheduleDashboardApply(dashboard, { preserveParts: true, quiet: true, skipAdminUsers: true });
   } catch {
     // Keep the retry loop quiet; visible errors belong to direct user actions.
   }
