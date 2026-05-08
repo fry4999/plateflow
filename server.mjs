@@ -35,6 +35,7 @@ const mime = {
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon"
 };
@@ -204,6 +205,7 @@ function mergeStore(parsed) {
 
 function defaultSettings() {
   return {
+    updatedAt: "",
     partNumber: {
       template: "{prefix}-{source}-{subsystem}-{part}",
       prefix: "PF",
@@ -304,6 +306,20 @@ async function refreshStore() {
   const latest = await storage.load();
   for (const key of Object.keys(store)) delete store[key];
   Object.assign(store, latest);
+  if (ensureMissingCustomPartNumbers()) await persistStore();
+}
+
+function ensureMissingCustomPartNumbers() {
+  let changed = false;
+  for (const record of store.inventoryRecords || []) {
+    if (record.sourceType !== "custom" || !Array.isArray(record.parts)) continue;
+    record.parts = record.parts.map((part, index) => {
+      if (String(part.partNumber || "").trim()) return part;
+      changed = true;
+      return ensureCustomPartNumber(part, record.source || part.source || {}, index);
+    });
+  }
+  return changed;
 }
 
 function audit(action, detail, actor = "system") {
@@ -719,7 +735,7 @@ async function importOnshape(req, res, session) {
 
   const params = new URLSearchParams({
     elementId: input.elementId,
-    withThumbnails: "false",
+    withThumbnails: "true",
     includePropertyDefaults: "false"
   });
   if (input.configuration) params.set("configuration", input.configuration);
@@ -734,7 +750,10 @@ async function importOnshape(req, res, session) {
   );
   if (body.previewOnly) return json(res, 200, { parts: normalizedParts, source: input });
 
-  const normalized = configuredParts.length ? applyConfiguredParts(normalizedParts, configuredParts, input) : normalizedParts;
+  const normalized = withGeneratedCustomPartNumbers(
+    configuredParts.length ? applyConfiguredParts(normalizedParts, configuredParts, input) : normalizedParts,
+    input
+  );
   if (!normalized.length) throw httpError(400, "Select at least one custom part to submit");
   const saved = await saveInventory(input, normalized, "custom", "Part Studio custom sync", { mergeParts: Boolean(configuredParts.length) });
   return json(res, 200, { parts: normalized, source: input, inventory: saved });
@@ -792,13 +811,25 @@ function applyConfiguredParts(parts, configuredParts, input) {
     });
 }
 
+function withGeneratedCustomPartNumbers(parts, input) {
+  return parts.map((part, index) => ensureCustomPartNumber(part, input, index));
+}
+
+function ensureCustomPartNumber(part, input = {}, index = 0) {
+  if (String(part.partNumber || "").trim()) return part;
+  return {
+    ...part,
+    partNumber: generatePartNumber(input || {}, part, { subsystem: part.subsystem || "GEN" }, index)
+  };
+}
+
 function generatePartNumber(input, part, config, index) {
   const settings = settingsSnapshot().partNumber;
   return formatPartNumber(settings, {
     prefix: settings.prefix,
-    source: partNumberCode(input.sourceTag || input.documentName || "SRC", settings.sourceLength),
-    subsystem: partNumberCode(config.subsystem || "GEN", settings.subsystemLength),
-    part: partNumberCode(part.id || part.name || String(index + 1), settings.partLength)
+    source: partNumberCode(input.sourceTag || input.documentName || part.sourceDocument || part.source?.sourceTag || "SRC", settings.sourceLength),
+    subsystem: partNumberCode(config?.subsystem || part.subsystem || "GEN", settings.subsystemLength),
+    part: partNumberCode(part.name || part.id || String(index + 1), settings.partLength)
   });
 }
 
@@ -1118,8 +1149,11 @@ function inventorySnapshot() {
   const parts = records.flatMap((record) => record.parts.map((part) => {
     const catalog = findCatalogPartForInventoryPart(part, record.sourceType) || {};
     const itemKey = inventoryItemKey(record.id, part);
+    const { previewDataUrl: _previewDataUrl, source: rawSource = {}, ...publicPart } = part;
+    const { previewDataUrl: _sourcePreviewDataUrl, ...publicSource } = rawSource || {};
     return {
-      ...part,
+      ...publicPart,
+      source: publicSource,
       catalogPartId: catalog.id || "",
       inventoryId: record.id,
       itemKey,
@@ -1141,7 +1175,7 @@ function inventorySnapshot() {
     };
   })).sort((a, b) => `${a.sourceDocument || ""}:${a.name || ""}`.localeCompare(`${b.sourceDocument || ""}:${b.name || ""}`));
   return {
-    records,
+    records: records.map(publicInventoryRecord),
     parts,
     totals: {
       records: records.length,
@@ -1155,6 +1189,17 @@ function inventorySnapshot() {
       lowStock: store.rawMaterials.filter((stock) => Number(stock.remainingQuantity || 0) <= 1).length
     },
     documents: [...new Set(parts.map((part) => part.sourceDocument || "Unassigned"))].sort()
+  };
+}
+
+function publicInventoryRecord(record) {
+  return {
+    ...record,
+    parts: (record.parts || []).map((part) => {
+      const { previewDataUrl: _previewDataUrl, source: rawSource = {}, ...publicPart } = part;
+      const { previewDataUrl: _sourcePreviewDataUrl, ...publicSource } = rawSource || {};
+      return { ...publicPart, source: publicSource };
+    })
   };
 }
 
@@ -1252,6 +1297,7 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     defaultLocation: part.defaultLocation || existing?.defaultLocation || "",
     tags: Array.isArray(part.tags) ? part.tags : existing?.tags || [],
     source: part.source,
+    previewDataUrl: part.previewDataUrl || existing?.previewDataUrl || "",
     lastSyncBatchId: syncBatchId,
     updatedAt: now,
     createdAt: existing?.createdAt || now
@@ -1513,7 +1559,7 @@ function settingsSnapshot() {
 async function updateSettings(req, res, session, actor) {
   requireCsrf(req, session);
   const next = validateSettings(await readJson(req));
-  store.settings = mergeSettings({ ...store.settings, ...next });
+  store.settings = mergeSettings({ ...store.settings, ...next, updatedAt: new Date().toISOString() });
   audit("settings.updated", "Updated global PlateFlow settings", actor.email);
   await persistStore();
   return json(res, 200, { settings: settingsSnapshot() });
@@ -1550,6 +1596,7 @@ function normalizePart(part, input) {
     finish: "Deburred",
     sourceDocument: input.sourceTag,
     sourceDocumentName: input.documentName || input.sourceTag,
+    previewHref: findThumbnailHref(part),
     source: {
       documentId: input.documentId,
       workspaceId: input.workspaceId,
@@ -1557,9 +1604,33 @@ function normalizePart(part, input) {
       partId,
       sourceTag: input.sourceTag,
       documentName: input.documentName || "",
-      configuration: input.configuration || ""
+      configuration: input.configuration || "",
+      previewHref: findThumbnailHref(part)
     }
   };
+}
+
+function findThumbnailHref(value) {
+  const direct = value?.thumbnail?.href || value?.thumbnailInfo?.href || value?.thumbnailUrl || value?.thumbnail?.url;
+  if (direct) return String(direct);
+  const seen = new Set();
+  function walk(item, depth = 0, thumbnailContext = false) {
+    if (!item || depth > 5) return "";
+    if (typeof item === "string") {
+      return thumbnailContext && /^(https?:\/\/|\/api\/|api\/)/i.test(item) ? item : "";
+    }
+    if (typeof item !== "object" || seen.has(item)) return "";
+    seen.add(item);
+    for (const [key, nested] of Object.entries(item)) {
+      const lower = key.toLowerCase();
+      const nextContext = thumbnailContext || lower.includes("thumbnail");
+      if (nextContext && typeof nested === "string" && (lower === "href" || lower === "url" || /thumbnail/i.test(nested))) return nested;
+      const found = walk(nested, depth + 1, nextContext);
+      if (found) return found;
+    }
+    return "";
+  }
+  return walk(value);
 }
 
 function partCustomProperty(part, aliases) {
@@ -1864,6 +1935,7 @@ async function createInventoryItem(req, res, session, actor) {
     createdAt: now,
     updatedAt: now
   };
+  const savedPart = sourceType === "custom" ? ensureCustomPartNumber(part, { sourceTag: "Manual", documentName: "Manual shop inventory" }) : part;
   const record = {
     id: `manual:${sourceType}:${id}`,
     batchId: `M-${now.slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex").toUpperCase()}`,
@@ -1873,11 +1945,11 @@ async function createInventoryItem(req, res, session, actor) {
       sourceTag: "Manual",
       documentName: "Manual shop inventory"
     },
-    parts: [part]
+    parts: [savedPart]
   };
   store.inventoryRecords.unshift(record);
-  upsertCatalogPart(part, sourceType, record.batchId);
-  audit("inventory.item_created", `Added manual inventory item ${part.name}`, actor.email);
+  upsertCatalogPart(savedPart, sourceType, record.batchId);
+  audit("inventory.item_created", `Added manual inventory item ${savedPart.name}`, actor.email);
   await persistStore();
   return json(res, 201, inventoryMutationSnapshot());
 }
@@ -1889,12 +1961,13 @@ async function updateInventoryItem(req, res, session, actor, itemKey) {
   const previous = structuredClone(match.part);
   const previousCatalog = findCatalogPartForInventoryPart(previous, match.record.sourceType);
   const updates = validateInventoryItemUpdate(await readJson(req), match.record.sourceType, match.part);
-  const next = {
+  let next = {
     ...match.part,
     ...updates,
     quantity: updates.quantityNeeded ?? match.part.quantity ?? match.part.quantityNeeded ?? 1,
     updatedAt: new Date().toISOString()
   };
+  if (match.record.sourceType === "custom") next = ensureCustomPartNumber(next, match.record.source || next.source || {});
   match.record.parts.splice(match.partIndex, 1, next);
   match.record.updatedAt = next.updatedAt;
 
@@ -2299,10 +2372,19 @@ function downloadBlob(res, session, id) {
 async function inventoryItemThumbnail(res, session, itemKey) {
   const match = findInventoryItem(itemKey);
   if (!match) return placeholderThumbnail(res, "Missing");
+  const cached = imageFromDataUrl(match.part.previewDataUrl || match.part.source?.previewDataUrl);
+  if (cached?.bytes?.length) {
+    res.writeHead(200, {
+      "Content-Type": cached.contentType,
+      "Cache-Control": "private, max-age=86400"
+    });
+    return res.end(cached.bytes);
+  }
   if (match.record.sourceType === "custom" && session.token) {
     try {
       const preview = await fetchOnshapePartPreview(session, match.record, match.part);
       if (preview?.bytes?.length) {
+        await cacheInventoryPreview(match, preview);
         res.writeHead(200, {
           "Content-Type": preview.contentType || "image/png",
           "Cache-Control": "private, max-age=300"
@@ -2316,11 +2398,37 @@ async function inventoryItemThumbnail(res, session, itemKey) {
   return placeholderThumbnail(res, match.part.name || match.part.id || "Part", match.record.sourceType);
 }
 
+function imageFromDataUrl(value) {
+  const match = String(value || "").match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+  if (!match) return null;
+  return {
+    contentType: match[1],
+    bytes: Buffer.from(match[2], "base64")
+  };
+}
+
+async function cacheInventoryPreview(match, preview) {
+  const contentType = preview.contentType || "image/png";
+  if (!/^image\//i.test(contentType) || !preview.bytes?.length || preview.bytes.length > 350_000) return;
+  const dataUrl = `data:${contentType};base64,${preview.bytes.toString("base64")}`;
+  match.part.previewDataUrl = dataUrl;
+  match.part.source = { ...(match.part.source || {}), previewDataUrl: dataUrl };
+  match.record.updatedAt = new Date().toISOString();
+  const catalog = findCatalogPartForInventoryPart(match.part, match.record.sourceType);
+  if (catalog) {
+    catalog.previewDataUrl = dataUrl;
+    catalog.updatedAt = match.record.updatedAt;
+  }
+  await persistStore();
+}
+
 async function fetchOnshapePartPreview(session, record, part) {
   const source = part.source || record.source || {};
   if (!source.documentId || !source.workspaceId || !source.elementId) return null;
   const accessToken = await ensureAccessToken(session);
   const base = normalizeOnshapeBase(source.baseUrl || record.source?.baseUrl || config.onshapeApiBase);
+  const storedPreview = await fetchOnshapePreviewHref(accessToken, base, part.previewHref || source.previewHref);
+  if (storedPreview?.bytes?.length) return storedPreview;
   const params = new URLSearchParams({
     outputWidth: "160",
     outputHeight: "160",
@@ -2330,13 +2438,86 @@ async function fetchOnshapePartPreview(session, record, part) {
   if (source.configuration) params.set("configuration", source.configuration);
   const workspacePath = source.workspacePath || record.source?.workspacePath || "w";
   const workspaceId = source.workspaceId || record.source?.workspaceId;
-  const result = await onshapeJson(accessToken, `${base}/api/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`);
-  const rawImage = result?.images?.[0]?.image || result?.images?.[0]?.data || result?.image || result?.data || "";
-  const base64 = String(rawImage).replace(/^data:image\/[a-z0-9.+-]+;base64,/i, "");
-  if (!base64) return null;
+  const urls = [
+    `${base}/api/v6/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`,
+    `${base}/api/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`
+  ];
+  for (const url of urls) {
+    try {
+      const result = await onshapeJson(accessToken, url);
+      const image = normalizeImagePayload(extractShadedImagePayload(result, source.partId));
+      if (image?.bytes?.length) return image;
+    } catch (error) {
+      if (![400, 404].includes(Number(error.status || 0))) throw error;
+    }
+  }
+  return null;
+}
+
+async function fetchOnshapePreviewHref(accessToken, base, href) {
+  if (!href) return null;
+  const url = resolveOnshapeHref(base, href);
+  const response = await fetch(url, {
+    headers: {
+      Accept: "image/*,application/json;q=0.8,*/*;q=0.4",
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  if (!response.ok) return null;
+  const contentType = response.headers.get("content-type") || "";
+  if (/json/i.test(contentType)) {
+    const data = await response.json();
+    return normalizeImagePayload(extractShadedImagePayload(data));
+  }
   return {
-    bytes: Buffer.from(base64, "base64"),
-    contentType: result?.images?.[0]?.contentType || result?.contentType || "image/png"
+    bytes: Buffer.from(await response.arrayBuffer()),
+    contentType: contentType || "image/png"
+  };
+}
+
+function resolveOnshapeHref(base, href) {
+  const value = String(href || "").trim();
+  if (/^https?:\/\//i.test(value)) return value;
+  return `${base}${value.startsWith("/") ? value : `/${value}`}`;
+}
+
+function extractShadedImagePayload(value, partId = "", depth = 0) {
+  if (!value || depth > 6) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractShadedImagePayload(item, partId, depth + 1);
+      if (found) return found;
+    }
+    return "";
+  }
+  if (typeof value !== "object") return "";
+  if (partId && value[partId]) {
+    const found = extractShadedImagePayload(value[partId], partId, depth + 1);
+    if (found) return found;
+  }
+  for (const key of ["image", "data", "base64", "imageData", "thumbnail", "href", "url"]) {
+    const found = extractShadedImagePayload(value[key], partId, depth + 1);
+    if (found) return found;
+  }
+  for (const nested of Object.values(value)) {
+    const found = extractShadedImagePayload(nested, partId, depth + 1);
+    if (found) return found;
+  }
+  return "";
+}
+
+function normalizeImagePayload(raw) {
+  if (!raw) return null;
+  const value = String(raw).trim();
+  const match = value.match(/^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i);
+  const contentType = match?.[1] || "image/png";
+  const base64 = match ? match[2] : value;
+  if (!/^[a-z0-9+/=\s_-]{80,}$/i.test(base64)) return null;
+  const compact = base64.replace(/\s/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  return {
+    bytes: Buffer.from(compact, "base64"),
+    contentType
   };
 }
 

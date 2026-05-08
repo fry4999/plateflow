@@ -7,6 +7,8 @@ let inviteToken = "";
 let dashboardState = null;
 let selectedRobotId = "";
 let messageTimer = null;
+let dialogResolver = null;
+let lastFocusedElement = null;
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -80,11 +82,21 @@ const els = {
   userList: document.querySelector("#userList"),
   auditLog: document.querySelector("#auditLog"),
   settingsForm: document.querySelector("#settingsForm"),
+  settingsSavedStatus: document.querySelector("#settingsSavedStatus"),
   storageAdminStatus: document.querySelector("#storageAdminStatus"),
   summaryParts: document.querySelector("#summaryParts"),
   summaryQty: document.querySelector("#summaryQty"),
   summaryMaterials: document.querySelector("#summaryMaterials"),
-  message: document.querySelector("#message")
+  message: document.querySelector("#message"),
+  dialogBackdrop: document.querySelector("#dialogBackdrop"),
+  dialogKicker: document.querySelector("#dialogKicker"),
+  dialogTitle: document.querySelector("#dialogTitle"),
+  dialogBody: document.querySelector("#dialogBody"),
+  dialogInputWrap: document.querySelector("#dialogInputWrap"),
+  dialogInputLabel: document.querySelector("#dialogInputLabel"),
+  dialogInput: document.querySelector("#dialogInput"),
+  dialogCancel: document.querySelector("#dialogCancel"),
+  dialogConfirm: document.querySelector("#dialogConfirm")
 };
 
 const demoParts = [
@@ -196,6 +208,13 @@ function bindEvents() {
   if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", renderCurrentInventoryTable);
   if (els.inventorySort) els.inventorySort.addEventListener("change", renderCurrentInventoryTable);
   if (els.inventoryBody) els.inventoryBody.addEventListener("click", onInventoryAction);
+  if (els.inventoryBody) els.inventoryBody.addEventListener("input", onInventoryCellInput);
+  if (els.dialogCancel) els.dialogCancel.addEventListener("click", () => closeDialog(false));
+  if (els.dialogConfirm) els.dialogConfirm.addEventListener("click", () => closeDialog(true));
+  if (els.dialogBackdrop) els.dialogBackdrop.addEventListener("click", (event) => {
+    if (event.target === els.dialogBackdrop) closeDialog(false);
+  });
+  document.addEventListener("keydown", onDialogKeydown);
   window.addEventListener("hashchange", syncPageFromHash);
   els.modeTabs.forEach((button) => button.addEventListener("click", () => setSyncMode(button.dataset.mode)));
   if (els.themeToggle) els.themeToggle.addEventListener("click", toggleTheme);
@@ -510,7 +529,7 @@ function generateClientPartNumber(part) {
     prefix: settings.prefix || "PF",
     source: partNumberCode(source?.sourceTag || source?.documentName || "SRC", settings.sourceLength),
     subsystem: partNumberCode(els.configSubsystem?.value || "GEN", settings.subsystemLength),
-    part: partNumberCode(part.id || part.name || "part", settings.partLength)
+    part: partNumberCode(part.name || part.id || "part", settings.partLength)
   });
 }
 
@@ -723,6 +742,9 @@ function renderSettings(settings) {
   els.settingsForm.elements.sourceLength.value = Number(partNumber.sourceLength || 3);
   els.settingsForm.elements.subsystemLength.value = Number(partNumber.subsystemLength || 3);
   els.settingsForm.elements.partLength.value = Number(partNumber.partLength || 4);
+  if (els.settingsSavedStatus) {
+    els.settingsSavedStatus.textContent = settings?.updatedAt ? `Last saved ${formatDateTime(settings.updatedAt)}` : "Not saved yet";
+  }
 }
 
 function renderInventory(inventory) {
@@ -787,7 +809,7 @@ function renderInventoryTable(items) {
       <td><img class="inventory-preview" src="${escapeAttr(part.previewUrl || "")}" alt="${escapeAttr(part.name)} preview" loading="lazy"></td>
       <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
       <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span></td>
-      <td><input data-field="name" value="${escapeAttr(part.name || "")}" aria-label="Part name"></td>
+      <td><input class="part-name-input" data-field="name" size="${partNameInputSize(part.name)}" value="${escapeAttr(part.name || "")}" aria-label="Part name"></td>
       <td><input data-field="partNumber" value="${escapeAttr(inventoryPartNumber(part))}" aria-label="Part number or SKU"></td>
       <td><input data-field="category" value="${escapeAttr(part.category || "uncategorized")}" aria-label="Category"></td>
       <td><input data-field="${part.sourceType === "cots" ? "vendor" : "material"}" value="${escapeAttr(part.sourceType === "cots" ? part.vendor || "" : [part.material, part.thickness].filter(Boolean).join(" "))}" aria-label="${part.sourceType === "cots" ? "Vendor" : "Material"}"></td>
@@ -800,6 +822,16 @@ function renderInventoryTable(items) {
       </td>
     </tr>
   `).join("");
+}
+
+function onInventoryCellInput(event) {
+  const input = event.target.closest(".part-name-input");
+  if (!input) return;
+  input.size = partNameInputSize(input.value);
+}
+
+function partNameInputSize(value) {
+  return Math.min(90, Math.max(22, String(value || "").length + 3));
 }
 
 function inventorySorter(mode) {
@@ -1102,7 +1134,13 @@ async function onInventoryAction(event) {
   const itemKey = row.dataset.itemKey;
   if (button.dataset.action === "delete-inventory") {
     const name = row.querySelector("[data-field='name']")?.value || "this item";
-    if (!window.confirm(`Delete ${name} from inventory?`)) return;
+    const confirmed = await confirmAction({
+      title: "Delete inventory item?",
+      body: `Delete ${name} from inventory? This removes the catalog row and related queue card.`,
+      confirmLabel: "Delete item",
+      danger: true
+    });
+    if (!confirmed) return;
     try {
       const result = await api(`/api/inventory/items/${encodeURIComponent(itemKey)}`, { method: "DELETE" });
       applyInventoryMutation(result);
@@ -1199,7 +1237,14 @@ async function onRobotCreate(event) {
 async function onRobotDelete() {
   if (!selectedRobotId) return;
   const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
-  if (!robot || !window.confirm(`Remove ${robot.name}?`)) return;
+  if (!robot) return;
+  const confirmed = await confirmAction({
+    title: "Remove robot?",
+    body: `Remove ${robot.name} and its requirements from PlateFlow? Inventory stays in the global catalog.`,
+    confirmLabel: "Remove robot",
+    danger: true
+  });
+  if (!confirmed) return;
   try {
     const result = await api(`/api/robots/${encodeURIComponent(selectedRobotId)}`, { method: "DELETE" });
     dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
@@ -1270,7 +1315,13 @@ async function onAdminUserAction(event) {
   const action = button.dataset.action;
   try {
     if (action === "delete-user") {
-      if (!window.confirm("Delete this PlateFlow account?")) return;
+      const confirmed = await confirmAction({
+        title: "Delete account?",
+        body: "Delete this PlateFlow account? This user will no longer be able to sign in.",
+        confirmLabel: "Delete account",
+        danger: true
+      });
+      if (!confirmed) return;
       const result = await api(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
       renderAdminUsers(result);
       setMessage("User deleted.", "ok");
@@ -1314,7 +1365,14 @@ async function onFabricationJobAction(event) {
   const button = event.target.closest("button[data-action='delete-fab-job']");
   if (!button) return;
   const jobId = button.dataset.jobId;
-  if (!jobId || !window.confirm("Delete this fabrication card?")) return;
+  if (!jobId) return;
+  const confirmed = await confirmAction({
+    title: "Delete fabrication card?",
+    body: "Delete this custom fabrication card from the board?",
+    confirmLabel: "Delete card",
+    danger: true
+  });
+  if (!confirmed) return;
   try {
     const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
     replaceDashboardFabrication(result.fabrication);
@@ -1467,6 +1525,78 @@ function setMessage(text, type = "") {
       }, 850);
     }, 2000);
   }
+}
+
+function confirmAction(options = {}) {
+  return openDialog({
+    kicker: "Confirm action",
+    title: options.title || "Confirm action",
+    body: options.body || "Continue?",
+    confirmLabel: options.confirmLabel || "Confirm",
+    cancelLabel: options.cancelLabel || "Cancel",
+    danger: Boolean(options.danger)
+  });
+}
+
+function openDialog(options) {
+  if (!els.dialogBackdrop || !els.dialogConfirm || !els.dialogCancel) return Promise.resolve(false);
+  if (dialogResolver) closeDialog(false);
+  lastFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  els.dialogKicker.textContent = options.kicker || "PlateFlow";
+  els.dialogTitle.textContent = options.title || "Confirm action";
+  els.dialogBody.textContent = options.body || "";
+  els.dialogConfirm.textContent = options.confirmLabel || "Confirm";
+  els.dialogCancel.textContent = options.cancelLabel || "Cancel";
+  els.dialogConfirm.classList.toggle("danger", Boolean(options.danger));
+  els.dialogInputWrap.classList.toggle("hidden", !options.inputLabel);
+  if (options.inputLabel) {
+    els.dialogInputLabel.textContent = options.inputLabel;
+    els.dialogInput.value = options.defaultValue || "";
+  }
+  els.dialogBackdrop.classList.remove("hidden");
+  document.body.classList.add("dialog-open");
+  requestAnimationFrame(() => (options.inputLabel ? els.dialogInput : els.dialogConfirm).focus());
+  return new Promise((resolve) => {
+    dialogResolver = resolve;
+  });
+}
+
+function closeDialog(result) {
+  if (!dialogResolver) return;
+  const resolve = dialogResolver;
+  dialogResolver = null;
+  els.dialogBackdrop.classList.add("hidden");
+  document.body.classList.remove("dialog-open");
+  const value = result && !els.dialogInputWrap.classList.contains("hidden") ? els.dialogInput.value : Boolean(result);
+  resolve(value);
+  lastFocusedElement?.focus?.();
+  lastFocusedElement = null;
+}
+
+function onDialogKeydown(event) {
+  if (!dialogResolver || els.dialogBackdrop?.classList.contains("hidden")) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeDialog(false);
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusables = [els.dialogCancel, els.dialogConfirm, els.dialogInput].filter((item) => item && !item.closest(".hidden"));
+  if (!focusables.length) return;
+  const currentIndex = focusables.indexOf(document.activeElement);
+  if (event.shiftKey && currentIndex <= 0) {
+    event.preventDefault();
+    focusables[focusables.length - 1].focus();
+  } else if (!event.shiftKey && currentIndex === focusables.length - 1) {
+    event.preventDefault();
+    focusables[0].focus();
+  }
+}
+
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function escapeHtml(value) {

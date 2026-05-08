@@ -4,12 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=21">
+    <link rel="icon" href="/plateflow-logo.png">
+    <link rel="stylesheet" href="/styles.css?v=22">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
     <header class="topbar">
       <a class="brand" href="/">
+        <img class="brand-logo" src="/plateflow-logo.png" alt="" aria-hidden="true">
         <strong>plateflow</strong>
       </a>
       <nav class="nav">
@@ -132,7 +134,7 @@
         </form>
         <div class="table-shell">
           <div class="responsive-table">
-            <table>
+            <table class="inventory-table">
               <caption>Global inventory catalog</caption>
               <thead>
                 <tr>
@@ -424,6 +426,7 @@
             <input name="partLength" type="number" min="1" max="16">
           </label>
           <button class="button" type="submit">Save settings</button>
+          <span id="settingsSavedStatus" class="settings-status" aria-live="polite"></span>
         </form>
       </section>
 
@@ -466,6 +469,22 @@
       </div>
     </main>
 
-    <script src="/app.js?v=21"></script>
+    <div id="dialogBackdrop" class="dialog-backdrop hidden">
+      <section class="app-dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle" aria-describedby="dialogBody">
+        <p id="dialogKicker" class="eyebrow">Confirm action</p>
+        <h2 id="dialogTitle">Are you sure?</h2>
+        <p id="dialogBody">This action needs confirmation.</p>
+        <label id="dialogInputWrap" class="hidden">
+          <span id="dialogInputLabel">Value</span>
+          <input id="dialogInput" autocomplete="off">
+        </label>
+        <div class="dialog-actions">
+          <button id="dialogCancel" class="ghost" type="button">Cancel</button>
+          <button id="dialogConfirm" class="button" type="button">Confirm</button>
+        </div>
+      </section>
+    </div>
+
+    <script src="/app.js?v=22"></script>
   </body>
 </html>
