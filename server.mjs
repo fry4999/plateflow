@@ -417,6 +417,7 @@ async function refreshStore() {
   if (ensureSubassemblyNumbers()) changed = true;
   if (mergeDuplicateInventoryRecords()) changed = true;
   if (removeLikelyPurchasedFromCustomPipeline()) changed = true;
+  if (promoteShaftCutProcurementRowsToStockRollups()) changed = true;
   if (removeKnownCustomFromProcurementPipeline()) changed = true;
   if (normalizeShaftStockRollups()) changed = true;
   if (normalizeDerivedProcurementVendors()) changed = true;
@@ -566,8 +567,14 @@ function normalizeShaftStockRollups() {
       normalizedRows.push({ ...row, quantity, lengthInches: Number(lengthInches.toFixed(3)) });
     }
     if (!totalInches) return false;
-    const quantityNeeded = Math.max(1, Math.ceil(totalInches / stockLengthInches));
-    const nextName = String(item.name || "").replace(/\([^)]*needed\)/, `(${formatInches(totalInches)} needed)`);
+    const plannedLengthInches = shaftStockPlannedLengthInches(totalInches, normalizedRows);
+    const quantityNeeded = Math.max(1, Math.ceil(plannedLengthInches / stockLengthInches));
+    const profile = shaftStockProfile({
+      ...item,
+      name: [item.name, ...normalizedRows.map((row) => row.name)].filter(Boolean).join(" ")
+    });
+    const vendorSku = shaftStockSku(profile);
+    const nextName = shaftStockDisplayName(profile || item);
     let itemChanged = false;
     if (Number(item.quantityNeeded || item.quantity || 0) !== quantityNeeded) {
       item.quantityNeeded = quantityNeeded;
@@ -578,8 +585,26 @@ function normalizeShaftStockRollups() {
       item.totalShaftLengthInches = Number(totalInches.toFixed(3));
       itemChanged = true;
     }
+    if (Number(item.plannedShaftStockLengthInches || 0) !== Number(plannedLengthInches.toFixed(3))) {
+      item.plannedShaftStockLengthInches = Number(plannedLengthInches.toFixed(3));
+      itemChanged = true;
+    }
+    if (item.vendor !== "WCP") {
+      item.vendor = "WCP";
+      itemChanged = true;
+    }
+    if (vendorSku && item.vendorSku !== vendorSku) {
+      item.vendorSku = vendorSku;
+      item.partNumber = vendorSku;
+      itemChanged = true;
+    }
     if (nextName && nextName !== item.name) {
       item.name = nextName;
+      itemChanged = true;
+    }
+    const nextVendorUrl = vendorLink("WCP", vendorSku || item.vendorSku || item.partNumber || "", nextName || item.name);
+    if (nextVendorUrl && item.vendorUrl !== nextVendorUrl && !item.productUrl) {
+      item.vendorUrl = nextVendorUrl;
       itemChanged = true;
     }
     if (JSON.stringify(item.shaftSourceRows) !== JSON.stringify(normalizedRows)) {
@@ -604,6 +629,84 @@ function normalizeShaftStockRollups() {
     if (changed) order.vendorGroups = groupCotsParts(order.lines || []);
   }
   if (changed) audit("procurement.shaft_rollups_normalized", "Normalized shaft stock rollup quantities from parsed cut lengths", "system");
+  return changed;
+}
+
+function promoteShaftCutProcurementRowsToStockRollups() {
+  let changed = false;
+  for (const order of store.procurementOrders || []) {
+    if (!Array.isArray(order.lines)) continue;
+    const groups = new Map();
+    for (const line of order.lines) {
+      if (line.shaftStockRollup || !isShaftCutPart(line)) continue;
+      const profile = shaftStockProfile(line);
+      const lengthInches = extractShaftLengthInches(line);
+      if (!profile || !Number.isFinite(lengthInches) || lengthInches <= 0) continue;
+      const quantity = Math.max(1, Number(line.quantityNeeded || line.quantity || 1));
+      const key = [
+        line.robotId,
+        line.subsystemId,
+        line.source?.documentId,
+        line.source?.elementId,
+        profile.diameter,
+        profile.shape,
+        profile.material
+      ].map(normalizeKey).join(":");
+      if (!groups.has(key)) {
+        groups.set(key, {
+          ...profile,
+          robotId: line.robotId || "",
+          subassemblyId: line.subsystemId || "",
+          subassemblyName: line.subassemblyName || line.subsystem || "",
+          sourceDocument: line.sourceDocument || "",
+          sourceDocumentName: line.sourceDocumentName || "",
+          source: line.source || {},
+          totalInches: 0,
+          cutCount: 0,
+          sourceRows: []
+        });
+      }
+      const group = groups.get(key);
+      group.totalInches += lengthInches * quantity;
+      group.cutCount += quantity;
+      group.sourceRows.push({ name: line.name, quantity, lengthInches });
+    }
+
+    let index = 0;
+    for (const group of groups.values()) {
+      const rollup = buildShaftStockRollupPart(group, {
+        documentId: group.source?.documentId || "",
+        workspaceId: group.source?.workspaceId || "",
+        elementId: group.source?.elementId || group.source?.assemblyElementId || "",
+        robotId: group.robotId,
+        subassemblyId: group.subassemblyId,
+        subassemblyName: group.subassemblyName,
+        sourceTag: group.sourceDocument || group.source?.sourceTag || "",
+        documentName: group.sourceDocumentName || group.source?.documentName || "",
+        configuration: group.source?.configuration || ""
+      }, index);
+      const existing = order.lines.find((line) => line.shaftStockRollup && line.source?.bomRowKey === rollup.source?.bomRowKey);
+      const catalog = upsertCatalogPart(rollup, "cots", order.syncBatchId || "shaft-stock-rollup");
+      const nextLine = {
+        ...(existing || {}),
+        ...rollup,
+        id: existing?.id || `line-${createHash("sha1").update(`${order.id}:${rollup.source?.bomRowKey || rollup.id}`).digest("hex").slice(0, 14)}`,
+        catalogPartId: catalog.id,
+        quantityOrdered: existing?.quantityOrdered || 0,
+        quantityReceived: existing?.quantityReceived || 0,
+        status: existing?.status || "needed"
+      };
+      if (existing) Object.assign(existing, nextLine);
+      else order.lines.push(nextLine);
+      index += 1;
+      changed = true;
+    }
+    if (groups.size) {
+      order.vendorGroups = groupCotsParts(order.lines);
+      order.updatedAt = new Date().toISOString();
+    }
+  }
+  if (changed) audit("procurement.shaft_rollups_promoted", "Promoted shaft cut procurement rows into WCP shaft stock rollups", "system");
   return changed;
 }
 
@@ -2134,6 +2237,7 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     description: part.description || existing?.description || "",
     shaftStockRollup: Boolean(part.shaftStockRollup || existing?.shaftStockRollup),
     totalShaftLengthInches: part.totalShaftLengthInches ?? existing?.totalShaftLengthInches,
+    plannedShaftStockLengthInches: part.plannedShaftStockLengthInches ?? existing?.plannedShaftStockLengthInches,
     stockLengthInches: part.stockLengthInches ?? existing?.stockLengthInches,
     shaftSourceRows: Array.isArray(part.shaftSourceRows) ? part.shaftSourceRows : existing?.shaftSourceRows || [],
     status: part.status || (sourceType === "custom" ? "extracted" : "needed"),
@@ -2229,6 +2333,7 @@ async function upsertOperationalQueue(batchId, sourceType, catalogParts, previou
       description: part.description || "",
       shaftStockRollup: Boolean(part.shaftStockRollup),
       totalShaftLengthInches: part.totalShaftLengthInches,
+      plannedShaftStockLengthInches: part.plannedShaftStockLengthInches,
       stockLengthInches: part.stockLengthInches,
       shaftSourceRows: Array.isArray(part.shaftSourceRows) ? part.shaftSourceRows : [],
       vendorUrl: part.vendorUrl || vendorLink(part.vendor, part.vendorSku || part.manufacturerSku || part.partNumber, part.name),
@@ -3718,8 +3823,8 @@ function shouldRouteAssemblyRowToManufacturing(part, input = {}) {
   if (part?.shaftStockRollup) return false;
   if (isLikelyPurchasedPart(part)) return false;
   if (isExplicitVendorStockRollup(part)) return false;
-  if (isVendorShaftStockItem(part)) return false;
   if (isShaftCutPart(part)) return true;
+  if (isVendorShaftStockItem(part)) return false;
   if (matchesKnownCustomPart(part, input)) return true;
   if (isManufacturedByName(part)) return true;
   if (isTeamCustomPartNumber(part?.partNumber || part?.vendorSku || part?.manufacturerSku)) return true;
@@ -3744,9 +3849,9 @@ function isVendorShaftStockItem(part) {
   if (!part || part.shaftStockRollup || !hasProcurementIdentity(part)) return false;
   const text = shaftDescriptorText(part);
   if (!isShaftStockProcurementText(text)) return false;
+  if (isShaftCutPart(part)) return false;
   if (/\bshaft\s+stock\b|\bstock\s+shaft\b/.test(text)) return true;
-  const sku = procurementSku(part);
-  return Boolean(inferredVendorFromSku(sku)) && extractShaftLengthInches(part) >= 24;
+  return false;
 }
 
 function hasProcurementIdentity(part) {
@@ -3918,63 +4023,86 @@ function aggregateShaftStockProcurementRows(rows, input) {
       groups.set(key, {
         ...profile,
         totalInches: 0,
+        cutCount: 0,
         sourceRows: []
       });
     }
     const group = groups.get(key);
     group.totalInches += totalInches;
+    group.cutCount += quantity;
     group.sourceRows.push({ name: row.name, quantity, lengthInches });
   }
 
   return [...groups.values()].map((group, index) => {
-    const stockLengthInches = group.stockLengthInches || 36;
-    const sticks = Math.max(1, Math.ceil(group.totalInches / stockLengthInches));
-    const name = `${group.label} (${formatInches(group.totalInches)} needed)`;
-    return {
-      id: `shaft-stock-${normalizeKey(group.label)}-${index + 1}`,
-      name,
-      type: "cots",
-      sourceType: "cots",
-      category: "shaft_stock",
-      vendor: "WCP",
-      vendorSku: "",
-      manufacturer: "",
-      manufacturerSku: "",
-      partNumber: "",
-      material: "Purchased",
-      thickness: "",
-      quantity: sticks,
-      quantityNeeded: sticks,
-      totalShaftLengthInches: Number(group.totalInches.toFixed(3)),
-      stockLengthInches,
-      shaftStockRollup: true,
-      shaftSourceRows: group.sourceRows,
-      status: "needed",
-      procurementStatus: "sourcing",
-      vendorUrl: vendorLink("WCP", "", group.label),
-      robotId: input.robotId || "",
-      subsystemId: input.subassemblyId || "",
-      subsystem: input.subassemblyName || input.documentName || input.sourceTag,
-      subassemblyName: input.subassemblyName || input.documentName || input.sourceTag,
-      sourceDocument: input.sourceTag,
-      sourceDocumentName: input.documentName || input.sourceTag,
-      source: {
-        documentId: input.documentId,
-        workspaceId: input.workspaceId,
-        elementId: input.elementId,
-        bomRowKey: `shaft-stock:${normalizeKey(group.label)}`,
-        sourceTag: input.sourceTag,
-        documentName: input.documentName || "",
-        configuration: input.configuration || ""
-      }
-    };
+    return buildShaftStockRollupPart(group, input, index);
   });
+}
+
+function buildShaftStockRollupPart(group, input, index = 0) {
+  const stockLengthInches = group.stockLengthInches || 36;
+  const plannedLengthInches = shaftStockPlannedLengthInches(Number(group.totalInches || 0), group.sourceRows);
+  const sticks = Math.max(1, Math.ceil(plannedLengthInches / stockLengthInches));
+  const vendorSku = shaftStockSku(group);
+  const name = shaftStockDisplayName(group);
+  const description = `${formatInches(group.totalInches)} of cut shaft required; ${formatInches(plannedLengthInches)} planned with trim allowance from ${stockLengthInches} in stock.`;
+  const bomRowKey = `shaft-stock:${normalizeKey([
+    input.documentId,
+    input.elementId,
+    input.robotId,
+    input.subassemblyId,
+    vendorSku || group.label || name
+  ].filter(Boolean).join(":"))}`;
+  return {
+    id: `shaft-stock-${normalizeKey(vendorSku || group.label || name)}-${index + 1}`,
+    name,
+    type: "cots",
+    sourceType: "cots",
+    category: "shaft_stock",
+    vendor: "WCP",
+    vendorSku,
+    manufacturer: "",
+    manufacturerSku: "",
+    partNumber: vendorSku,
+    description,
+    material: "Purchased",
+    thickness: "",
+    quantity: sticks,
+    quantityNeeded: sticks,
+    totalShaftLengthInches: Number(Number(group.totalInches || 0).toFixed(3)),
+    plannedShaftStockLengthInches: Number(plannedLengthInches.toFixed(3)),
+    stockLengthInches,
+    shaftStockRollup: true,
+    shaftSourceRows: group.sourceRows || [],
+    status: "needed",
+    procurementStatus: "sourcing",
+    vendorUrl: vendorLink("WCP", vendorSku, name),
+    robotId: input.robotId || "",
+    subsystemId: input.subassemblyId || "",
+    subsystem: input.subassemblyName || input.documentName || input.sourceTag,
+    subassemblyName: input.subassemblyName || input.documentName || input.sourceTag,
+    sourceDocument: input.sourceTag,
+    sourceDocumentName: input.documentName || input.sourceTag,
+    source: {
+      documentId: input.documentId,
+      workspaceId: input.workspaceId,
+      elementId: input.elementId,
+      bomRowKey,
+      sourceTag: input.sourceTag,
+      documentName: input.documentName || "",
+      configuration: input.configuration || ""
+    }
+  };
+}
+
+function shaftStockPlannedLengthInches(totalInches, sourceRows = []) {
+  const cutCount = sourceRows.reduce((sum, row) => sum + Math.max(1, Number(row?.quantity || 1)), 0);
+  const cutAllowanceInches = 1;
+  return Math.max(0, Number(totalInches || 0)) + cutCount * cutAllowanceInches;
 }
 
 function shaftStockProfile(part) {
   const text = shaftDescriptorText(part);
   if (!/\bshaft\b/.test(text) || isExcludedShaftAccessoryText(text)) return null;
-  const diameter = shaftDiameterLabel(text);
   const shape = /\b(churro|rounded\s+hex)\b/.test(text)
     ? "Rounded Hex"
     : /\bhex\b/.test(text)
@@ -3982,6 +4110,7 @@ function shaftStockProfile(part) {
       : /\bround\b/.test(text)
         ? "Round"
         : "Shaft";
+  const diameter = shaftDiameterLabel(text) || (["Rounded Hex", "Hex"].includes(shape) ? "1/2 in" : "");
   const material = /\bsteel\b/.test(text) ? "Steel" : /\baluminum|aluminium|6061|7075\b/.test(text) ? "Aluminum" : "";
   return {
     diameter,
@@ -3990,6 +4119,15 @@ function shaftStockProfile(part) {
     label: [diameter, material, shape === "Shaft" ? "" : shape, "Shaft Stock"].filter(Boolean).join(" "),
     stockLengthInches: 36
   };
+}
+
+function shaftStockSku(profile = {}) {
+  if (profile.diameter === "1/2 in" && profile.shape === "Rounded Hex") return "WCP-2144";
+  return "";
+}
+
+function shaftStockDisplayName(profile = {}) {
+  return [profile.diameter, profile.shape === "Shaft" ? "" : profile.shape, "Shaft Stock"].filter(Boolean).join(" ") || "Shaft Stock";
 }
 
 function shaftDescriptorText(part) {
