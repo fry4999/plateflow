@@ -55,7 +55,10 @@ const els = {
   metricFabrication: document.querySelector("#metricFabrication"),
   metricProcurement: document.querySelector("#metricProcurement"),
   inventorySearch: document.querySelector("#inventorySearch"),
+  inventoryTypeFilter: document.querySelector("#inventoryTypeFilter"),
   inventoryDocumentFilter: document.querySelector("#inventoryDocumentFilter"),
+  inventorySort: document.querySelector("#inventorySort"),
+  inventoryForm: document.querySelector("#inventoryForm"),
   inventoryBody: document.querySelector("#inventoryBody"),
   robotForm: document.querySelector("#robotForm"),
   robotList: document.querySelector("#robotList"),
@@ -181,14 +184,18 @@ function bindEvents() {
   els.exportButton.addEventListener("click", onExport);
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
   if (els.rawMaterialForm) els.rawMaterialForm.addEventListener("submit", onRawMaterialAdd);
+  if (els.inventoryForm) els.inventoryForm.addEventListener("submit", onInventoryAdd);
   if (els.settingsForm) els.settingsForm.addEventListener("submit", onSettingsSave);
   if (els.robotForm) els.robotForm.addEventListener("submit", onRobotCreate);
   if (els.robotList) els.robotList.addEventListener("click", onRobotSelect);
   if (els.attachAssemblyButton) els.attachAssemblyButton.addEventListener("click", onRobotAttachAssembly);
   if (els.deleteRobotButton) els.deleteRobotButton.addEventListener("click", onRobotDelete);
   if (els.robotRequirementList) els.robotRequirementList.addEventListener("change", onRobotRequirementChange);
-  if (els.inventorySearch) els.inventorySearch.addEventListener("input", () => loadDashboard());
-  if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", () => loadDashboard());
+  if (els.inventorySearch) els.inventorySearch.addEventListener("input", renderCurrentInventoryTable);
+  if (els.inventoryTypeFilter) els.inventoryTypeFilter.addEventListener("change", renderCurrentInventoryTable);
+  if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", renderCurrentInventoryTable);
+  if (els.inventorySort) els.inventorySort.addEventListener("change", renderCurrentInventoryTable);
+  if (els.inventoryBody) els.inventoryBody.addEventListener("click", onInventoryAction);
   window.addEventListener("hashchange", syncPageFromHash);
   els.modeTabs.forEach((button) => button.addEventListener("click", () => setSyncMode(button.dataset.mode)));
   if (els.themeToggle) els.themeToggle.addEventListener("click", toggleTheme);
@@ -199,7 +206,9 @@ function syncPageFromHash() {
     setupEmbeddedPage();
     return;
   }
-  const visiblePages = [...els.pages].filter((page) => !["admin", "settings"].includes(page.id) || document.body.classList.contains("admin-user"));
+  const visiblePages = [...els.pages].filter((page) => (
+    !["admin", "settings"].includes(page.id) || document.body.classList.contains("admin-user")
+  )).filter((page) => !["parts", "selection"].includes(page.id));
   if (!visiblePages.length) return;
   const requested = (location.hash || "#dashboard").slice(1);
   const fallback = visiblePages[0].id;
@@ -727,7 +736,6 @@ function renderInventory(inventory) {
   els.metricProcurement.textContent = String(inventory.totals.procurement || 0);
   if (els.fabQueueCount) els.fabQueueCount.textContent = inventory.totals.fabrication ? `${inventory.totals.fabrication} custom part${inventory.totals.fabrication === 1 ? "" : "s"} on the fabrication board.` : "No custom parts queued.";
   if (els.procQueueCount) els.procQueueCount.textContent = inventory.totals.procurement ? `${inventory.totals.procurement} COTS item${inventory.totals.procurement === 1 ? "" : "s"} awaiting procurement review.` : "No COTS parts queued.";
-  loadBatches();
 }
 
 function renderDocumentFilter(inventory) {
@@ -741,12 +749,22 @@ function renderDocumentFilter(inventory) {
   if (current && !documents.includes(current)) els.inventoryDocumentFilter.value = "";
 }
 
+function renderCurrentInventoryTable() {
+  renderInventoryTable(dashboardState?.inventory?.parts || []);
+}
+
 function renderInventoryTable(items) {
   if (!els.inventoryBody) return;
   const query = (els.inventorySearch?.value || "").trim().toLowerCase();
+  const typeFilter = els.inventoryTypeFilter?.value || "";
   const documentFilter = els.inventoryDocumentFilter?.value || "";
-  const visible = items.filter((part) => (!documentFilter || (part.sourceDocument || "Unassigned") === documentFilter)).filter((part) => [
+  const sortMode = els.inventorySort?.value || "name";
+  const visible = items
+    .filter((part) => (!typeFilter || (part.sourceType || part.type || "custom") === typeFilter))
+    .filter((part) => (!documentFilter || (part.sourceDocument || "Unassigned") === documentFilter))
+    .filter((part) => [
     part.name,
+    part.partNumber,
     part.category,
     part.material,
     part.vendor,
@@ -755,25 +773,56 @@ function renderInventoryTable(items) {
     part.status,
     part.sourceDocument,
     part.sourceDocumentName
-  ].join(" ").toLowerCase().includes(query)).slice(0, 200);
+  ].join(" ").toLowerCase().includes(query))
+    .sort(inventorySorter(sortMode))
+    .slice(0, 200);
 
   if (!visible.length) {
-    els.inventoryBody.innerHTML = `<tr><td colspan="8" class="empty">No matching inventory.</td></tr>`;
+    els.inventoryBody.innerHTML = `<tr><td colspan="11" class="empty">No matching inventory.</td></tr>`;
     return;
   }
 
   els.inventoryBody.innerHTML = visible.map((part) => `
-    <tr>
+    <tr data-item-key="${escapeAttr(part.itemKey)}" data-source-type="${escapeAttr(part.sourceType || part.type || "custom")}">
+      <td><img class="inventory-preview" src="${escapeAttr(part.previewUrl || "")}" alt="${escapeAttr(part.name)} preview" loading="lazy"></td>
       <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
       <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span></td>
-      <td><span class="part-name">${escapeHtml(part.name)}</span><br><small>${escapeHtml(part.vendorSku || part.id || "")}</small></td>
-      <td>${escapeHtml(part.category || "uncategorized")}</td>
-      <td>${escapeHtml(part.sourceType === "cots" ? [part.vendor, part.vendorSku].filter(Boolean).join(" ") || "Unassigned" : [part.material, part.thickness].filter(Boolean).join(" ") || "Unassigned")}</td>
-      <td>${Number(part.quantity || part.quantityNeeded || 1)}</td>
-      <td>${Number(part.onHand || 0)}</td>
-      <td><span class="status">${escapeHtml(part.status || "needed")}</span></td>
+      <td><input data-field="name" value="${escapeAttr(part.name || "")}" aria-label="Part name"></td>
+      <td><input data-field="partNumber" value="${escapeAttr(inventoryPartNumber(part))}" aria-label="Part number or SKU"></td>
+      <td><input data-field="category" value="${escapeAttr(part.category || "uncategorized")}" aria-label="Category"></td>
+      <td><input data-field="${part.sourceType === "cots" ? "vendor" : "material"}" value="${escapeAttr(part.sourceType === "cots" ? part.vendor || "" : [part.material, part.thickness].filter(Boolean).join(" "))}" aria-label="${part.sourceType === "cots" ? "Vendor" : "Material"}"></td>
+      <td>${neededCell(part)}</td>
+      <td><input class="number-input" data-field="onHand" type="number" min="0" value="${Number(part.onHand || 0)}" aria-label="On hand"></td>
+      <td><input data-field="status" value="${escapeAttr(part.status || "needed")}" aria-label="Status"></td>
+      <td class="row-actions">
+        <button class="ghost small" type="button" data-action="save-inventory">Save</button>
+        <button class="ghost small danger" type="button" data-action="delete-inventory">Delete</button>
+      </td>
     </tr>
   `).join("");
+}
+
+function inventorySorter(mode) {
+  return (a, b) => {
+    if (mode === "newest") return String(b.updatedAt || b.importedAt || "").localeCompare(String(a.updatedAt || a.importedAt || ""));
+    if (mode === "type") return `${a.sourceType || a.type || ""}:${a.name || ""}`.localeCompare(`${b.sourceType || b.type || ""}:${b.name || ""}`);
+    if (mode === "source") return `${a.sourceDocument || ""}:${a.name || ""}`.localeCompare(`${b.sourceDocument || ""}:${b.name || ""}`);
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  };
+}
+
+function inventoryPartNumber(part) {
+  return part.partNumber || part.vendorSku || part.manufacturerSku || part.id || "";
+}
+
+function neededCell(part) {
+  const neededBy = Array.isArray(part.neededBy) ? part.neededBy : [];
+  const total = neededBy.length ? neededBy.reduce((sum, item) => sum + Number(item.quantityNeeded || 0), 0) : Number(part.quantityNeeded ?? part.quantity ?? 0);
+  const details = neededBy.length ? neededBy.map((item) => {
+    const owner = [item.robot, item.subsystem].filter(Boolean).join(" / ") || "Inventory";
+    return `${owner}: ${Number(item.quantityNeeded || 1)} ${item.status || "needed"}`;
+  }).join("\n") : "No robot requirement is currently attached.";
+  return `<span class="needed-tooltip" tabindex="0" data-quantity="${Number(total)}">${Number(total)}<span role="tooltip">${escapeHtml(details).replace(/\n/g, "<br>")}</span></span>`;
 }
 
 function renderRobots(robots) {
@@ -1017,6 +1066,83 @@ async function onRawMaterialAdd(event) {
   } catch (error) {
     setMessage(error.message, "error");
   }
+}
+
+async function onInventoryAdd(event) {
+  event.preventDefault();
+  const form = Object.fromEntries(new FormData(els.inventoryForm).entries());
+  if (!String(form.name || "").trim()) {
+    setMessage("Part name is required.", "error");
+    return;
+  }
+  try {
+    const result = await api("/api/inventory/items", {
+      method: "POST",
+      body: JSON.stringify({
+        ...form,
+        onHand: Number(form.onHand || 0),
+        quantityNeeded: 0
+      })
+    });
+    applyInventoryMutation(result);
+    els.inventoryForm.reset();
+    els.inventoryForm.elements.sourceType.value = "cots";
+    els.inventoryForm.elements.onHand.value = "1";
+    setMessage("Inventory item added.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function onInventoryAction(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const row = button.closest("tr[data-item-key]");
+  if (!row) return;
+  const itemKey = row.dataset.itemKey;
+  if (button.dataset.action === "delete-inventory") {
+    const name = row.querySelector("[data-field='name']")?.value || "this item";
+    if (!window.confirm(`Delete ${name} from inventory?`)) return;
+    try {
+      const result = await api(`/api/inventory/items/${encodeURIComponent(itemKey)}`, { method: "DELETE" });
+      applyInventoryMutation(result);
+      setMessage("Inventory item deleted.", "ok");
+    } catch (error) {
+      setMessage(error.message, "error");
+    }
+    return;
+  }
+  if (button.dataset.action !== "save-inventory") return;
+  const payload = Object.fromEntries([...row.querySelectorAll("[data-field]")].map((input) => [input.dataset.field, input.value]));
+  payload.quantityNeeded = Number(row.querySelector(".needed-tooltip")?.dataset.quantity || 1);
+  payload.onHand = Number(payload.onHand || 0);
+  try {
+    const result = await api(`/api/inventory/items/${encodeURIComponent(itemKey)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    });
+    applyInventoryMutation(result);
+    setMessage("Inventory item saved.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+function applyInventoryMutation(result) {
+  dashboardState = {
+    ...(dashboardState || {}),
+    inventory: result.inventory,
+    fabrication: result.fabrication || dashboardState?.fabrication,
+    procurement: result.procurement || dashboardState?.procurement,
+    robots: result.robots || dashboardState?.robots,
+    robotSources: result.robotSources || dashboardState?.robotSources
+  };
+  renderInventory(result.inventory);
+  renderInventoryTable(result.inventory.parts);
+  if (result.fabrication) renderFabrication(result.fabrication);
+  if (result.procurement) renderProcurement(result.procurement);
+  if (result.robots) renderRobots(result.robots);
+  renderDocumentFilter(result.inventory);
 }
 
 async function onSettingsSave(event) {

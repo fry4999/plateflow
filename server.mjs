@@ -56,6 +56,10 @@ createServer(async (req, res) => {
     if (url.pathname === "/auth/logout") return await logout(res, session);
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
     if (url.pathname === "/api/inventory") return withAppAccess(session, res, () => json(res, 200, inventorySnapshot()));
+    if (url.pathname === "/api/inventory/items" && req.method === "POST") return withAppAccess(session, res, (user) => createInventoryItem(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
+    if (url.pathname.startsWith("/api/inventory/items/") && url.pathname.endsWith("/thumbnail")) return withAppAccess(session, res, () => inventoryItemThumbnail(res, session, pathId(url.pathname, "/api/inventory/items/").replace(/\/thumbnail$/, "")));
+    if (url.pathname.startsWith("/api/inventory/items/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), ["admin", "mentor", "purchaser", "fabricator"]);
+    if (url.pathname.startsWith("/api/inventory/items/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), ["admin", "mentor", "purchaser", "fabricator"]);
     if (url.pathname === "/api/dashboard") return withAppAccess(session, res, (user) => json(res, 200, dashboardSnapshot(user)));
     if (url.pathname === "/api/settings" && req.method === "PATCH") return withAppAccess(session, res, (user) => updateSettings(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/sync-batches") return withAppAccess(session, res, () => json(res, 200, syncBatchSnapshot()));
@@ -1111,15 +1115,31 @@ function fabricationStatusByCatalogPart(batchId) {
 
 function inventorySnapshot() {
   const records = [...store.inventoryRecords].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const parts = records.flatMap((record) => record.parts.map((part) => ({
-    ...part,
-    inventoryId: record.id,
-    importedAt: record.updatedAt,
-    sourceType: record.sourceType,
-    sourceDocument: part.sourceDocument || part.source?.sourceTag || record.source?.sourceTag || record.source?.documentName || shortDocumentId(record.source?.documentId),
-    sourceDocumentName: part.sourceDocumentName || part.source?.documentName || record.source?.documentName || "",
-    sourceDocumentId: part.source?.documentId || record.source?.documentId || ""
-  }))).sort((a, b) => `${a.sourceDocument || ""}:${a.name || ""}`.localeCompare(`${b.sourceDocument || ""}:${b.name || ""}`));
+  const parts = records.flatMap((record) => record.parts.map((part) => {
+    const catalog = findCatalogPartForInventoryPart(part, record.sourceType) || {};
+    const itemKey = inventoryItemKey(record.id, part);
+    return {
+      ...part,
+      catalogPartId: catalog.id || "",
+      inventoryId: record.id,
+      itemKey,
+      importedAt: record.updatedAt,
+      updatedAt: catalog.updatedAt || record.updatedAt,
+      sourceType: record.sourceType,
+      sourceDocument: part.sourceDocument || part.source?.sourceTag || record.source?.sourceTag || record.source?.documentName || shortDocumentId(record.source?.documentId),
+      sourceDocumentName: part.sourceDocumentName || part.source?.documentName || record.source?.documentName || "",
+      sourceDocumentId: part.source?.documentId || record.source?.documentId || "",
+      onHand: Number(catalog.onHand ?? part.onHand ?? 0),
+      reserved: Number(catalog.reserved ?? part.reserved ?? 0),
+      ordered: Number(catalog.ordered ?? part.ordered ?? 0),
+      available: Number(catalog.available ?? Math.max(0, Number(catalog.onHand ?? part.onHand ?? 0) - Number(catalog.reserved ?? part.reserved ?? 0))),
+      quantityNeeded: Number(catalog.quantityNeeded ?? part.quantityNeeded ?? part.quantity ?? 1),
+      defaultLocation: catalog.defaultLocation || part.defaultLocation || "",
+      tags: Array.isArray(catalog.tags) ? catalog.tags : Array.isArray(part.tags) ? part.tags : [],
+      neededBy: neededByForInventoryPart(record, part),
+      previewUrl: `/api/inventory/items/${itemKey}/thumbnail`
+    };
+  })).sort((a, b) => `${a.sourceDocument || ""}:${a.name || ""}`.localeCompare(`${b.sourceDocument || ""}:${b.name || ""}`));
   return {
     records,
     parts,
@@ -1136,6 +1156,61 @@ function inventorySnapshot() {
     },
     documents: [...new Set(parts.map((part) => part.sourceDocument || "Unassigned"))].sort()
   };
+}
+
+function inventoryItemPartKey(part) {
+  return String(part?.source?.partId || part?.source?.bomRowKey || part?.id || part?.name || "").trim();
+}
+
+function inventoryItemKey(recordId, part) {
+  return Buffer.from(JSON.stringify({ recordId, partKey: inventoryItemPartKey(part) }), "utf8").toString("base64url");
+}
+
+function parseInventoryItemKey(itemKey) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(itemKey || ""), "base64url").toString("utf8"));
+    return {
+      recordId: String(parsed.recordId || ""),
+      partKey: String(parsed.partKey || "")
+    };
+  } catch {
+    return { recordId: "", partKey: "" };
+  }
+}
+
+function findInventoryItem(itemKey) {
+  const { recordId, partKey } = parseInventoryItemKey(itemKey);
+  if (!recordId || !partKey) return null;
+  const record = store.inventoryRecords.find((item) => item.id === recordId);
+  if (!record) return null;
+  const partIndex = record.parts.findIndex((part) => inventoryItemPartKey(part) === partKey);
+  if (partIndex === -1) return null;
+  return { record, part: record.parts[partIndex], partIndex };
+}
+
+function findCatalogPartForInventoryPart(part, sourceType) {
+  const identity = partIdentity(part, sourceType);
+  return store.catalogParts.find((item) => item.identity === identity);
+}
+
+function neededByForInventoryPart(record, part) {
+  const partKey = inventoryItemPartKey(part);
+  const matches = store.requirements.filter((requirement) => (
+    requirement.inventoryRecordId === record.id &&
+    (String(requirement.key || "").endsWith(`:${record.id}:${partKey}`) || requirement.name === part.name)
+  ));
+  if (!matches.length && part.subsystem) {
+    return [{ robot: "", subsystem: part.subsystem, quantityNeeded: Number(part.quantityNeeded || part.quantity || 1), status: part.status || "needed" }];
+  }
+  return matches.map((requirement) => {
+    const robot = store.robots.find((item) => item.id === requirement.robotId);
+    return {
+      robot: robot?.name || "Robot",
+      subsystem: requirement.subsystem || "",
+      quantityNeeded: Number(requirement.quantityNeeded || 1),
+      status: requirement.status || "needed"
+    };
+  });
 }
 
 function syncBatchSnapshot() {
@@ -1169,13 +1244,13 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     process: part.process || "",
     fabricationIntent: part.fabricationIntent || "",
     status: part.status || (sourceType === "custom" ? "extracted" : "needed"),
-    onHand: Number(existing?.onHand || 0),
-    reserved: Number(existing?.reserved || 0),
-    ordered: Number(existing?.ordered || 0),
-    quantityNeeded: Number(part.quantity || 1),
-    available: Math.max(0, Number(existing?.onHand || 0) - Number(existing?.reserved || 0)),
-    defaultLocation: existing?.defaultLocation || "",
-    tags: existing?.tags || [],
+    onHand: Number(part.onHand ?? existing?.onHand ?? 0),
+    reserved: Number(part.reserved ?? existing?.reserved ?? 0),
+    ordered: Number(part.ordered ?? existing?.ordered ?? 0),
+    quantityNeeded: Number(part.quantityNeeded ?? part.quantity ?? 1),
+    available: Math.max(0, Number(part.onHand ?? existing?.onHand ?? 0) - Number(part.reserved ?? existing?.reserved ?? 0)),
+    defaultLocation: part.defaultLocation || existing?.defaultLocation || "",
+    tags: Array.isArray(part.tags) ? part.tags : existing?.tags || [],
     source: part.source,
     lastSyncBatchId: syncBatchId,
     updatedAt: now,
@@ -1767,6 +1842,221 @@ async function addRawMaterial(req, res, session) {
   return json(res, 201, material);
 }
 
+async function createInventoryItem(req, res, session, actor) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const sourceType = String(body.sourceType || body.type || "cots").trim() === "custom" ? "custom" : "cots";
+  const updates = validateInventoryItemUpdate(body, sourceType, { status: "stocked", quantityNeeded: 0, quantity: 0, onHand: 0 });
+  const id = `manual-${randomBytes(7).toString("hex")}`;
+  const now = new Date().toISOString();
+  const part = {
+    id,
+    type: sourceType,
+    ...updates,
+    quantity: updates.quantityNeeded ?? 0,
+    sourceDocument: "Manual",
+    sourceDocumentName: "Manual shop inventory",
+    source: {
+      sourceTag: "Manual",
+      documentName: "Manual shop inventory",
+      partId: id
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+  const record = {
+    id: `manual:${sourceType}:${id}`,
+    batchId: `M-${now.slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex").toUpperCase()}`,
+    sourceType,
+    updatedAt: now,
+    source: {
+      sourceTag: "Manual",
+      documentName: "Manual shop inventory"
+    },
+    parts: [part]
+  };
+  store.inventoryRecords.unshift(record);
+  upsertCatalogPart(part, sourceType, record.batchId);
+  audit("inventory.item_created", `Added manual inventory item ${part.name}`, actor.email);
+  await persistStore();
+  return json(res, 201, inventoryMutationSnapshot());
+}
+
+async function updateInventoryItem(req, res, session, actor, itemKey) {
+  requireCsrf(req, session);
+  const match = findInventoryItem(itemKey);
+  if (!match) throw httpError(404, "Inventory item not found");
+  const previous = structuredClone(match.part);
+  const previousCatalog = findCatalogPartForInventoryPart(previous, match.record.sourceType);
+  const updates = validateInventoryItemUpdate(await readJson(req), match.record.sourceType, match.part);
+  const next = {
+    ...match.part,
+    ...updates,
+    quantity: updates.quantityNeeded ?? match.part.quantity ?? match.part.quantityNeeded ?? 1,
+    updatedAt: new Date().toISOString()
+  };
+  match.record.parts.splice(match.partIndex, 1, next);
+  match.record.updatedAt = next.updatedAt;
+
+  const catalog = upsertCatalogPart(next, match.record.sourceType, match.record.batchId);
+  if (previousCatalog && previousCatalog.id !== catalog.id) updateQueueCatalogPart(previousCatalog.id, catalog, next, match.record.sourceType);
+  else updateQueueCatalogPart(catalog.id, catalog, next, match.record.sourceType);
+  removeUnusedCatalogPart(previous, match.record.sourceType, catalog.id);
+
+  audit("inventory.item_updated", `Updated ${next.name}`, actor.email);
+  await persistStore();
+  return json(res, 200, inventoryMutationSnapshot());
+}
+
+async function deleteInventoryItem(req, res, session, actor, itemKey) {
+  requireCsrf(req, session);
+  const match = findInventoryItem(itemKey);
+  if (!match) throw httpError(404, "Inventory item not found");
+  const [removed] = match.record.parts.splice(match.partIndex, 1);
+  match.record.updatedAt = new Date().toISOString();
+  const catalog = findCatalogPartForInventoryPart(removed, match.record.sourceType);
+  if (!match.record.parts.length) {
+    store.inventoryRecords = store.inventoryRecords.filter((record) => record.id !== match.record.id);
+    removeOperationalQueue(match.record.batchId, match.record.sourceType);
+  } else if (catalog) {
+    removeQueueCatalogPart(catalog.id, match.record.sourceType);
+  }
+  removeUnusedCatalogPart(removed, match.record.sourceType);
+  removeRequirementsForInventoryPart(match.record.id, removed);
+  audit("inventory.item_deleted", `Deleted ${removed.name || inventoryItemPartKey(removed)}`, actor.email);
+  await persistStore();
+  return json(res, 200, inventoryMutationSnapshot());
+}
+
+function inventoryMutationSnapshot() {
+  const snapshot = dashboardSnapshot();
+  return {
+    inventory: snapshot.inventory,
+    fabrication: snapshot.fabrication,
+    procurement: snapshot.procurement,
+    robots: snapshot.robots,
+    robotSources: snapshot.robotSources
+  };
+}
+
+function validateInventoryItemUpdate(body, sourceType, existing = {}) {
+  const quantityNeeded = boundedInteger(body.quantityNeeded ?? body.quantity, Number(existing.quantityNeeded ?? existing.quantity ?? 1), 0, 999);
+  const onHand = boundedInteger(body.onHand, Number(existing.onHand || 0), 0, 99999);
+  const reserved = boundedInteger(body.reserved, Number(existing.reserved || 0), 0, 99999);
+  const ordered = boundedInteger(body.ordered, Number(existing.ordered || 0), 0, 99999);
+  const name = String(body.name ?? existing.name ?? "").trim().slice(0, 140);
+  if (!name) throw httpError(400, "Part name is required");
+  const base = {
+    name,
+    category: String(body.category ?? existing.category ?? (sourceType === "custom" ? "fabricated" : "purchased")).trim().slice(0, 80),
+    status: String(body.status ?? existing.status ?? (sourceType === "custom" ? "extracted" : "needed")).trim().slice(0, 60),
+    quantity: quantityNeeded,
+    quantityNeeded,
+    onHand,
+    reserved,
+    ordered,
+    defaultLocation: String(body.defaultLocation ?? existing.defaultLocation ?? "").trim().slice(0, 120),
+    tags: Array.isArray(body.tags)
+      ? body.tags.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 12)
+      : String(body.tags ?? (Array.isArray(existing.tags) ? existing.tags.join(",") : "")).split(",").map((tag) => tag.trim()).filter(Boolean).slice(0, 12)
+  };
+  if (sourceType === "cots") {
+    return {
+      ...base,
+      vendor: String(body.vendor ?? body.material ?? existing.vendor ?? "").trim().slice(0, 100),
+      vendorSku: String(body.vendorSku ?? body.partNumber ?? existing.vendorSku ?? "").trim().slice(0, 100),
+      manufacturer: String(body.manufacturer ?? existing.manufacturer ?? "").trim().slice(0, 100),
+      manufacturerSku: String(body.manufacturerSku ?? existing.manufacturerSku ?? "").trim().slice(0, 100),
+      partNumber: String(body.partNumber ?? existing.partNumber ?? body.vendorSku ?? existing.vendorSku ?? "").trim().slice(0, 80)
+    };
+  }
+  return {
+    ...base,
+    material: String(body.material ?? existing.material ?? "").trim().slice(0, 120),
+    thickness: String(body.thickness ?? existing.thickness ?? "").trim().slice(0, 40),
+    process: String(body.process ?? body.machine ?? existing.process ?? existing.machine ?? "").trim().slice(0, 80),
+    machine: String(body.machine ?? body.process ?? existing.machine ?? existing.process ?? "").trim().slice(0, 80),
+    stock: String(body.stock ?? existing.stock ?? "").trim().slice(0, 80),
+    partNumber: String(body.partNumber ?? existing.partNumber ?? "").trim().slice(0, 80),
+    subsystem: String(body.subsystem ?? existing.subsystem ?? "").trim().slice(0, 80)
+  };
+}
+
+function updateQueueCatalogPart(catalogPartId, catalog, part, sourceType) {
+  if (!catalogPartId) return;
+  if (sourceType === "custom") {
+    for (const job of store.fabricationJobs) {
+      if (!Array.isArray(job.lines)) continue;
+      job.lines = job.lines.map((line) => line.catalogPartId === catalogPartId ? {
+        ...line,
+        catalogPartId: catalog.id,
+        name: part.name,
+        material: part.material || "",
+        thickness: part.thickness || "",
+        subsystem: part.subsystem || "",
+        stock: part.stock || "",
+        process: part.process || part.machine || "unknown",
+        machine: part.machine || part.process || "unknown",
+        quantityNeeded: Number(part.quantityNeeded ?? part.quantity ?? 1)
+      } : line);
+      job.grouping = groupCustomParts(job.lines);
+    }
+    return;
+  }
+  for (const order of store.procurementOrders) {
+    if (!Array.isArray(order.lines)) continue;
+    order.lines = order.lines.map((line) => line.catalogPartId === catalogPartId ? {
+      ...line,
+      catalogPartId: catalog.id,
+      name: part.name,
+      vendor: part.vendor || "Unassigned",
+      vendorSku: part.vendorSku || "",
+      quantityNeeded: Number(part.quantityNeeded ?? part.quantity ?? 1)
+    } : line);
+    order.vendorGroups = groupCotsParts(order.lines.map((line) => ({
+      vendor: line.vendor,
+      quantityNeeded: line.quantityNeeded
+    })));
+  }
+}
+
+function removeQueueCatalogPart(catalogPartId, sourceType) {
+  if (!catalogPartId) return;
+  if (sourceType === "custom") {
+    store.fabricationJobs = store.fabricationJobs.filter((job) => {
+      job.lines = Array.isArray(job.lines) ? job.lines.filter((line) => line.catalogPartId !== catalogPartId) : [];
+      job.grouping = groupCustomParts(job.lines);
+      return job.lines.length;
+    });
+    return;
+  }
+  for (const order of store.procurementOrders) {
+    order.lines = Array.isArray(order.lines) ? order.lines.filter((line) => line.catalogPartId !== catalogPartId) : [];
+    order.vendorGroups = groupCotsParts(order.lines.map((line) => ({
+      vendor: line.vendor,
+      quantityNeeded: line.quantityNeeded
+    })));
+  }
+  store.procurementOrders = store.procurementOrders.filter((order) => order.lines?.length);
+}
+
+function removeUnusedCatalogPart(part, sourceType, keepId = "") {
+  const identity = partIdentity(part, sourceType);
+  const stillUsed = store.inventoryRecords.some((record) => (
+    record.sourceType === sourceType &&
+    record.parts.some((item) => partIdentity(item, sourceType) === identity)
+  ));
+  if (!stillUsed) store.catalogParts = store.catalogParts.filter((item) => item.identity !== identity || item.id === keepId);
+}
+
+function removeRequirementsForInventoryPart(recordId, part) {
+  const keySuffix = `:${recordId}:${inventoryItemPartKey(part)}`;
+  store.requirements = store.requirements.filter((requirement) => (
+    requirement.inventoryRecordId !== recordId ||
+    (!String(requirement.key || "").endsWith(keySuffix) && requirement.name !== part.name)
+  ));
+}
+
 async function removePlaceholderCots(req, res, session) {
   requireCsrf(req, session);
   const placeholderNames = new Set(["NEO V1.1 Brushless Motor", "1/2 in Hex Bearing", "HTD 5mm Belt 60T"]);
@@ -2004,6 +2294,71 @@ function downloadBlob(res, session, id) {
     "Cache-Control": "private, no-store"
   });
   return res.end(download.bytes);
+}
+
+async function inventoryItemThumbnail(res, session, itemKey) {
+  const match = findInventoryItem(itemKey);
+  if (!match) return placeholderThumbnail(res, "Missing");
+  if (match.record.sourceType === "custom" && session.token) {
+    try {
+      const preview = await fetchOnshapePartPreview(session, match.record, match.part);
+      if (preview?.bytes?.length) {
+        res.writeHead(200, {
+          "Content-Type": preview.contentType || "image/png",
+          "Cache-Control": "private, max-age=300"
+        });
+        return res.end(preview.bytes);
+      }
+    } catch (error) {
+      console.warn("Onshape preview failed", error.message);
+    }
+  }
+  return placeholderThumbnail(res, match.part.name || match.part.id || "Part", match.record.sourceType);
+}
+
+async function fetchOnshapePartPreview(session, record, part) {
+  const source = part.source || record.source || {};
+  if (!source.documentId || !source.workspaceId || !source.elementId) return null;
+  const accessToken = await ensureAccessToken(session);
+  const base = normalizeOnshapeBase(source.baseUrl || record.source?.baseUrl || config.onshapeApiBase);
+  const params = new URLSearchParams({
+    outputWidth: "160",
+    outputHeight: "160",
+    pixelSize: "0"
+  });
+  if (source.partId) params.set("partIds", source.partId);
+  if (source.configuration) params.set("configuration", source.configuration);
+  const workspacePath = source.workspacePath || record.source?.workspacePath || "w";
+  const workspaceId = source.workspaceId || record.source?.workspaceId;
+  const result = await onshapeJson(accessToken, `${base}/api/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`);
+  const rawImage = result?.images?.[0]?.image || result?.images?.[0]?.data || result?.image || result?.data || "";
+  const base64 = String(rawImage).replace(/^data:image\/[a-z0-9.+-]+;base64,/i, "");
+  if (!base64) return null;
+  return {
+    bytes: Buffer.from(base64, "base64"),
+    contentType: result?.images?.[0]?.contentType || result?.contentType || "image/png"
+  };
+}
+
+function placeholderThumbnail(res, label, sourceType = "custom") {
+  const initials = String(label || "PF").trim().slice(0, 2).toUpperCase().replace(/[<&>]/g, "");
+  const accent = sourceType === "cots" ? "#22c55e" : "#60a5fa";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160" role="img" aria-label="${escapeXml(label)} preview"><rect width="160" height="160" rx="18" fill="#0b1020"/><path d="M36 52h88v56H36z" rx="8" fill="#111827" stroke="${accent}" stroke-width="5"/><circle cx="58" cy="74" r="5" fill="${accent}"/><circle cx="102" cy="74" r="5" fill="${accent}"/><circle cx="58" cy="96" r="5" fill="${accent}"/><circle cx="102" cy="96" r="5" fill="${accent}"/><text x="80" y="86" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="24" font-weight="800" fill="#f8fafc">${escapeXml(initials)}</text></svg>`;
+  res.writeHead(200, {
+    "Content-Type": "image/svg+xml; charset=utf-8",
+    "Cache-Control": "private, max-age=300"
+  });
+  return res.end(svg);
+}
+
+function escapeXml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&apos;"
+  }[char]));
 }
 
 function validateImport(body) {

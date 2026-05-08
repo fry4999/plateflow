@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
-    <link rel="stylesheet" href="/styles.css?v=20">
+    <link rel="stylesheet" href="/styles.css?v=21">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -20,7 +20,6 @@
         <a href="#dashboard">Overview</a>
         <a href="#inventory">Inventory</a>
         <a href="#robots">Robots</a>
-        <a href="#parts">Sync</a>
         <a href="#fabrication">Fabrication</a>
         <a href="#procurement">Procurement</a>
         <a href="#raw-material">Raw</a>
@@ -84,30 +83,78 @@
             <h2>Global catalog</h2>
           </div>
           <div class="inventory-controls">
+            <select id="inventoryTypeFilter" aria-label="Filter inventory by part type">
+              <option value="">All types</option>
+              <option value="custom">Custom</option>
+              <option value="cots">COTS</option>
+            </select>
             <select id="inventoryDocumentFilter" aria-label="Filter inventory by source document">
               <option value="">All documents</option>
+            </select>
+            <select id="inventorySort" aria-label="Sort inventory">
+              <option value="name">Part A-Z</option>
+              <option value="newest">Newest</option>
+              <option value="type">Type</option>
+              <option value="source">Source</option>
             </select>
             <input id="inventorySearch" class="search-input" placeholder="Search parts, materials, vendors">
           </div>
         </div>
+        <form id="inventoryForm" class="tool-surface inventory-form">
+          <label>
+            <span>Type</span>
+            <select name="sourceType">
+              <option value="cots">COTS</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <label>
+            <span>Name</span>
+            <input name="name" autocomplete="off" placeholder="1/2 hex bearing">
+          </label>
+          <label>
+            <span>Part # / SKU</span>
+            <input name="partNumber" autocomplete="off" placeholder="REV-21-1650">
+          </label>
+          <label>
+            <span>Category</span>
+            <input name="category" autocomplete="off" placeholder="hardware">
+          </label>
+          <label>
+            <span>Material / Vendor</span>
+            <input name="material" autocomplete="off" placeholder="REV / 6061 aluminum">
+          </label>
+          <label>
+            <span>On hand</span>
+            <input name="onHand" type="number" min="0" value="1">
+          </label>
+          <label>
+            <span>Location</span>
+            <input name="defaultLocation" autocomplete="off" placeholder="bearing drawer">
+          </label>
+          <button class="button" type="submit">Add item</button>
+        </form>
         <div class="table-shell">
           <div class="responsive-table">
             <table>
               <caption>Global inventory catalog</caption>
               <thead>
                 <tr>
+                  <th>Preview</th>
                   <th>Type</th>
                   <th>Source</th>
                   <th>Part</th>
+                  <th>Part # / SKU</th>
                   <th>Category</th>
                   <th>Material/Vendor</th>
                   <th>Needed</th>
                   <th>On hand</th>
                   <th>Status</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="inventoryBody">
-                <tr><td colspan="8" class="empty">No inventory yet.</td></tr>
+                <tr><td colspan="11" class="empty">No inventory yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -294,10 +341,6 @@
           <h3>Procurement groups</h3>
           <div id="procurementOrders" class="batch-list">No procurement groups yet.</div>
         </article>
-        <article>
-          <h3>Recent sync batches</h3>
-          <div id="batchList" class="batch-list">No sync batches yet.</div>
-        </article>
       </section>
 
       <section id="raw-material" class="workspace app-page" data-page hidden>
@@ -427,6 +470,6 @@
       </div>
     </main>
 
-    <script src="/app.js?v=20"></script>
+    <script src="/app.js?v=21"></script>
   </body>
 </html>
