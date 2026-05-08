@@ -2694,12 +2694,59 @@ function inferredVendorFromSku(sku) {
 }
 
 async function lookupVendorAdapter(adapter, part, query, sku, updatedAt) {
+  if (adapter.vendor === "WCP") {
+    const direct = await lookupWcpVendor(adapter, part, query, sku, updatedAt);
+    if (direct) return direct;
+  }
   if (adapter.type === "shopify") return lookupShopifyVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "bigcommerce") return lookupRevVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "mcmaster") return lookupMcmasterVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "vbelts") return lookupVBeltGuysVendor(adapter, part, query, sku, updatedAt);
   if (adapter.type === "direct") return lookupDirectVendor(adapter, part, query, sku, updatedAt);
   return null;
+}
+
+async function lookupWcpVendor(adapter, part, query, sku, updatedAt) {
+  const wcpSku = normalizeWcpSku(sku || query || part?.partNumber || part?.vendorSku);
+  if (!wcpSku) return null;
+  const handle = wcpSku.toLowerCase();
+  const productUrl = wcpProductUrl(wcpSku);
+  try {
+    const product = await fetchVendorJson(`${adapter.baseUrl}/products/${handle}.js`);
+    const variants = Array.isArray(product?.variants) ? product.variants : [];
+    const variant = variants.find((item) => normalizeSku(item?.sku) === normalizeSku(wcpSku)) || variants[0] || null;
+    const exactUrl = new URL(product?.url || `/products/${handle}`, adapter.baseUrl);
+    if (variant?.id) exactUrl.searchParams.set("variant", String(variant.id));
+    return {
+      source: "plateflow-vendor",
+      title: String(product?.title || part?.name || wcpSku).slice(0, 180),
+      sku: String(variant?.sku || wcpSku).slice(0, 100),
+      vendor: adapter.vendor,
+      productUrl: exactUrl.toString(),
+      searchUrl: productUrl,
+      unitPriceCents: shopifyPriceCents(variant?.price ?? product?.price),
+      currency: "USD",
+      variantId: String(variant?.id || "").slice(0, 120),
+      variantTitle: String(variant?.title || "").slice(0, 160),
+      confidence: 1,
+      matchType: "sku_exact",
+      updatedAt
+    };
+  } catch {
+    return {
+      source: "plateflow-vendor",
+      title: String(part?.name || wcpSku).slice(0, 180),
+      sku: wcpSku,
+      vendor: adapter.vendor,
+      productUrl,
+      searchUrl: productUrl,
+      unitPriceCents: null,
+      currency: "USD",
+      confidence: 0.92,
+      matchType: "sku_exact",
+      updatedAt
+    };
+  }
 }
 
 async function lookupShopifyVendor(adapter, part, query, sku, updatedAt) {
@@ -3136,7 +3183,7 @@ function vendorSearchLink(vendor, query) {
   const value = String(query || "").trim();
   const encoded = encodeURIComponent(value);
   if (canonical === "REV") return `https://www.revrobotics.com/search.php?search_query=${encoded}`;
-  if (canonical === "WCP") return `https://wcproducts.com/search?q=${encoded}`;
+  if (canonical === "WCP") return wcpProductUrl(value) || `https://wcproducts.com/search?q=${encoded}`;
   if (canonical === "Andymark") return `https://www.andymark.com/search?q=${encoded}`;
   if (canonical === "The Thrifty Bot") return `https://www.thethriftybot.com/search?q=${encoded}`;
   if (canonical === "McMaster-Carr") return value ? `https://www.mcmaster.com/${encoded}` : "https://www.mcmaster.com/";
@@ -3311,6 +3358,20 @@ function stripHtml(value) {
 
 function normalizeSku(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeWcpSku(value) {
+  const text = String(value || "").trim();
+  const explicit = text.match(/\bWCP[-_\s]*(\d{3,5}[A-Z]?)\b/i);
+  if (explicit) return `WCP-${explicit[1].toUpperCase()}`;
+  const bare = text.match(/^\d{3,5}[A-Z]?$/i);
+  if (bare) return `WCP-${bare[0].toUpperCase()}`;
+  return "";
+}
+
+function wcpProductUrl(value) {
+  const sku = normalizeWcpSku(value);
+  return sku ? `https://wcproducts.com/products/${sku.toLowerCase()}` : "";
 }
 
 function shopifyHandle(urlValue) {

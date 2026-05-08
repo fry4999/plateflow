@@ -1170,7 +1170,6 @@ async function loadInventory() {
   parts = inventory.parts.map((part) => ({ ...part, selected: true }));
   source = null;
   renderParts();
-  if (parts.length) setMessage(`Loaded ${parts.length} inventoried part${parts.length === 1 ? "" : "s"}.`, "ok");
 }
 
 async function loadDashboard(options = {}) {
@@ -1187,7 +1186,6 @@ function applyDashboardState(dashboard, options = {}) {
     parts = dashboard.inventory.parts.map((part) => ({ ...part, selected: true }));
     source = null;
     renderParts();
-    if (!options.quiet && parts.length) setMessage(`Loaded ${parts.length} inventoried item${parts.length === 1 ? "" : "s"}.`, "ok");
   } else {
     renderCustomConfigurator();
   }
@@ -1499,6 +1497,46 @@ function projectProcurementSummary(robotId) {
   return procurementTotals([], lines);
 }
 
+function subassemblyProcurementSummary(robotId, subassembly) {
+  const project = (dashboardState?.procurement?.projectBuckets || []).find((item) => item.robotId === robotId);
+  const subassemblyKey = stableClientKey(subassembly?.name || "");
+  const bucket = (project?.subassemblies || []).find((item) => {
+    if (item.id && subassembly?.id && String(item.id) === String(subassembly.id)) return true;
+    return stableClientKey(item.name || "") === subassemblyKey;
+  });
+  const lines = bucket
+    ? (bucket.vendorBuckets || []).flatMap((vendorBucket) => vendorBucket.lines || [])
+    : [];
+  const totals = procurementTotals([], lines);
+  const needed = lines.reduce((sum, line) => sum + Number(line.quantityNeeded || line.quantity || 0), 0);
+  const ordered = lines.reduce((sum, line) => sum + orderedQuantityForLine(line), 0);
+  const clampedOrdered = needed ? Math.min(needed, ordered) : ordered;
+  return {
+    ...totals,
+    needed,
+    ordered: clampedOrdered,
+    percent: needed ? Math.round((clampedOrdered / needed) * 100) : 0
+  };
+}
+
+function orderedQuantityForLine(line) {
+  const needed = Number(line.quantityNeeded || line.quantity || 0);
+  const tracked = Math.max(Number(line.quantityOrdered || 0), Number(line.quantityReceived || 0));
+  const status = String(line.status || "").toLowerCase();
+  if (["ordered", "partially_received", "received", "arrived", "backordered"].includes(status)) {
+    return tracked > 0 ? Math.min(needed || tracked, tracked) : needed;
+  }
+  return Math.min(needed || tracked, tracked);
+}
+
+function stableClientKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function targetLabel(target) {
   return target?.targetType === "project" ? "project" : "robot";
 }
@@ -1744,6 +1782,8 @@ function robotSubassemblies(robot) {
 
 function renderSubassemblyCard(robot, subassembly) {
   const counts = readinessCounts(subassembly);
+  const procurement = subassemblyProcurementSummary(robot.id, subassembly);
+  const orderedLabel = `${Number(procurement.ordered || 0)}/${Number(procurement.needed || 0)}`;
   return `
     <article class="subassembly-card" data-robot-id="${escapeAttr(robot.id)}" data-subassembly-id="${escapeAttr(subassembly.id)}" tabindex="0">
       <div class="card-head">
@@ -1754,6 +1794,16 @@ function renderSubassemblyCard(robot, subassembly) {
         <strong>${escapeHtml(counts.label)}</strong>
       </div>
       <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(subassembly.readiness || 0)))}%"></span></div>
+      <div class="subassembly-dial-row">
+        <div class="order-dial" style="--dial-value:${Math.max(0, Math.min(100, Number(procurement.percent || 0)))}" aria-label="${escapeAttr(`${orderedLabel} COTS items ordered`)}">
+          <strong>${Number(procurement.percent || 0)}%</strong>
+        </div>
+        <div class="order-dial-copy">
+          <span>COTS ordered</span>
+          <strong>${escapeHtml(orderedLabel)}</strong>
+          <small>${Number(procurement.lines || 0)} line${Number(procurement.lines || 0) === 1 ? "" : "s"} · ${formatMoney(procurement.estimatedTotalCents || 0)}</small>
+        </div>
+      </div>
       <div class="subassembly-actions">
         <button class="ghost small" type="button" data-action="open-subassembly">Open workspace</button>
         <button class="ghost small danger" type="button" data-action="delete-subassembly" data-robot-id="${escapeAttr(robot.id)}" data-subassembly-id="${escapeAttr(subassembly.id)}">Remove</button>
@@ -2385,12 +2435,26 @@ function procurementFallbackUrl(vendor, sku, name = "") {
   const encoded = encodeURIComponent(query);
   const normalized = String(vendor || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   if (normalized.includes("rev")) return `https://www.revrobotics.com/search.php?search_query=${encoded}`;
-  if (normalized.includes("wcp") || normalized.includes("westcoast")) return `https://wcproducts.com/search?q=${encoded}`;
+  if (normalized.includes("wcp") || normalized.includes("westcoast")) return wcpProductUrl(query) || `https://wcproducts.com/search?q=${encoded}`;
   if (normalized.includes("thrifty") || normalized.includes("ttb")) return `https://www.thethriftybot.com/search?q=${encoded}`;
   if (normalized.includes("andy")) return `https://www.andymark.com/search?q=${encoded}`;
   if (normalized.includes("mcmaster")) return `https://www.mcmaster.com/${encoded}`;
   if (normalized.includes("vbelt") || normalized.includes("beltguys")) return `https://www.vbeltguys.com/search?q=${encoded}`;
   return "";
+}
+
+function normalizeWcpSku(value) {
+  const text = String(value || "").trim();
+  const explicit = text.match(/\bWCP[-_\s]*(\d{3,5}[A-Z]?)\b/i);
+  if (explicit) return `WCP-${explicit[1].toUpperCase()}`;
+  const bare = text.match(/^\d{3,5}[A-Z]?$/i);
+  if (bare) return `WCP-${bare[0].toUpperCase()}`;
+  return "";
+}
+
+function wcpProductUrl(value) {
+  const sku = normalizeWcpSku(value);
+  return sku ? `https://wcproducts.com/products/${sku.toLowerCase()}` : "";
 }
 
 function renderProcurementOrderStatus(order) {
