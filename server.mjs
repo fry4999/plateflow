@@ -2270,8 +2270,10 @@ async function refreshProcurementLookups(options = {}) {
 }
 
 function procurementLineInScope(line, options = {}) {
-  if (options.robotId && String(line.robotId || "") !== String(options.robotId)) return false;
-  if (options.subassemblyId && String(line.subsystemId || "") !== String(options.subassemblyId)) return false;
+  const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
+  const target = resolveProcurementTarget(line, catalog);
+  if (options.robotId && String(target.robotId || "") !== String(options.robotId)) return false;
+  if (options.subassemblyId && String(target.subsystemId || "") !== String(options.subassemblyId)) return false;
   return true;
 }
 
@@ -3016,6 +3018,7 @@ function canonicalProcurementVendor(value) {
 function procurementSnapshot(cotsParts = []) {
   const lines = procurementLines();
   const vendorBuckets = buildVendorBuckets(lines);
+  const projectBuckets = buildProcurementProjectBuckets(lines);
   return {
     orders: store.procurementOrders.map((order) => {
       const lines = (order.lines || []).filter((line) => !isAssemblyManufacturedPart(line));
@@ -3024,7 +3027,8 @@ function procurementSnapshot(cotsParts = []) {
     items: cotsParts,
     lines,
     vendorBuckets,
-    projectBuckets: buildProcurementProjectBuckets(lines),
+    projectBuckets,
+    availableProjects: procurementAvailableProjects(projectBuckets),
     totals: {
       lines: lines.length,
       vendors: vendorBuckets.length,
@@ -3036,6 +3040,26 @@ function procurementSnapshot(cotsParts = []) {
   };
 }
 
+function procurementAvailableProjects(projectBuckets = []) {
+  const lineProjects = new Map(projectBuckets.filter((project) => project.robotId).map((project) => [project.robotId, project]));
+  return (store.robots || []).map((robot) => {
+    const project = lineProjects.get(robot.id);
+    return {
+      robotId: robot.id,
+      name: robot.name,
+      targetType: robot.targetType || "robot",
+      season: robot.season || "",
+      quantity: Number(project?.quantity || 0),
+      estimatedTotalCents: Number(project?.estimatedTotalCents || 0),
+      subassemblies: (robot.subsystems || []).map((subsystem) => ({
+        id: subsystem.id,
+        name: subsystem.name,
+        quantity: Number(project?.subassemblies?.find((item) => item.id === subsystem.id)?.quantity || 0)
+      }))
+    };
+  });
+}
+
 function procurementLines() {
   return (store.procurementOrders || []).flatMap((order) => {
     const rawLines = (Array.isArray(order.lines) ? order.lines : []).filter((line) => !isAssemblyManufacturedPart(line));
@@ -3043,9 +3067,9 @@ function procurementLines() {
       line.id = line.id || procurementLineId(order, line, index);
       const lineKey = procurementLineKey(order.id, line.id);
       const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
-      const robot = store.robots.find((item) => item.id === (line.robotId || catalog.robotId));
-      const subassemblyId = line.subsystemId || catalog.subsystemId || "";
-      const subsystem = robot?.subsystems?.find((item) => item.id === subassemblyId);
+      const target = resolveProcurementTarget(line, catalog);
+      const robot = target.robot;
+      const subsystem = target.subsystem;
       const quantity = Number(line.quantityNeeded || catalog.quantityNeeded || 1);
       const trusted = trustedProcurementMatchStatus(line.matchStatus) && allowedProcurementVendor(line);
       const unitPriceCents = trusted ? line.unitPriceCents ?? catalog.unitPriceCents ?? null : null;
@@ -3081,11 +3105,11 @@ function procurementLines() {
         matchConfidence: trusted ? line.matchConfidence ?? catalog.matchConfidence ?? null : null,
         matchError: line.matchError || "",
         priceUpdatedAt: line.priceUpdatedAt || catalog.priceUpdatedAt || "",
-        robotId: line.robotId || catalog.robotId || "",
-        robotName: robot?.name || (line.robotId || catalog.robotId ? "Project" : ""),
-        targetType: robot?.targetType || (line.robotId || catalog.robotId ? "project" : "unassigned"),
-        subsystemId: subassemblyId,
-        subassemblyName: line.subassemblyName || catalog.subassemblyName || subsystem?.name || line.subsystem || catalog.subsystem || "",
+        robotId: target.robotId,
+        robotName: robot?.name || (target.robotId ? "Project" : ""),
+        targetType: robot?.targetType || (target.robotId ? "project" : "unassigned"),
+        subsystemId: target.subsystemId,
+        subassemblyName: subsystem?.name || line.subassemblyName || catalog.subassemblyName || line.subsystem || catalog.subsystem || "",
         sourceDocument: line.sourceDocument || catalog.sourceDocument || "",
         sourceDocumentName: line.sourceDocumentName || catalog.sourceDocumentName || ""
       };
@@ -3132,6 +3156,64 @@ function findProcurementLine(lineKey) {
 function inferredProcurementVendor(line, catalog) {
   const sku = String(line.vendorSku || catalog.vendorSku || line.partNumber || catalog.partNumber || line.manufacturerSku || catalog.manufacturerSku || "").trim();
   return inferredVendorFromSku(sku) || canonicalProcurementVendor(line.vendor || catalog.vendor || "") || "Unassigned";
+}
+
+function resolveProcurementTarget(line = {}, catalog = {}) {
+  const explicitRobotId = String(line.robotId || catalog.robotId || "").trim();
+  const explicitSubassemblyId = String(line.subsystemId || catalog.subsystemId || "").trim();
+  const explicitSubassemblyName = String(line.subassemblyName || catalog.subassemblyName || line.subsystem || catalog.subsystem || "").trim();
+  if (explicitRobotId) {
+    const robot = store.robots.find((item) => item.id === explicitRobotId) || null;
+    const subsystem = robot ? resolveSubassemblyForProcurement(robot, explicitSubassemblyId, explicitSubassemblyName, line, catalog) : null;
+    return {
+      robot,
+      subsystem,
+      robotId: explicitRobotId,
+      subsystemId: subsystem?.id || explicitSubassemblyId
+    };
+  }
+
+  const sourceDocumentId = String(line.source?.documentId || catalog.source?.documentId || line.sourceDocumentId || catalog.sourceDocumentId || "").trim();
+  const sourceDocumentName = String(line.source?.documentName || catalog.source?.documentName || line.sourceDocumentName || catalog.sourceDocumentName || line.sourceDocument || catalog.sourceDocument || "").trim();
+  const sourceKeys = [
+    sourceDocumentName,
+    explicitSubassemblyName,
+    line.sourceDocument,
+    catalog.sourceDocument
+  ].map(normalizeKey).filter(Boolean);
+
+  for (const robot of store.robots || []) {
+    for (const subsystem of robot.subsystems || []) {
+      const subsystemDocumentId = String(subsystem.sourceDocumentId || "").trim();
+      if (sourceDocumentId && subsystemDocumentId && sourceDocumentId === subsystemDocumentId) {
+        return { robot, subsystem, robotId: robot.id, subsystemId: subsystem.id };
+      }
+      const subsystemKeys = [
+        subsystem.name,
+        subsystem.sourceDocumentName,
+        subsystem.sourceDocumentId
+      ].map(normalizeKey).filter(Boolean);
+      if (sourceKeys.length && subsystemKeys.some((key) => sourceKeys.includes(key))) {
+        return { robot, subsystem, robotId: robot.id, subsystemId: subsystem.id };
+      }
+    }
+  }
+
+  return { robot: null, subsystem: null, robotId: "", subsystemId: "" };
+}
+
+function resolveSubassemblyForProcurement(robot, subassemblyId, subassemblyName, line = {}, catalog = {}) {
+  if (!robot) return null;
+  const subassemblies = Array.isArray(robot.subsystems) ? robot.subsystems : [];
+  const byId = subassemblies.find((item) => item.id === subassemblyId);
+  if (byId) return byId;
+  const sourceDocumentId = String(line.source?.documentId || catalog.source?.documentId || line.sourceDocumentId || catalog.sourceDocumentId || "").trim();
+  const sourceDocumentName = String(line.source?.documentName || catalog.source?.documentName || line.sourceDocumentName || catalog.sourceDocumentName || line.sourceDocument || catalog.sourceDocument || subassemblyName || "").trim();
+  const keys = [subassemblyName, sourceDocumentName].map(normalizeKey).filter(Boolean);
+  return subassemblies.find((item) => (
+    (sourceDocumentId && item.sourceDocumentId === sourceDocumentId) ||
+    keys.includes(normalizeKey(item.name))
+  )) || null;
 }
 
 function buildVendorBuckets(lines) {

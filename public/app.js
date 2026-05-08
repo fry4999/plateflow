@@ -1718,12 +1718,19 @@ function renderProcurement(procurement) {
   if (!els.procurementOrders) return;
   const safe = procurement || {};
   const projects = Array.isArray(safe.projectBuckets) ? safe.projectBuckets : [];
+  const availableProjects = Array.isArray(safe.availableProjects) && safe.availableProjects.length
+    ? safe.availableProjects
+    : (dashboardState?.robots || []).map((robot) => ({ robotId: robot.id, name: robot.name, targetType: robot.targetType, season: robot.season, quantity: 0, estimatedTotalCents: 0 }));
   const orders = Array.isArray(safe.orders) ? safe.orders : [];
-  renderProcurementProjectFilter(projects);
+  renderProcurementProjectFilter(availableProjects, projects);
   const selectedProject = els.procurementProjectFilter?.value || "";
   const scopedProjects = selectedProject
     ? projects.filter((project) => procurementProjectValue(project) === selectedProject)
     : projects;
+  if (selectedProject && !scopedProjects.length) {
+    const emptyProject = availableProjects.find((project) => procurementProjectValue(project) === selectedProject);
+    if (emptyProject) scopedProjects.push({ ...emptyProject, subassemblies: [] });
+  }
   const scopedVendorBuckets = selectedProject ? vendorBucketsFromProjects(scopedProjects) : (Array.isArray(safe.vendorBuckets) ? safe.vendorBuckets : []);
   const scopedLines = scopedProjects.flatMap((project) => project.subassemblies || []).flatMap((subassembly) => subassembly.vendorBuckets || []).flatMap((bucket) => bucket.lines || []);
   const totals = procurementTotals(scopedVendorBuckets, scopedLines);
@@ -1735,8 +1742,8 @@ function renderProcurement(procurement) {
   if (!totals.lines) {
     els.procurementOrders.innerHTML = `
       <div class="empty-panel">
-        <strong>No procurement lines yet.</strong>
-        <span>Import Assembly BOM rows to create vendor order groups.</span>
+        <strong>${selectedProject ? "No procurement lines for this project yet." : "No procurement lines yet."}</strong>
+        <span>${selectedProject ? "Import an Assembly BOM while this project is selected in the Onshape panel." : "Import Assembly BOM rows to create vendor order groups."}</span>
       </div>
     `;
     return;
@@ -1763,12 +1770,12 @@ function renderProcurement(procurement) {
   `;
 }
 
-function renderProcurementProjectFilter(projects) {
+function renderProcurementProjectFilter(availableProjects, projectBuckets = []) {
   if (!els.procurementProjectFilter) return;
   const current = els.procurementProjectFilter.value;
-  const options = projects.filter((project) => !project.unassigned).map((project) => ({
+  const options = procurementProjectOptions(availableProjects, projectBuckets).map((project) => ({
     value: procurementProjectValue(project),
-    label: `${project.name || "Project"} · ${targetLabel(project)}`
+    label: `${project.name || "Project"} · ${targetLabel(project)}${Number(project.quantity || 0) ? ` · ${Number(project.quantity)} needed` : ""}`
   }));
   els.procurementProjectFilter.innerHTML = [
     `<option value="">All projects</option>`,
@@ -1779,6 +1786,24 @@ function renderProcurementProjectFilter(projects) {
 
 function procurementProjectValue(project) {
   return project?.robotId || "";
+}
+
+function procurementProjectOptions(availableProjects = [], projectBuckets = []) {
+  const options = new Map();
+  for (const project of projectBuckets) {
+    if (!project?.robotId || project.unassigned) continue;
+    options.set(project.robotId, project);
+  }
+  for (const project of availableProjects) {
+    if (!project?.robotId) continue;
+    options.set(project.robotId, {
+      ...(options.get(project.robotId) || {}),
+      ...project,
+      quantity: Number(options.get(project.robotId)?.quantity || project.quantity || 0),
+      estimatedTotalCents: Number(options.get(project.robotId)?.estimatedTotalCents || project.estimatedTotalCents || 0)
+    });
+  }
+  return [...options.values()].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 }
 
 function procurementTotals(vendorBuckets, lines) {
