@@ -892,6 +892,48 @@ function renderFabricationCard(job) {
   `;
 }
 
+function replaceDashboardFabrication(fabrication) {
+  if (!dashboardState) return;
+  dashboardState = { ...dashboardState, fabrication };
+}
+
+function updateLocalFabricationJob(jobId, status) {
+  const jobs = dashboardState?.fabrication?.jobs;
+  if (!Array.isArray(jobs)) return null;
+  const job = jobs.find((item) => item.id === jobId);
+  if (!job) return null;
+  const previousStatus = job.status;
+  if (displayFabricationStatus(previousStatus) === status) return { changed: false, previousStatus };
+  job.status = status;
+  job.updatedAt = new Date().toISOString();
+  if (Array.isArray(job.lines)) {
+    job.lines = job.lines.map((line) => ({ ...line, status }));
+  }
+  return { changed: true, previousStatus };
+}
+
+function moveFabricationCardElement(card, column, status) {
+  const cards = column.querySelector(".kanban-cards");
+  if (!card || !cards) return;
+  cards.querySelector(".kanban-empty")?.remove();
+  card.classList.remove("todo", "in_progress", "completed", "dragging");
+  card.classList.add(status);
+  cards.append(card);
+  refreshFabricationCounts();
+}
+
+function refreshFabricationCounts() {
+  for (const column of els.fabricationJobs.querySelectorAll(".kanban-column[data-status]")) {
+    const cards = column.querySelector(".kanban-cards");
+    const count = cards?.querySelectorAll(".kanban-card").length || 0;
+    const badge = column.querySelector(".kanban-column-head span");
+    if (badge) badge.textContent = String(count);
+    if (cards && count === 0 && !cards.querySelector(".kanban-empty")) {
+      cards.innerHTML = `<p class="kanban-empty">No jobs</p>`;
+    }
+  }
+}
+
 function displayFabricationStatus(status) {
   if (status === "in_progress") return "in_progress";
   if (["completed", "received", "installed"].includes(status)) return "completed";
@@ -1133,6 +1175,7 @@ async function onFabricationJobChange(event) {
       method: "PATCH",
       body: JSON.stringify({ status: select.value })
     });
+    replaceDashboardFabrication(result.fabrication);
     renderFabrication(result.fabrication);
     setMessage("Fabrication job status updated.", "ok");
   } catch (error) {
@@ -1148,6 +1191,7 @@ async function onFabricationJobAction(event) {
   if (!jobId || !window.confirm("Delete this fabrication card?")) return;
   try {
     const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+    replaceDashboardFabrication(result.fabrication);
     renderFabrication(result.fabrication);
     setMessage("Fabrication card deleted.", "ok");
   } catch (error) {
@@ -1184,18 +1228,28 @@ async function onFabricationDrop(event) {
   event.preventDefault();
   const jobId = event.dataTransfer.getData("text/plain");
   const status = column.dataset.status;
+  const card = els.fabricationJobs.querySelector(".kanban-card.dragging");
   els.fabricationJobs.querySelectorAll(".dragging, .drag-over").forEach((item) => item.classList.remove("dragging", "drag-over"));
   if (!jobId || !status) return;
+  const localUpdate = updateLocalFabricationJob(jobId, status);
+  if (localUpdate?.changed === false) return;
+  if (card) moveFabricationCardElement(card, column, status);
+  else if (dashboardState?.fabrication) renderFabrication(dashboardState.fabrication);
   try {
     const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, {
       method: "PATCH",
       body: JSON.stringify({ status })
     });
+    replaceDashboardFabrication(result.fabrication);
     renderFabrication(result.fabrication);
     setMessage("Fabrication card moved.", "ok");
   } catch (error) {
+    if (localUpdate?.previousStatus) {
+      updateLocalFabricationJob(jobId, localUpdate.previousStatus);
+      renderFabrication(dashboardState.fabrication);
+    }
     setMessage(error.message, "error");
-    await loadDashboard();
+    if (!localUpdate?.previousStatus) await loadDashboard();
   }
 }
 
