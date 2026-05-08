@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
     <link rel="icon" href="/plateflow-logo.png">
-    <link rel="stylesheet" href="/styles.css?v=24">
+    <link rel="stylesheet" href="/styles.css?v=25">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -17,9 +17,8 @@
       <nav class="nav">
         <a href="#dashboard">Overview</a>
         <a href="#inventory">Inventory</a>
-        <a href="#robots">Targets</a>
+        <a href="#robots">Projects</a>
         <a href="#procurement">Procurement</a>
-        <a href="#raw-material">Raw</a>
         <a href="#settings">Settings</a>
         <a href="#admin">Admin</a>
       </nav>
@@ -162,7 +161,7 @@
 
       <section id="robots" class="workspace app-page" data-page hidden>
         <div class="section-heading">
-          <span class="eyebrow">Build targets</span>
+          <span class="eyebrow">Projects</span>
           <h2>Robots and projects</h2>
         </div>
         <form id="robotForm" class="tool-surface robot-form">
@@ -181,17 +180,17 @@
             <span>Name</span>
             <input name="name" placeholder="Competition robot or offseason climber">
           </label>
-          <button class="button" type="submit">Add target</button>
+          <button class="button" type="submit">Add project</button>
         </form>
         <div id="robotList" class="ops-grid"></div>
         <div id="robotWorkspace" class="robot-workspace hidden">
           <div class="card-head">
             <div>
-              <span class="eyebrow">Target workspace</span>
-              <h3 id="robotWorkspaceTitle">Select a target</h3>
+              <span class="eyebrow">Project workspace</span>
+              <h3 id="robotWorkspaceTitle">Select a project</h3>
               <p id="robotWorkspaceMeta"></p>
             </div>
-            <button id="deleteRobotButton" class="ghost danger" type="button">Remove target</button>
+            <button id="deleteRobotButton" class="ghost danger" type="button">Remove project</button>
           </div>
           <div class="robot-source-row">
             <label>
@@ -202,7 +201,7 @@
             </label>
             <button id="attachAssemblyButton" class="button" type="button">Add BOM requirements</button>
           </div>
-          <div id="robotRequirementList" class="requirement-list">Select a target to view requirements.</div>
+          <div id="robotRequirementList" class="requirement-list">Select a project to view requirements.</div>
         </div>
       </section>
 
@@ -256,7 +255,7 @@
             </div>
           </div>
           <label>
-            <span>Target</span>
+            <span>Project</span>
             <select id="configRobot"></select>
           </label>
           <label>
@@ -338,7 +337,7 @@
             <span class="eyebrow">Sub-assembly fabrication</span>
             <h2 id="fabricationTitle">Custom part queue</h2>
           </div>
-          <button id="backToRobotsButton" class="ghost small" type="button">Back to targets</button>
+          <button id="backToRobotsButton" class="ghost small" type="button">Back to projects</button>
         </div>
         <p id="fabQueueCount" class="page-kicker">No custom parts queued.</p>
         <div id="fabricationSwitcher" class="fabrication-switcher"></div>
@@ -354,7 +353,7 @@
           <h3>Review queue</h3>
           <p id="procQueueCount">No COTS parts queued.</p>
           <ul>
-            <li>Group by vendor, subsystem, target, and sourcing status.</li>
+            <li>Group by vendor, subsystem, project, and sourcing status.</li>
             <li>Track needed, sourcing, ordered, partially received, received.</li>
           </ul>
         </article>
@@ -362,52 +361,6 @@
           <h3>Procurement groups</h3>
           <div id="procurementOrders" class="batch-list">No procurement groups yet.</div>
         </article>
-      </section>
-
-      <section id="raw-material" class="workspace app-page" data-page hidden>
-        <div class="section-heading">
-          <span class="eyebrow">Raw Material</span>
-          <h2>Sheet, tube, bar, remnants</h2>
-        </div>
-        <form id="rawMaterialForm" class="tool-surface raw-panel">
-          <label>
-            <span>Material</span>
-            <input name="materialFamily" placeholder="aluminum">
-          </label>
-          <label>
-            <span>Grade/type</span>
-            <input name="grade" placeholder="6061">
-          </label>
-          <label>
-            <span>Stock type</span>
-            <select name="stockType">
-              <option>sheet</option>
-              <option>tube</option>
-              <option>bar</option>
-              <option>rod</option>
-              <option>filament</option>
-              <option>remnant</option>
-            </select>
-          </label>
-          <label>
-            <span>Dimensions</span>
-            <input name="dimensions" placeholder="0.125 x 24 x 48">
-          </label>
-          <label>
-            <span>Remaining</span>
-            <input name="remainingQuantity" type="number" min="0" step="0.01" placeholder="1">
-          </label>
-          <label>
-            <span>Unit</span>
-            <input name="unit" placeholder="sheets">
-          </label>
-          <label>
-            <span>Location</span>
-            <input name="location" placeholder="Raw rack">
-          </label>
-          <button class="button" type="submit">Add stock</button>
-        </form>
-        <div id="rawMaterialList" class="ops-grid"></div>
       </section>
 
       <section id="selection" class="inventory-layout app-page" data-page hidden>
@@ -525,6 +478,6 @@
       </section>
     </div>
 
-    <script src="/app.js?v=24"></script>
+    <script src="/app.js?v=25"></script>
   </body>
 </html>

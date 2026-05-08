@@ -20,6 +20,8 @@ const config = {
   onshapeOAuthBase: process.env.ONSHAPE_OAUTH_BASE || "https://oauth.onshape.com",
   onshapeApiBase: process.env.ONSHAPE_API_BASE || "https://cad.onshape.com",
   onshapeScope: process.env.ONSHAPE_OAUTH_SCOPE || "",
+  onshapeCacheTtlMs: Number(process.env.ONSHAPE_CACHE_TTL_MS || 10 * 60 * 1000),
+  onshapeLivePreviews: process.env.ONSHAPE_LIVE_PREVIEWS === "true",
   trustProxy: process.env.TRUST_PROXY === "true",
   prod: process.env.NODE_ENV === "production"
 };
@@ -30,6 +32,7 @@ const store = await storage.load();
 const sessions = new Map();
 const rateBuckets = new Map();
 const eventClients = new Map();
+const onshapeJsonCache = new Map();
 let storeRevision = 0;
 let realtimeTimer = null;
 
@@ -1240,6 +1243,10 @@ function extractBomRows(data) {
 
 async function enrichSourceInfo(accessToken, base, input) {
   const fallback = input.sourceTag || shortDocumentId(input.documentId);
+  if (input.documentName) {
+    input.sourceTag = String(input.sourceTag || input.documentName || fallback).trim().slice(0, 80) || fallback;
+    return;
+  }
   try {
     const document = await onshapeJson(accessToken, `${base}/api/documents/${input.documentId}`);
     input.documentName = String(document.name || document.document?.name || "").trim().slice(0, 120);
@@ -2888,7 +2895,7 @@ async function inventoryItemThumbnail(res, session, itemKey) {
     });
     return res.end(cached.bytes);
   }
-  if (match.record.sourceType === "custom" && session.token) {
+  if (match.record.sourceType === "custom" && session.token && config.onshapeLivePreviews) {
     try {
       const preview = await fetchOnshapePartPreview(session, match.record, match.part);
       if (preview?.bytes?.length) {
@@ -3166,14 +3173,65 @@ function requireCsrf(req, session) {
 }
 
 async function onshapeJson(accessToken, url, options = {}) {
-  return fetchJson(url, {
-    ...options,
+  const { cacheTtlMs, ...fetchOptions } = options;
+  const ttl = Number(cacheTtlMs ?? onshapeJsonCacheTtl(url, fetchOptions));
+  const cacheKey = ttl > 0 ? onshapeJsonCacheKey(accessToken, url, fetchOptions) : "";
+  if (cacheKey) {
+    const cached = onshapeJsonCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cloneJson(cached.value);
+    if (cached) onshapeJsonCache.delete(cacheKey);
+  }
+  const value = await fetchJson(url, {
+    ...fetchOptions,
     headers: {
       Accept: "application/json;charset=UTF-8; qs=0.09",
       Authorization: `Bearer ${accessToken}`,
-      ...(options.headers || {})
+      ...(fetchOptions.headers || {})
     }
   });
+  if (cacheKey) {
+    onshapeJsonCache.set(cacheKey, {
+      expiresAt: Date.now() + ttl,
+      value: cloneJson(value)
+    });
+    pruneOnshapeJsonCache();
+  }
+  return value;
+}
+
+function onshapeJsonCacheTtl(url, options = {}) {
+  if (!config.onshapeCacheTtlMs || config.onshapeCacheTtlMs <= 0) return 0;
+  const method = String(options.method || "GET").toUpperCase();
+  if (method !== "GET") return 0;
+  let pathname = "";
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return 0;
+  }
+  if (/\/api\/documents\/[^/]+$/.test(pathname)) return config.onshapeCacheTtlMs * 3;
+  if (/\/api\/(?:v\d+\/)?assemblies\/d\/.+\/bom$/.test(pathname)) return config.onshapeCacheTtlMs;
+  if (/\/api\/(?:v\d+\/)?parts\/d\//.test(pathname)) return config.onshapeCacheTtlMs;
+  return 0;
+}
+
+function onshapeJsonCacheKey(accessToken, url, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const tokenScope = createHash("sha256").update(String(accessToken || "")).digest("base64url").slice(0, 18);
+  return `${tokenScope}:${method}:${url}`;
+}
+
+function cloneJson(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function pruneOnshapeJsonCache() {
+  if (onshapeJsonCache.size <= 300) return;
+  const now = Date.now();
+  for (const [key, value] of onshapeJsonCache) {
+    if (value.expiresAt <= now || onshapeJsonCache.size > 240) onshapeJsonCache.delete(key);
+    if (onshapeJsonCache.size <= 240) break;
+  }
 }
 
 async function onshapeBlob(accessToken, url) {

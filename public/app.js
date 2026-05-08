@@ -583,7 +583,7 @@ function renderRobotOptions() {
   if (!selectedRobotId && robots.length) selectedRobotId = robots[0].id;
   const current = els.configRobot.value || selectedRobotId;
   els.configRobot.innerHTML = [
-    `<option value="">Select target</option>`,
+    `<option value="">Select project</option>`,
     ...robots.map((robot) => `<option value="${escapeAttr(robot.id)}"${robot.id === current ? " selected" : ""}>${escapeHtml(robot.name)} · ${escapeHtml(targetLabel(robot))} · ${escapeHtml(robot.season)}</option>`)
   ].join("");
   if (current && robots.some((robot) => robot.id === current)) {
@@ -1064,7 +1064,7 @@ function renderOverview(dashboard) {
       <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(robot.readiness)))}%"></span></div>
     </article>
     <div class="subassembly-grid">
-      ${subassemblies.length ? subassemblies.map((subassembly) => renderSubassemblyCard(robot, subassembly)).join("") : `<article class="overview-empty">No Onshape sub-assemblies have been imported for this target yet.</article>`}
+      ${subassemblies.length ? subassemblies.map((subassembly) => renderSubassemblyCard(robot, subassembly)).join("") : `<article class="overview-empty">No Onshape sub-assemblies have been imported for this project yet.</article>`}
     </div>
   `;
 }
@@ -1197,14 +1197,14 @@ function neededCell(part) {
   const details = neededBy.length ? neededBy.map((item) => {
     const owner = [item.robot, item.subsystem].filter(Boolean).join(" / ") || "Inventory";
     return `${owner}: ${Number(item.quantityNeeded || 1)} ${item.status || "needed"}`;
-  }).join("\n") : "No target requirement is currently attached.";
+  }).join("\n") : "No project requirement is currently attached.";
   return `<span class="needed-tooltip" tabindex="0" data-quantity="${Number(total)}">${Number(total)}<span role="tooltip">${escapeHtml(details).replace(/\n/g, "<br>")}</span></span>`;
 }
 
 function renderRobots(robots) {
   if (!els.robotList) return;
   if (!robots.length) {
-    els.robotList.innerHTML = `<article><p>No build targets configured.</p></article>`;
+    els.robotList.innerHTML = `<article><p>No projects configured.</p></article>`;
     renderRobotWorkspace(null);
     return;
   }
@@ -1262,7 +1262,7 @@ function renderRobotWorkspace(robot) {
     <div class="robot-subassemblies">
       <h4>Sub-assemblies</h4>
       <div class="subassembly-grid">
-        ${subassemblies.length ? subassemblies.map((subassembly) => renderSubassemblyCard(robot, subassembly)).join("") : `<article class="overview-empty">No Onshape documents attached yet. Import from the Onshape panel with this target selected.</article>`}
+        ${subassemblies.length ? subassemblies.map((subassembly) => renderSubassemblyCard(robot, subassembly)).join("") : `<article class="overview-empty">No Onshape documents attached yet. Import from the Onshape panel with this project selected.</article>`}
       </div>
     </div>
     <div class="robot-requirements">
@@ -1404,7 +1404,7 @@ function renderFabricationSwitcher(robot, subassembly) {
   const subassemblies = robotSubassemblies(robot);
   els.fabricationSwitcher.innerHTML = `
     <label>
-      <span>Target</span>
+      <span>Project</span>
       <select data-action="fab-target">
         ${robots.map((item) => `<option value="${escapeAttr(item.id)}"${item.id === robot?.id ? " selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(targetLabel(item))}</option>`).join("")}
       </select>
@@ -1414,7 +1414,7 @@ function renderFabricationSwitcher(robot, subassembly) {
         <button class="ghost small ${item.id === subassembly?.id ? "active" : ""}" type="button" data-subassembly-id="${escapeAttr(item.id)}">
           ${escapeHtml(item.name)} <span>${escapeHtml(readinessCounts(item).label)}</span>
         </button>
-      `).join("") : `<span class="empty">No sub-assemblies for this target yet.</span>`}
+      `).join("") : `<span class="empty">No sub-assemblies for this project yet.</span>`}
     </div>
   `;
 }
@@ -1750,7 +1750,7 @@ async function onRobotCreate(event) {
     els.robotForm.reset();
     await loadDashboard();
     location.hash = "#robots";
-    setMessage("Target added.", "ok");
+    setMessage("Project added.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -1761,9 +1761,9 @@ async function onRobotDelete() {
   const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
   if (!robot) return;
   const confirmed = await confirmAction({
-    title: "Remove target?",
+    title: "Remove project?",
     body: `Remove ${robot.name} and its requirements from PlateFlow? Inventory stays in the global catalog.`,
-    confirmLabel: "Remove target",
+    confirmLabel: "Remove project",
     danger: true
   });
   if (!confirmed) return;
@@ -1772,7 +1772,7 @@ async function onRobotDelete() {
     dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
     selectedRobotId = result.robots[0]?.id || "";
     await loadDashboard();
-    setMessage("Target removed.", "ok");
+    setMessage("Project removed.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -1788,7 +1788,7 @@ async function onRobotAttachAssembly() {
     });
     dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
     await loadDashboard();
-    setMessage(`Added ${Number(result.added || 0)} target requirement${Number(result.added || 0) === 1 ? "" : "s"}.`, "ok");
+    setMessage(`Added ${Number(result.added || 0)} project requirement${Number(result.added || 0) === 1 ? "" : "s"}.`, "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -1805,7 +1805,7 @@ async function onRobotRequirementChange(event) {
     });
     dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
     renderRobots(result.robots);
-    setMessage("Target requirement updated.", "ok");
+    setMessage("Project requirement updated.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();
