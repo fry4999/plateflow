@@ -264,8 +264,8 @@ function bindEvents() {
   if (els.dashboardPage) {
     els.dashboardPage.addEventListener("pointermove", onDashboardPointerMove);
     els.dashboardPage.addEventListener("pointerleave", () => {
-      els.dashboardPage.style.setProperty("--overview-x", "65%");
-      els.dashboardPage.style.setProperty("--overview-y", "180px");
+      els.appShell?.style.setProperty("--overview-x", "65vw");
+      els.appShell?.style.setProperty("--overview-y", "180px");
     });
   }
   if (els.dialogCancel) els.dialogCancel.addEventListener("click", () => closeDialog(false));
@@ -291,6 +291,7 @@ function syncPageFromHash() {
   const requested = (location.hash || "#dashboard").slice(1);
   const fallback = visiblePages[0].id;
   const active = visiblePages.some((page) => page.id === requested) ? requested : fallback;
+  document.body.classList.toggle("dashboard-active", active === "dashboard");
   els.pages.forEach((page) => {
     const selected = page.id === active;
     page.classList.toggle("active-page", selected);
@@ -305,6 +306,7 @@ function syncPageFromHash() {
 
 function setupEmbeddedPage() {
   if (!embeddedMode) return;
+  document.body.classList.remove("dashboard-active");
   els.pages.forEach((page) => {
     const selected = page.id === "parts";
     page.classList.toggle("active-page", selected);
@@ -483,10 +485,10 @@ function toggleTheme() {
 }
 
 function onDashboardPointerMove(event) {
-  if (!els.dashboardPage) return;
+  if (!els.appShell) return;
   const rect = els.dashboardPage.getBoundingClientRect();
-  els.dashboardPage.style.setProperty("--overview-x", `${Math.max(0, Math.min(window.innerWidth, event.clientX))}px`);
-  els.dashboardPage.style.setProperty("--overview-y", `${Math.max(0, Math.min(rect.height, event.clientY - rect.top))}px`);
+  els.appShell.style.setProperty("--overview-x", `${Math.max(0, Math.min(window.innerWidth, event.clientX))}px`);
+  els.appShell.style.setProperty("--overview-y", `${Math.max(0, Math.min(rect.height, event.clientY - rect.top))}px`);
 }
 
 function hasOnshapeContext() {

@@ -313,7 +313,44 @@ main {
 
 .app-shell {
   display: block;
+  position: relative;
+  isolation: isolate;
   min-height: calc(100vh - 74px);
+  --overview-x: 65vw;
+  --overview-y: 180px;
+}
+
+.app-shell::before {
+  content: "";
+  position: fixed;
+  inset: 72px 0 0;
+  z-index: 0;
+  display: none;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(37, 99, 235, .18), transparent 310px),
+    radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(96, 165, 250, .14), transparent 150px),
+    radial-gradient(rgba(37, 99, 235, .18) 1px, transparent 1px);
+  background-size: auto, auto, 24px 24px;
+  opacity: .72;
+  transition: opacity .2s ease;
+}
+
+body.dashboard-active .app-shell::before {
+  display: block;
+}
+
+[data-theme="dark"] .app-shell::before {
+  background:
+    radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(37, 99, 235, .28), transparent 330px),
+    radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(96, 165, 250, .18), transparent 150px),
+    radial-gradient(rgba(96, 165, 250, .16) 1px, transparent 1px);
+  opacity: .86;
+}
+
+.app-shell > * {
+  position: relative;
+  z-index: 1;
 }
 
 .app-page[hidden] {
@@ -553,40 +590,6 @@ td {
 
 .dashboard {
   align-content: start;
-  position: relative;
-  isolation: isolate;
-  overflow: visible;
-  --overview-x: 65%;
-  --overview-y: 180px;
-}
-
-.dashboard::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: -80px;
-  left: 50%;
-  width: 100vw;
-  z-index: -1;
-  pointer-events: none;
-  transform: translateX(-50%);
-  background:
-    radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(37, 99, 235, .18), transparent 310px),
-    radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(96, 165, 250, .14), transparent 150px),
-    radial-gradient(rgba(37, 99, 235, .18) 1px, transparent 1px);
-  background-size: auto, auto, 24px 24px;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-  opacity: .72;
-  transition: opacity .2s ease;
-}
-
-[data-theme="dark"] .dashboard::before {
-  background:
-    radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(37, 99, 235, .28), transparent 330px),
-    radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(96, 165, 250, .18), transparent 150px),
-    radial-gradient(rgba(96, 165, 250, .16) 1px, transparent 1px);
-  opacity: .86;
 }
 
 .dashboard-greeting {
