@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
     <link rel="icon" href="/plateflow-logo.png">
-    <link rel="stylesheet" href="/styles.css?v=26">
+    <link rel="stylesheet" href="/styles.css?v=27">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -133,11 +133,19 @@
           <button class="button" type="submit">Add item</button>
         </form>
         <div class="table-shell">
+          <div class="table-toolbar inventory-bulkbar">
+            <div>
+              <strong>Catalog actions</strong>
+              <span id="inventorySelectedCount">0 selected</span>
+            </div>
+            <button id="inventoryBulkDeleteButton" class="ghost small danger" type="button" disabled>Delete selected</button>
+          </div>
           <div class="responsive-table">
             <table class="inventory-table">
               <caption>Global inventory catalog</caption>
               <thead>
                 <tr>
+                  <th><input id="inventorySelectAll" type="checkbox" aria-label="Select all visible catalog items"></th>
                   <th>Type</th>
                   <th>Source</th>
                   <th>Part</th>
@@ -146,7 +154,6 @@
                   <th>Material/Vendor</th>
                   <th>Needed</th>
                   <th>On hand</th>
-                  <th>Status</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -381,12 +388,12 @@
         <form id="settingsForm" class="tool-surface settings-form">
           <label class="wide">
             <span>Part number template</span>
-            <input name="template" autocomplete="off" placeholder="{prefix}-{source}-{subsystem}-{part}">
-            <small>Available tokens: {prefix}, {source}, {subsystem}, {part}</small>
+            <input name="template" autocomplete="off" placeholder="{prefix}-{year}-{kind}-{number}-{subsystem}">
+            <small>Available tokens: {prefix}, {year}, {kind}, {number}, {subsystem}, {source}, {part}</small>
           </label>
           <label>
-            <span>Prefix</span>
-            <input name="prefix" autocomplete="off" placeholder="PF">
+            <span>Team prefix</span>
+            <input name="prefix" autocomplete="off" placeholder="4999">
           </label>
           <label>
             <span>Source length</span>
@@ -454,6 +461,11 @@
             <button class="button" type="submit">Create invite</button>
           </form>
           <div id="storageAdminStatus" class="admin-counts">Storage status unavailable.</div>
+          <div class="danger-zone">
+            <h3>Catalog maintenance</h3>
+            <p>Clear all catalog, inventory, queue, and requirement records while keeping users, projects, settings, and audit history.</p>
+            <button id="clearCatalogButton" class="ghost danger" type="button">Clear catalog</button>
+          </div>
           <div id="userList" class="batch-list audit-list">No users loaded.</div>
           <div id="auditLog" class="batch-list audit-list">No audit activity yet.</div>
         </div>
@@ -477,6 +489,6 @@
       </section>
     </div>
 
-    <script src="/app.js?v=26"></script>
+    <script src="/app.js?v=27"></script>
   </body>
 </html>

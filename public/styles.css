@@ -1033,6 +1033,18 @@ textarea {
   justify-content: end;
 }
 
+.inventory-bulkbar {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.inventory-bulkbar > div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
 .responsive-table {
   overflow-x: auto;
 }
@@ -1048,11 +1060,11 @@ textarea {
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1180px;
+  min-width: 1120px;
 }
 
 .inventory-table {
-  min-width: 1180px;
+  min-width: 1120px;
   table-layout: fixed;
 }
 
@@ -1096,27 +1108,27 @@ td input {
 
 .inventory-table th:nth-child(1),
 .inventory-table td:nth-child(1) {
-  width: 64px;
+  width: 42px;
 }
 
 .inventory-table th:nth-child(2),
 .inventory-table td:nth-child(2) {
-  width: 78px;
+  width: 72px;
 }
 
 .inventory-table th:nth-child(3),
 .inventory-table td:nth-child(3) {
-  width: 120px;
+  width: 130px;
 }
 
 .inventory-table th:nth-child(4),
 .inventory-table td:nth-child(4) {
-  width: 220px;
+  width: 320px;
 }
 
 .inventory-table th:nth-child(5),
 .inventory-table td:nth-child(5) {
-  width: 132px;
+  width: 170px;
 }
 
 .inventory-table th:nth-child(8),
@@ -1126,8 +1138,8 @@ td input {
   width: 78px;
 }
 
-.inventory-table th:nth-child(11),
-.inventory-table td:nth-child(11) {
+.inventory-table th:nth-child(10),
+.inventory-table td:nth-child(10) {
   width: 132px;
 }
 
@@ -1139,6 +1151,22 @@ td input {
 .inventory-table .row-actions {
   display: flex;
   gap: 6px;
+}
+
+.danger-zone {
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 12px;
+  margin: 18px 0;
+  padding: 16px;
+}
+
+.danger-zone h3 {
+  margin: 0 0 6px;
+}
+
+.danger-zone p {
+  color: var(--muted);
+  margin: 0 0 12px;
 }
 
 .number-input {

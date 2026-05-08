@@ -64,6 +64,7 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/events") return subscribeEventStream(req, res, session);
     if (url.pathname === "/api/inventory") return withAppAccess(session, res, () => json(res, 200, inventorySnapshot()));
     if (url.pathname === "/api/inventory/items" && req.method === "POST") return withAppAccess(session, res, (user) => createInventoryItem(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
+    if (url.pathname === "/api/inventory/items/bulk-delete" && req.method === "POST") return withAppAccess(session, res, (user) => bulkDeleteInventoryItems(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
     if (url.pathname.startsWith("/api/inventory/items/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), ["admin", "mentor", "purchaser", "fabricator"]);
     if (url.pathname.startsWith("/api/inventory/items/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), ["admin", "mentor", "purchaser", "fabricator"]);
     if (url.pathname === "/api/dashboard") return withAppAccess(session, res, (user) => json(res, 200, dashboardSnapshot(user)));
@@ -82,6 +83,7 @@ createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/admin/users/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateAdminUser(req, res, session, user, pathId(url.pathname, "/api/admin/users/")), ["admin"]);
     if (url.pathname.startsWith("/api/admin/users/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteAdminUser(req, res, session, user, pathId(url.pathname, "/api/admin/users/")), ["admin"]);
     if (url.pathname === "/api/admin/invites" && req.method === "POST") return withAppAccess(session, res, (user) => createInvite(req, res, session, user), ["admin"]);
+    if (url.pathname === "/api/admin/clear-catalog" && req.method === "POST") return withAppAccess(session, res, (user) => clearCatalog(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/admin/remove-placeholder-cots" && req.method === "POST") return withAppAccess(session, res, () => removePlaceholderCots(req, res, session), ["admin"]);
     if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
     if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
@@ -213,8 +215,8 @@ function defaultSettings() {
   return {
     updatedAt: "",
     partNumber: {
-      template: "{prefix}-{source}-{subsystem}-{part}",
-      prefix: "PF",
+      template: "{prefix}-{year}-{kind}-{number}-{subsystem}",
+      prefix: "4999",
       sourceLength: 3,
       subsystemLength: 3,
       partLength: 4
@@ -233,7 +235,7 @@ function defaultSettings() {
 
 function mergeSettings(value) {
   const fallback = defaultSettings();
-  return {
+  const merged = {
     ...fallback,
     ...(value && typeof value === "object" ? value : {}),
     partNumber: {
@@ -249,6 +251,11 @@ function mergeSettings(value) {
       rules: cleanRoutingRules(value?.routing?.rules, fallback.routing.rules)
     }
   };
+  if (!String(merged.partNumber.template || "").includes("{number}")) {
+    merged.partNumber.template = fallback.partNumber.template;
+    if (merged.partNumber.prefix === "PF") merged.partNumber.prefix = fallback.partNumber.prefix;
+  }
+  return merged;
 }
 
 function cleanStringList(value, fallback = [], limit = 40) {
@@ -349,6 +356,7 @@ async function refreshStore() {
   for (const key of Object.keys(store)) delete store[key];
   Object.assign(store, latest);
   let changed = ensureMissingCustomPartNumbers();
+  if (ensureSubassemblyNumbers()) changed = true;
   if (mergeDuplicateInventoryRecords()) changed = true;
   if (removeLikelyPurchasedFromCustomPipeline()) changed = true;
   if (changed) await persistStore();
@@ -363,6 +371,28 @@ function ensureMissingCustomPartNumbers() {
       changed = true;
       return ensureCustomPartNumber(part, record.source || part.source || {}, index);
     });
+  }
+  return changed;
+}
+
+function ensureSubassemblyNumbers() {
+  let changed = false;
+  for (const robot of store.robots || []) {
+    for (const subsystem of robot.subsystems || []) {
+      if (subsystem.type !== "subassembly" && !subsystem.sourceDocumentId) continue;
+      const before = JSON.stringify({
+        numberBlock: subsystem.numberBlock,
+        acronym: subsystem.acronym,
+        assemblyPartNumber: subsystem.assemblyPartNumber
+      });
+      ensureSubassemblyNumbering(robot, subsystem);
+      const after = JSON.stringify({
+        numberBlock: subsystem.numberBlock,
+        acronym: subsystem.acronym,
+        assemblyPartNumber: subsystem.assemblyPartNumber
+      });
+      if (before !== after) changed = true;
+    }
   }
   return changed;
 }
@@ -961,7 +991,7 @@ function applyConfiguredParts(parts, configuredParts, input) {
       const config = byKey.get(part.id) || byKey.get(part.name);
       return {
         ...part,
-        partNumber: config.partNumber || generatePartNumber(input, part, config, index),
+        partNumber: part.partNumber || config.partNumber || "",
         robotId: config.robotId || input.robotId || "",
         subsystemId: input.subassemblyId || "",
         subsystem: input.subassemblyName || config.subsystem || input.documentName || input.sourceTag,
@@ -980,25 +1010,99 @@ function applyConfiguredParts(parts, configuredParts, input) {
 }
 
 function withGeneratedCustomPartNumbers(parts, input) {
-  return parts.map((part, index) => ensureCustomPartNumber(part, input, index));
+  const context = customPartNumberContext(input);
+  return parts.map((part, index) => ensureCustomPartNumber(part, input, index, context));
 }
 
-function ensureCustomPartNumber(part, input = {}, index = 0) {
+function ensureCustomPartNumber(part, input = {}, index = 0, context = customPartNumberContext(input)) {
   if (String(part.partNumber || "").trim()) return part;
+  const existing = existingCustomPartNumber(input, part);
+  if (existing) return { ...part, partNumber: existing };
   return {
     ...part,
-    partNumber: generatePartNumber(input || {}, part, { subsystem: part.subsystem || input.subassemblyName || input.documentName || input.sourceTag || "DOC" }, index)
+    partNumber: generatePartNumber(input || {}, part, { subsystem: part.subsystem || input.subassemblyName || input.documentName || input.sourceTag || "DOC" }, index, context)
   };
 }
 
-function generatePartNumber(input, part, config, index) {
-  const settings = settingsSnapshot().partNumber;
+function generatePartNumber(input, part, config, index, context = customPartNumberContext(input)) {
+  const settings = context.settings;
+  const number = nextCustomNumber(context, index);
   return formatPartNumber(settings, {
     prefix: settings.prefix,
+    year: context.year,
+    kind: "P",
+    number,
+    subsystem: context.acronym,
     source: partNumberCode(input.sourceTag || input.documentName || part.sourceDocument || part.source?.sourceTag || "SRC", settings.sourceLength),
-    subsystem: partNumberCode(config?.subsystem || part.subsystem || input.subassemblyName || input.documentName || input.sourceTag || "DOC", settings.subsystemLength),
     part: partNumberCode(part.name || part.id || String(index + 1), settings.partLength)
   });
+}
+
+function customPartNumberContext(input = {}) {
+  const settings = settingsSnapshot().partNumber;
+  const robot = store.robots.find((item) => item.id === input.robotId);
+  const subsystem = robot?.subsystems?.find((item) => item.id === input.subassemblyId);
+  if (robot && subsystem) ensureSubassemblyNumbering(robot, subsystem);
+  const block = Number(input.subassemblyNumberBlock || subsystem?.numberBlock || 10);
+  const acronym = input.subassemblyAcronym || subsystem?.acronym || subassemblyAcronym(input.subassemblyName || input.documentName || input.sourceTag);
+  return {
+    settings,
+    year: shortSeason(input.season || robot?.season),
+    acronym,
+    block,
+    nextSequence: maxCustomSequenceForSubassembly(input, block) + 1,
+    used: new Set()
+  };
+}
+
+function nextCustomNumber(context, index = 0) {
+  let sequence = Math.max(1, Number(context.nextSequence || 1));
+  let number = "";
+  do {
+    number = String(Number(context.block || 10) * 100 + sequence).padStart(4, "0").slice(-4);
+    sequence += 1;
+  } while (context.used.has(number));
+  context.nextSequence = sequence;
+  context.used.add(number);
+  return number;
+}
+
+function maxCustomSequenceForSubassembly(input = {}, block = 10) {
+  let max = 0;
+  for (const record of store.inventoryRecords || []) {
+    if (record.sourceType !== "custom") continue;
+    for (const part of record.parts || []) {
+      if (input.subassemblyId && part.subsystemId && part.subsystemId !== input.subassemblyId) continue;
+      if (!input.subassemblyId && input.subassemblyName && part.subassemblyName && part.subassemblyName !== input.subassemblyName) continue;
+      const parsed = parsePlatformPartNumber(part.partNumber);
+      if (!parsed || parsed.kind !== "P") continue;
+      if (Math.floor(parsed.number / 100) !== Number(block)) continue;
+      max = Math.max(max, parsed.number % 100);
+    }
+  }
+  return max;
+}
+
+function existingCustomPartNumber(input = {}, part = {}) {
+  const source = part.source || {};
+  const sourcePartId = String(source.partId || part.id || "").trim();
+  if (!sourcePartId) return "";
+  for (const record of store.inventoryRecords || []) {
+    if (record.sourceType !== "custom") continue;
+    for (const existing of record.parts || []) {
+      const existingSource = existing.source || {};
+      if (
+        existingSource.documentId === (source.documentId || input.documentId) &&
+        existingSource.workspaceId === (source.workspaceId || input.workspaceId) &&
+        existingSource.elementId === (source.elementId || input.elementId) &&
+        String(existingSource.partId || existing.id || "") === sourcePartId &&
+        String(existing.partNumber || "").trim()
+      ) {
+        return String(existing.partNumber).trim();
+      }
+    }
+  }
+  return "";
 }
 
 function partNumberCode(value, length) {
@@ -1007,13 +1111,35 @@ function partNumberCode(value, length) {
 }
 
 function formatPartNumber(settings, tokens) {
-  return String(settings.template || "{prefix}-{source}-{subsystem}-{part}")
-    .replace(/\{prefix\}/g, tokens.prefix || "PF")
+  return String(settings.template || "{prefix}-{year}-{kind}-{number}-{subsystem}")
+    .replace(/\{prefix\}/g, tokens.prefix || "4999")
+    .replace(/\{year\}/g, tokens.year || "26")
+    .replace(/\{kind\}/g, tokens.kind || "P")
+    .replace(/\{number\}/g, tokens.number || "0001")
     .replace(/\{source\}/g, tokens.source || "SRC")
     .replace(/\{subsystem\}/g, tokens.subsystem || "GEN")
     .replace(/\{part\}/g, tokens.part || "PART")
     .replace(/[^a-zA-Z0-9_.-]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function formatPlatformPartNumber(tokens) {
+  const settings = settingsSnapshot().partNumber;
+  return formatPartNumber(settings, {
+    prefix: settings.prefix,
+    ...tokens
+  });
+}
+
+function parsePlatformPartNumber(value) {
+  const match = String(value || "").trim().match(/^[^-]+-(\d{2})-([AP])-(\d{4})-([A-Z0-9]{2,})$/i);
+  if (!match) return null;
+  return {
+    year: match[1],
+    kind: match[2].toUpperCase(),
+    number: Number(match[3]),
+    subsystem: match[4].toUpperCase()
+  };
 }
 
 function stockCategory(stock) {
@@ -1283,10 +1409,65 @@ function ensureRobotSubassembly(robotId, input = {}) {
     subsystem.sourceWorkspaceId = input.workspaceId || subsystem.sourceWorkspaceId || "";
     subsystem.sourceElementId = input.elementId || subsystem.sourceElementId || "";
   }
+  ensureSubassemblyNumbering(robot, subsystem);
   input.robotId = robot.id;
+  input.season = robot.season || input.season || "";
   input.subassemblyId = subsystem.id;
   input.subassemblyName = subsystem.name;
+  input.subassemblyNumberBlock = subsystem.numberBlock;
+  input.subassemblyAcronym = subsystem.acronym;
+  input.assemblyPartNumber = subsystem.assemblyPartNumber;
   return subsystem;
+}
+
+function ensureSubassemblyNumbering(robot, subsystem) {
+  if (!Number.isFinite(Number(subsystem.numberBlock)) || Number(subsystem.numberBlock) <= 0) {
+    subsystem.numberBlock = nextSubassemblyNumberBlock(robot, subsystem);
+  }
+  subsystem.acronym = subassemblyAcronym(subsystem.name);
+  subsystem.assemblyPartNumber = formatPlatformPartNumber({
+    kind: "A",
+    year: shortSeason(robot?.season),
+    number: assemblyNumberCode(subsystem.numberBlock),
+    subsystem: subsystem.acronym
+  });
+}
+
+function nextSubassemblyNumberBlock(robot, current) {
+  const used = new Set((robot?.subsystems || [])
+    .filter((item) => item !== current)
+    .map((item) => Number(item.numberBlock))
+    .filter((value) => Number.isFinite(value) && value > 0));
+  for (let block = 10; block <= 90; block += 10) {
+    if (!used.has(block)) return block;
+  }
+  return Math.min(99, Math.max(10, ...used) + 1);
+}
+
+function subassemblyAcronym(value) {
+  const text = String(value || "").toLowerCase();
+  const known = [
+    [/drive|drivetrain/, "DT"],
+    [/shooter/, "ST"],
+    [/intake/, "IT"],
+    [/indexer|index/, "IN"],
+    [/climber|climb/, "CR"],
+    [/bumper/, "BR"],
+    [/main|robot/, "MA"]
+  ];
+  const match = known.find(([pattern]) => pattern.test(text));
+  if (match) return match[1];
+  const words = String(value || "assembly").trim().toUpperCase().match(/[A-Z0-9]+/g) || ["AS"];
+  return words.map((word) => word[0]).join("").slice(0, 2).padEnd(2, "X");
+}
+
+function assemblyNumberCode(numberBlock) {
+  return String(Number(numberBlock || 10) * 100).padStart(4, "0").slice(-4);
+}
+
+function shortSeason(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return (digits.slice(-2) || String(new Date().getFullYear()).slice(-2)).padStart(2, "0");
 }
 
 function shortDocumentId(documentId) {
@@ -2462,6 +2643,30 @@ async function deleteInventoryItem(req, res, session, actor, itemKey) {
   requireCsrf(req, session);
   const match = findInventoryItem(itemKey);
   if (!match) throw httpError(404, "Inventory item not found");
+  const removed = removeInventoryMatch(match);
+  audit("inventory.item_deleted", `Deleted ${removed.name || inventoryItemPartKey(removed)}`, actor.email);
+  await persistStore();
+  return json(res, 200, inventoryMutationSnapshot());
+}
+
+async function bulkDeleteInventoryItems(req, res, session, actor) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  const itemKeys = [...new Set((Array.isArray(body.itemKeys) ? body.itemKeys : []).map((key) => String(key || "").trim()).filter(Boolean))].slice(0, 500);
+  if (!itemKeys.length) throw httpError(400, "Select at least one catalog item to delete");
+  const removed = [];
+  for (const itemKey of itemKeys) {
+    const match = findInventoryItem(itemKey);
+    if (!match) continue;
+    removed.push(removeInventoryMatch(match));
+  }
+  if (!removed.length) throw httpError(404, "Selected catalog items were already gone");
+  audit("inventory.items_bulk_deleted", `Deleted ${removed.length} catalog item${removed.length === 1 ? "" : "s"}`, actor.email);
+  await persistStore();
+  return json(res, 200, { ...inventoryMutationSnapshot(), deleted: removed.length });
+}
+
+function removeInventoryMatch(match) {
   const [removed] = match.record.parts.splice(match.partIndex, 1);
   match.record.updatedAt = new Date().toISOString();
   const catalog = findCatalogPartForInventoryPart(removed, match.record.sourceType);
@@ -2473,9 +2678,7 @@ async function deleteInventoryItem(req, res, session, actor, itemKey) {
   }
   removeUnusedCatalogPart(removed, match.record.sourceType);
   removeRequirementsForInventoryPart(match.record.id, removed);
-  audit("inventory.item_deleted", `Deleted ${removed.name || inventoryItemPartKey(removed)}`, actor.email);
-  await persistStore();
-  return json(res, 200, inventoryMutationSnapshot());
+  return removed;
 }
 
 function inventoryMutationSnapshot() {
@@ -2632,6 +2835,33 @@ async function removePlaceholderCots(req, res, session) {
   audit("admin.cleanup_placeholder_cots", `Removed placeholder COTS data: ${JSON.stringify(removed)}`, session.user?.label || "user");
   await persistStore();
   return json(res, 200, { removed });
+}
+
+async function clearCatalog(req, res, session, actor) {
+  requireCsrf(req, session);
+  const body = await readJson(req);
+  if (body.confirm !== "CLEAR") throw httpError(400, "Type CLEAR to confirm catalog clearing");
+  const removed = {
+    inventoryRecords: store.inventoryRecords.length,
+    catalogParts: store.catalogParts.length,
+    requirements: store.requirements.length,
+    reservations: store.reservations.length,
+    fabricationJobs: store.fabricationJobs.length,
+    procurementOrders: store.procurementOrders.length,
+    syncBatches: store.syncBatches.length
+  };
+  store.inventoryRecords = [];
+  store.catalogParts = [];
+  store.requirements = [];
+  store.reservations = [];
+  store.fabricationJobs = [];
+  store.procurementOrders = [];
+  store.syncBatches = [];
+  store.fileArtifacts = [];
+  store.vendorMatches = [];
+  audit("admin.catalog_cleared", `Cleared catalog data: ${JSON.stringify(removed)}`, actor.email);
+  await persistStore();
+  return json(res, 200, { ...inventoryMutationSnapshot(), removed });
 }
 
 function adminUsersSnapshot() {
@@ -2807,11 +3037,11 @@ function validateSettings(body) {
   const partNumber = body?.partNumber || body || {};
   const routing = body?.routing || {};
   const template = String(partNumber.template || existing.partNumber.template).trim().slice(0, 120);
-  const prefix = String(partNumber.prefix ?? existing.partNumber.prefix).trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12) || "PF";
+  const prefix = String(partNumber.prefix ?? existing.partNumber.prefix).trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12) || "4999";
   const sourceLength = boundedInteger(partNumber.sourceLength, existing.partNumber.sourceLength, 1, 12);
   const subsystemLength = boundedInteger(partNumber.subsystemLength, existing.partNumber.subsystemLength, 1, 12);
   const partLength = boundedInteger(partNumber.partLength, existing.partNumber.partLength, 1, 16);
-  if (!template.includes("{part}")) throw httpError(400, "Part number template must include {part}");
+  if (!template.includes("{number}")) throw httpError(400, "Part number template must include {number}");
   return {
     partNumber: {
       template,

@@ -15,6 +15,7 @@ let dashboardRevision = 0;
 let realtimeSource = null;
 let realtimePollTimer = null;
 let realtimeReconnectTimer = null;
+let selectedInventoryItems = new Set();
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -74,6 +75,9 @@ const els = {
   inventorySort: document.querySelector("#inventorySort"),
   inventoryForm: document.querySelector("#inventoryForm"),
   inventoryBody: document.querySelector("#inventoryBody"),
+  inventorySelectAll: document.querySelector("#inventorySelectAll"),
+  inventorySelectedCount: document.querySelector("#inventorySelectedCount"),
+  inventoryBulkDeleteButton: document.querySelector("#inventoryBulkDeleteButton"),
   robotForm: document.querySelector("#robotForm"),
   robotList: document.querySelector("#robotList"),
   robotWorkspace: document.querySelector("#robotWorkspace"),
@@ -99,6 +103,7 @@ const els = {
   settingsForm: document.querySelector("#settingsForm"),
   settingsSavedStatus: document.querySelector("#settingsSavedStatus"),
   storageAdminStatus: document.querySelector("#storageAdminStatus"),
+  clearCatalogButton: document.querySelector("#clearCatalogButton"),
   summaryParts: document.querySelector("#summaryParts"),
   summaryQty: document.querySelector("#summaryQty"),
   summaryMaterials: document.querySelector("#summaryMaterials"),
@@ -238,7 +243,11 @@ function bindEvents() {
   if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", renderCurrentInventoryTable);
   if (els.inventorySort) els.inventorySort.addEventListener("change", renderCurrentInventoryTable);
   if (els.inventoryBody) els.inventoryBody.addEventListener("click", onInventoryAction);
+  if (els.inventoryBody) els.inventoryBody.addEventListener("change", onInventorySelectionChange);
   if (els.inventoryBody) els.inventoryBody.addEventListener("input", onInventoryCellInput);
+  if (els.inventorySelectAll) els.inventorySelectAll.addEventListener("change", onInventorySelectAllChange);
+  if (els.inventoryBulkDeleteButton) els.inventoryBulkDeleteButton.addEventListener("click", onInventoryBulkDelete);
+  if (els.clearCatalogButton) els.clearCatalogButton.addEventListener("click", onClearCatalog);
   if (els.dialogCancel) els.dialogCancel.addEventListener("click", () => closeDialog(false));
   if (els.dialogConfirm) els.dialogConfirm.addEventListener("click", () => closeDialog(true));
   if (els.dialogBackdrop) els.dialogBackdrop.addEventListener("click", (event) => {
@@ -692,12 +701,54 @@ function onGeneratePartNumber() {
 
 function generateClientPartNumber(part) {
   const settings = dashboardState?.settings?.partNumber || defaultPartNumberSettings();
+  const context = clientPartNumberContext(part);
   return formatPartNumber(settings, {
-    prefix: settings.prefix || "PF",
+    prefix: settings.prefix || "4999",
+    year: context.year,
+    kind: "P",
+    number: context.number,
+    subsystem: context.acronym,
     source: partNumberCode(source?.sourceTag || source?.documentName || "SRC", settings.sourceLength),
-    subsystem: partNumberCode(subassemblyNameFromSource() || els.configSubsystem?.value || "GEN", settings.subsystemLength),
     part: partNumberCode(part.name || part.id || "part", settings.partLength)
   });
+}
+
+function clientPartNumberContext(part) {
+  const robot = (dashboardState?.robots || []).find((item) => item.id === (els.configRobot?.value || selectedRobotId));
+  const name = subassemblyNameFromSource();
+  const existing = robotSubassemblies(robot).find((item) => (
+    item.sourceDocumentId && source?.documentId && item.sourceDocumentId === source.documentId
+  )) || robotSubassemblies(robot).find((item) => item.name === name);
+  const block = Number(existing?.numberBlock || (robotSubassemblies(robot).length + 1) * 10 || 10);
+  const configurable = eligibleImportParts();
+  const partIndex = Math.max(0, configurable.findIndex((item) => (item.id || item.name) === (part?.id || part?.name)));
+  return {
+    year: shortSeason(robot?.season || new Date().getFullYear()),
+    acronym: existing?.acronym || subassemblyAcronym(name),
+    number: String(block * 100 + partIndex + 1).padStart(4, "0")
+  };
+}
+
+function shortSeason(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return (digits.slice(-2) || String(new Date().getFullYear()).slice(-2)).padStart(2, "0");
+}
+
+function subassemblyAcronym(value) {
+  const text = String(value || "").toLowerCase();
+  const known = [
+    [/drive|drivetrain/, "DT"],
+    [/shooter/, "ST"],
+    [/intake/, "IT"],
+    [/indexer|index/, "IN"],
+    [/climber|climb/, "CR"],
+    [/bumper/, "BR"],
+    [/main|robot/, "MA"]
+  ];
+  const match = known.find(([pattern]) => pattern.test(text));
+  if (match) return match[1];
+  const words = String(value || "assembly").trim().toUpperCase().match(/[A-Z0-9]+/g) || ["AS"];
+  return words.map((word) => word[0]).join("").slice(0, 2).padEnd(2, "X");
 }
 
 function partNumberCode(value, length) {
@@ -707,8 +758,8 @@ function partNumberCode(value, length) {
 
 function defaultPartNumberSettings() {
   return {
-    template: "{prefix}-{source}-{subsystem}-{part}",
-    prefix: "PF",
+    template: "{prefix}-{year}-{kind}-{number}-{subsystem}",
+    prefix: "4999",
     sourceLength: 3,
     subsystemLength: 3,
     partLength: 4
@@ -716,8 +767,11 @@ function defaultPartNumberSettings() {
 }
 
 function formatPartNumber(settings, tokens) {
-  return String(settings.template || "{prefix}-{source}-{subsystem}-{part}")
-    .replace(/\{prefix\}/g, tokens.prefix || "PF")
+  return String(settings.template || "{prefix}-{year}-{kind}-{number}-{subsystem}")
+    .replace(/\{prefix\}/g, tokens.prefix || "4999")
+    .replace(/\{year\}/g, tokens.year || "26")
+    .replace(/\{kind\}/g, tokens.kind || "P")
+    .replace(/\{number\}/g, tokens.number || "0001")
     .replace(/\{source\}/g, tokens.source || "SRC")
     .replace(/\{subsystem\}/g, tokens.subsystem || "GEN")
     .replace(/\{part\}/g, tokens.part || "PART")
@@ -788,19 +842,23 @@ async function submitConfiguredParts(selectedParts, options = {}) {
     els.configStock?.focus();
     return;
   }
-  const configuredParts = selected.map((item) => ({
-    id: item.id || "",
-    partKey: item.id || item.name || "",
-    name: item.name || "",
-    robotId,
-    subsystem: subassemblyNameFromSource(),
-    thickness: item.thickness || "",
-    materialType: item.material || "",
-    stock,
-    machine: els.configMachine?.value || "Router",
-    partNumber: selected.length === 1 ? (els.configPartNumber?.value || generateClientPartNumber(item)) : generateClientPartNumber(item),
-    quantity: Math.max(1, Number(options.forceQuantityFromConfigurator ? els.configQuantity?.value || item.quantity || 1 : item.quantity || 1))
-  }));
+  const configuredParts = selected.map((item) => {
+    const generated = generateClientPartNumber(item);
+    const typed = selected.length === 1 ? String(els.configPartNumber?.value || "").trim() : "";
+    return {
+      id: item.id || "",
+      partKey: item.id || item.name || "",
+      name: item.name || "",
+      robotId,
+      subsystem: subassemblyNameFromSource(),
+      thickness: item.thickness || "",
+      materialType: item.material || "",
+      stock,
+      machine: els.configMachine?.value || "Router",
+      partNumber: typed && typed !== generated ? typed : "",
+      quantity: Math.max(1, Number(options.forceQuantityFromConfigurator ? els.configQuantity?.value || item.quantity || 1 : item.quantity || 1))
+    };
+  });
   const confirmed = await confirmAction({
     title: selected.length === 1 ? "Import custom part?" : "Import custom parts?",
     body: `Send ${selected.length} checked custom part${selected.length === 1 ? "" : "s"} to ${subassemblyNameFromSource()} as a new revision.${cotsLike.length ? ` ${cotsLike.length} belt/COTS-like row${cotsLike.length === 1 ? "" : "s"} will stay out of fabrication.` : ""}`,
@@ -1025,7 +1083,7 @@ function renderSettings(settings) {
   const partNumber = settings?.partNumber || defaultPartNumberSettings();
   const routing = settings?.routing || defaultRoutingSettings();
   els.settingsForm.elements.template.value = partNumber.template || "";
-  els.settingsForm.elements.prefix.value = partNumber.prefix || "PF";
+  els.settingsForm.elements.prefix.value = partNumber.prefix || "4999";
   els.settingsForm.elements.sourceLength.value = Number(partNumber.sourceLength || 3);
   els.settingsForm.elements.subsystemLength.value = Number(partNumber.subsystemLength || 3);
   els.settingsForm.elements.partLength.value = Number(partNumber.partLength || 4);
@@ -1102,6 +1160,7 @@ function renderCurrentInventoryTable() {
 
 function renderInventoryTable(items) {
   if (!els.inventoryBody) return;
+  syncInventorySelection(items);
   const query = (els.inventorySearch?.value || "").trim().toLowerCase();
   const typeFilter = els.inventoryTypeFilter?.value || "";
   const documentFilter = els.inventoryDocumentFilter?.value || "";
@@ -1117,7 +1176,6 @@ function renderInventoryTable(items) {
     part.vendor,
     part.vendorSku,
     part.process,
-    part.status,
     part.sourceDocument,
     part.sourceDocumentName
   ].join(" ").toLowerCase().includes(query))
@@ -1126,11 +1184,13 @@ function renderInventoryTable(items) {
 
   if (!visible.length) {
     els.inventoryBody.innerHTML = `<tr><td colspan="10" class="empty">No matching inventory.</td></tr>`;
+    updateInventorySelectionControls([]);
     return;
   }
 
   els.inventoryBody.innerHTML = visible.map((part) => `
     <tr data-item-key="${escapeAttr(part.itemKey)}" data-source-type="${escapeAttr(part.sourceType || part.type || "custom")}">
+      <td><input type="checkbox" data-action="select-inventory" data-item-key="${escapeAttr(part.itemKey)}" aria-label="Select ${escapeAttr(part.name || "catalog item")}" ${selectedInventoryItems.has(part.itemKey) ? "checked" : ""}></td>
       <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
       <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span><small class="revision-note" title="${escapeAttr(revisionTooltip(part))}">${escapeHtml(revisionLabel(part))}</small></td>
       <td><input class="part-name-input" data-field="name" size="${partNameInputSize(part.name)}" value="${escapeAttr(part.name || "")}" aria-label="Part name"></td>
@@ -1139,19 +1199,57 @@ function renderInventoryTable(items) {
       <td><input data-field="${part.sourceType === "cots" ? "vendor" : "material"}" value="${escapeAttr(part.sourceType === "cots" ? part.vendor || "" : [part.material, part.thickness].filter(Boolean).join(" "))}" aria-label="${part.sourceType === "cots" ? "Vendor" : "Material"}"></td>
       <td>${neededCell(part)}</td>
       <td><input class="number-input" data-field="onHand" type="number" min="0" value="${Number(part.onHand || 0)}" aria-label="On hand"></td>
-      <td><input data-field="status" value="${escapeAttr(part.status || "needed")}" aria-label="Status"></td>
       <td class="row-actions">
         <button class="ghost small" type="button" data-action="save-inventory">Save</button>
         <button class="ghost small danger" type="button" data-action="delete-inventory">Delete</button>
       </td>
     </tr>
   `).join("");
+  updateInventorySelectionControls(visible);
 }
 
 function onInventoryCellInput(event) {
   const input = event.target.closest(".part-name-input");
   if (!input) return;
   input.size = partNameInputSize(input.value);
+}
+
+function syncInventorySelection(items = []) {
+  const valid = new Set(items.map((item) => item.itemKey).filter(Boolean));
+  selectedInventoryItems = new Set([...selectedInventoryItems].filter((key) => valid.has(key)));
+}
+
+function updateInventorySelectionControls(visible = []) {
+  const visibleKeys = visible.map((item) => item.itemKey).filter(Boolean);
+  const selectedVisible = visibleKeys.filter((key) => selectedInventoryItems.has(key));
+  if (els.inventorySelectAll) {
+    els.inventorySelectAll.checked = Boolean(visibleKeys.length && selectedVisible.length === visibleKeys.length);
+    els.inventorySelectAll.indeterminate = Boolean(selectedVisible.length && selectedVisible.length < visibleKeys.length);
+    els.inventorySelectAll.disabled = !visibleKeys.length;
+  }
+  if (els.inventorySelectedCount) {
+    els.inventorySelectedCount.textContent = `${selectedInventoryItems.size} selected`;
+  }
+  if (els.inventoryBulkDeleteButton) {
+    els.inventoryBulkDeleteButton.disabled = selectedInventoryItems.size === 0;
+  }
+}
+
+function onInventorySelectionChange(event) {
+  const input = event.target.closest("input[data-action='select-inventory']");
+  if (!input) return;
+  const key = input.dataset.itemKey || "";
+  if (!key) return;
+  if (input.checked) selectedInventoryItems.add(key);
+  else selectedInventoryItems.delete(key);
+  renderCurrentInventoryTable();
+}
+
+function onInventorySelectAllChange(event) {
+  const keys = [...els.inventoryBody.querySelectorAll("tr[data-item-key]")].map((row) => row.dataset.itemKey).filter(Boolean);
+  if (event.target.checked) keys.forEach((key) => selectedInventoryItems.add(key));
+  else keys.forEach((key) => selectedInventoryItems.delete(key));
+  renderCurrentInventoryTable();
 }
 
 function partNameInputSize(value) {
@@ -1282,7 +1380,7 @@ function renderSubassemblyCard(robot, subassembly) {
       <div class="card-head">
         <div>
           <h3>${escapeHtml(subassembly.name)}</h3>
-          <p>${Number(subassembly.counts?.requirements || subassembly.partsNeeded || 0)} part${Number(subassembly.counts?.requirements || subassembly.partsNeeded || 0) === 1 ? "" : "s"} · ${Number(subassembly.counts?.fabricationJobs || 0)} fab</p>
+          <p>${escapeHtml(subassembly.assemblyPartNumber || "")}${subassembly.assemblyPartNumber ? " · " : ""}${Number(subassembly.counts?.requirements || subassembly.partsNeeded || 0)} part${Number(subassembly.counts?.requirements || subassembly.partsNeeded || 0) === 1 ? "" : "s"} · ${Number(subassembly.counts?.fabricationJobs || 0)} fab</p>
         </div>
         <strong>${escapeHtml(counts.label)}</strong>
       </div>
@@ -1661,6 +1759,29 @@ async function onInventoryAction(event) {
   }
 }
 
+async function onInventoryBulkDelete() {
+  const itemKeys = [...selectedInventoryItems];
+  if (!itemKeys.length) return;
+  const confirmed = await confirmAction({
+    title: "Delete selected catalog items?",
+    body: `Delete ${itemKeys.length} selected catalog item${itemKeys.length === 1 ? "" : "s"}? This removes their inventory rows, queue cards, and project requirements.`,
+    confirmLabel: "Delete selected",
+    danger: true
+  });
+  if (!confirmed) return;
+  try {
+    const result = await api("/api/inventory/items/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({ itemKeys })
+    });
+    selectedInventoryItems.clear();
+    applyInventoryMutation(result);
+    setMessage(`Deleted ${Number(result.deleted || itemKeys.length)} catalog item${Number(result.deleted || itemKeys.length) === 1 ? "" : "s"}.`, "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
 function applyInventoryMutation(result) {
   dashboardState = {
     ...(dashboardState || {}),
@@ -1678,6 +1799,32 @@ function applyInventoryMutation(result) {
   renderDocumentFilter(result.inventory);
 }
 
+async function onClearCatalog() {
+  const typed = await openDialog({
+    kicker: "Admin action",
+    title: "Clear catalog?",
+    body: "This permanently clears all catalog items, inventory records, queue cards, procurement groups, sync batches, and project requirements. Users, projects, settings, and audit history stay.",
+    inputLabel: "Type CLEAR to continue",
+    confirmLabel: "Clear catalog",
+    danger: true
+  });
+  if (typed !== "CLEAR") {
+    if (typed) setMessage("Catalog clear canceled. Type CLEAR exactly to confirm.", "error");
+    return;
+  }
+  try {
+    const result = await api("/api/admin/clear-catalog", {
+      method: "POST",
+      body: JSON.stringify({ confirm: typed })
+    });
+    selectedInventoryItems.clear();
+    applyInventoryMutation(result);
+    setMessage("Catalog cleared.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
 async function onSettingsSave(event) {
   event.preventDefault();
   const form = Object.fromEntries(new FormData(els.settingsForm).entries());
@@ -1687,7 +1834,7 @@ async function onSettingsSave(event) {
       body: JSON.stringify({
         partNumber: {
           template: form.template,
-          prefix: form.prefix,
+          prefix: form.prefix || "4999",
           sourceLength: Number(form.sourceLength),
           subsystemLength: Number(form.subsystemLength),
           partLength: Number(form.partLength)
