@@ -23,6 +23,7 @@ const config = {
   onshapeCacheTtlMs: Number(process.env.ONSHAPE_CACHE_TTL_MS || 10 * 60 * 1000),
   frcToolsSearchUrl: process.env.FRC_TOOLS_SEARCH_URL || "https://orders.frctools.com/api/vendors/search",
   frcToolsMatchTtlMs: Number(process.env.FRC_TOOLS_MATCH_TTL_MS || 12 * 60 * 60 * 1000),
+  vendorMatchTtlMs: Number(process.env.VENDOR_MATCH_TTL_MS || process.env.FRC_TOOLS_MATCH_TTL_MS || 12 * 60 * 60 * 1000),
   trustProxy: process.env.TRUST_PROXY === "true",
   prod: process.env.NODE_ENV === "production"
 };
@@ -43,6 +44,14 @@ const allowedProcurementVendorRules = [
   { name: "WCP", patterns: [/wcproducts/i, /west\s*coast\s*products/i, /\bwcp\b/i] },
   { name: "Andymark", patterns: [/andymark/i, /andy\s*mark/i] },
   { name: "McMaster-Carr", patterns: [/mcmaster/i, /mcmaster-carr/i] }
+];
+
+const procurementVendorAdapters = [
+  { vendor: "REV", type: "bigcommerce", baseUrl: "https://www.revrobotics.com" },
+  { vendor: "The Thrifty Bot", type: "shopify", baseUrl: "https://www.thethriftybot.com" },
+  { vendor: "WCP", type: "shopify", baseUrl: "https://wcproducts.com" },
+  { vendor: "Andymark", type: "shopify", baseUrl: "https://www.andymark.com" },
+  { vendor: "McMaster-Carr", type: "direct", baseUrl: "https://www.mcmaster.com" }
 ];
 
 const mime = {
@@ -2101,7 +2110,7 @@ async function hydrateProcurementOrderMatches(order, options = {}) {
   const stats = { lookedUp: 0, matched: 0, cached: 0 };
   for (const line of order.lines) {
     const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId) || {};
-    const match = await frcToolsVendorMatch({ ...catalog, ...line }, options);
+    const match = await plateflowVendorMatch({ ...catalog, ...line }, options);
     if (match?.cached) stats.cached += 1;
     if (match && !match.error && !["unmatched", "lookup_failed"].includes(match.matchType)) stats.matched += 1;
     if (match) stats.lookedUp += 1;
@@ -2135,13 +2144,183 @@ function procurementLineInScope(line, options = {}) {
   return true;
 }
 
+async function plateflowVendorMatch(part, options = {}) {
+  const query = procurementQuery(part);
+  if (!query) return null;
+  const sku = procurementSku(part);
+  const candidates = procurementVendorCandidates(part);
+  const vendor = candidates[0] || "Unassigned";
+  const key = `plateflow-vendor:${normalizeKey(vendor)}:${normalizeKey(query)}`;
+  const now = Date.now();
+  const cached = store.vendorMatches.find((item) => item.id === key);
+  if (cached && !options.force && Number(cached.expiresAtMs || 0) > now && (cached.matchType === "unmatched" || allowedProcurementVendor(cached))) {
+    return { ...cached, cached: true };
+  }
+
+  const updatedAt = new Date().toISOString();
+  if (!candidates.length) {
+    const unmatched = unmatchedVendorResult(key, query, part, vendor, updatedAt);
+    upsertVendorMatch(unmatched);
+    return unmatched;
+  }
+
+  let lastError = "";
+  for (const candidate of candidates) {
+    const adapter = procurementVendorAdapters.find((item) => item.vendor === candidate);
+    if (!adapter) continue;
+    try {
+      const match = await lookupVendorAdapter(adapter, part, query, sku, updatedAt);
+      if (match && trustedProcurementMatchStatus(match.matchType)) {
+        const exact = { ...match, id: key, query, expiresAtMs: now + config.vendorMatchTtlMs };
+        upsertVendorMatch(exact);
+        return exact;
+      }
+    } catch (error) {
+      lastError = String(error.message || error).slice(0, 180);
+    }
+  }
+
+  const unmatched = unmatchedVendorResult(key, query, part, vendor, updatedAt, lastError);
+  upsertVendorMatch(unmatched);
+  return unmatched;
+}
+
+function unmatchedVendorResult(id, query, part, vendor, updatedAt, error = "") {
+  return {
+    id,
+    source: "plateflow-vendor",
+    query,
+    title: "",
+    sku: procurementSku(part),
+    vendor: vendor === "Unassigned" ? canonicalProcurementVendor(part?.vendor) || "Unassigned" : vendor,
+    productUrl: "",
+    searchUrl: vendorSearchLink(vendor, query),
+    unitPriceCents: null,
+    confidence: 0,
+    matchType: error ? "lookup_failed" : "unmatched",
+    error,
+    updatedAt,
+    expiresAtMs: Date.now() + (error ? 15 * 60 * 1000 : config.vendorMatchTtlMs)
+  };
+}
+
+function procurementVendorCandidates(part) {
+  return [...new Set([
+    canonicalProcurementVendor(part?.vendor || part?.vendorName || part?.vendorUrl || part?.productUrl),
+    inferredVendorFromSku(procurementSku(part)),
+    canonicalProcurementVendor(part?.name)
+  ].filter(Boolean))];
+}
+
+function inferredVendorFromSku(sku) {
+  const normalized = String(sku || "").trim().toLowerCase();
+  if (/^rev[-_]/.test(normalized)) return "REV";
+  if (/^wcp[-_]/.test(normalized)) return "WCP";
+  if (/^am[-_]/.test(normalized)) return "Andymark";
+  if (/^ttb[-_]/.test(normalized)) return "The Thrifty Bot";
+  if (/^mcmaster[-_]/.test(normalized) || /^\d+[a-z]\d+/i.test(sku || "")) return "McMaster-Carr";
+  return "";
+}
+
+async function lookupVendorAdapter(adapter, part, query, sku, updatedAt) {
+  if (adapter.type === "shopify") return lookupShopifyVendor(adapter, part, query, sku, updatedAt);
+  if (adapter.type === "bigcommerce") return lookupRevVendor(adapter, part, query, sku, updatedAt);
+  if (adapter.type === "direct") return lookupDirectVendor(adapter, part, query, sku, updatedAt);
+  return null;
+}
+
+async function lookupShopifyVendor(adapter, part, query, sku, updatedAt) {
+  if (!sku) return null;
+  const url = new URL(`${adapter.baseUrl}/search/suggest.json`);
+  url.searchParams.set("q", sku || query);
+  url.searchParams.set("resources[type]", "product");
+  url.searchParams.set("resources[limit]", "4");
+  url.searchParams.set("resources[options][fields]", "title,variants.sku,vendor");
+  const payload = await fetchVendorJson(url);
+  const products = Array.isArray(payload?.resources?.results?.products) ? payload.resources.results.products : [];
+  for (const summary of products) {
+    const handle = shopifyHandle(summary.url);
+    if (!handle) continue;
+    const product = await fetchVendorJson(`${adapter.baseUrl}/products/${handle}.js`);
+    const variant = Array.isArray(product?.variants)
+      ? product.variants.find((item) => normalizeSku(item?.sku) === normalizeSku(sku))
+      : null;
+    if (!variant) continue;
+    const productUrl = new URL(summary.url || product.url || `/products/${handle}`, adapter.baseUrl);
+    productUrl.searchParams.set("variant", String(variant.id || ""));
+    return {
+      source: "plateflow-vendor",
+      title: String(product.title || summary.title || part?.name || "").slice(0, 180),
+      sku: String(variant.sku || sku).slice(0, 100),
+      vendor: adapter.vendor,
+      productUrl: productUrl.toString(),
+      searchUrl: vendorSearchLink(adapter.vendor, sku || query),
+      unitPriceCents: shopifyPriceCents(variant.price ?? product.price ?? summary.price),
+      currency: "USD",
+      variantId: String(variant.id || "").slice(0, 120),
+      variantTitle: String(variant.title || "").slice(0, 160),
+      confidence: 1,
+      matchType: "sku_exact",
+      updatedAt
+    };
+  }
+  return null;
+}
+
+async function lookupRevVendor(adapter, part, query, sku, updatedAt) {
+  if (!sku) return null;
+  const url = new URL("/search.php", adapter.baseUrl);
+  url.searchParams.set("search_query", sku);
+  const html = await fetchVendorText(url);
+  const cards = html.match(/<article\b[\s\S]*?<\/article>/gi) || [];
+  for (const card of cards.slice(0, 12)) {
+    const cardSku = htmlDecode((card.match(/data-test-info-type="sku"[^>]*>\s*([\s\S]*?)\s*<\/div>/i)?.[1] || "").trim());
+    if (normalizeSku(cardSku) !== normalizeSku(sku)) continue;
+    const linkMatch = card.match(/class="card-title"[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+    const priceMatch = card.match(/data-product-price-without-tax[^>]*class="[^"]*price[^"]*"[^>]*>\s*([^<]+)\s*<\/span>/i)
+      || card.match(/class="[^"]*price--main[^"]*"[^>]*>\s*([^<]+)\s*<\/span>/i)
+      || card.match(/\$\s*\d[\d,.]*/);
+    return {
+      source: "plateflow-vendor",
+      title: stripHtml(htmlDecode(linkMatch?.[2] || part?.name || "")).slice(0, 180),
+      sku: cardSku || sku,
+      vendor: adapter.vendor,
+      productUrl: htmlDecode(linkMatch?.[1] || vendorSearchLink(adapter.vendor, sku)),
+      searchUrl: vendorSearchLink(adapter.vendor, sku || query),
+      unitPriceCents: centsFromPrice(Array.isArray(priceMatch) ? priceMatch[1] || priceMatch[0] : ""),
+      currency: "USD",
+      confidence: 1,
+      matchType: "sku_exact",
+      updatedAt
+    };
+  }
+  return null;
+}
+
+function lookupDirectVendor(adapter, part, query, sku, updatedAt) {
+  if (!sku) return null;
+  return {
+    source: "plateflow-vendor",
+    title: String(part?.name || sku).slice(0, 180),
+    sku,
+    vendor: adapter.vendor,
+    productUrl: vendorSearchLink(adapter.vendor, sku),
+    searchUrl: vendorSearchLink(adapter.vendor, sku || query),
+    unitPriceCents: null,
+    currency: "USD",
+    confidence: 0.8,
+    matchType: "sku_exact",
+    updatedAt
+  };
+}
+
 function applyProcurementMatch(line, catalog, match) {
   const quantity = Number(line.quantityNeeded || catalog.quantityNeeded || 1);
   if (!match || match.error || !trustedProcurementMatchStatus(match.matchType)) {
     const sku = procurementSku(line) || procurementSku(catalog);
     line.vendorUrl = "";
     line.productUrl = "";
-    line.searchUrl = match?.searchUrl || frcToolsSearchLink(sku || line.name || catalog.name);
+    line.searchUrl = match?.searchUrl || vendorSearchLink(line.vendor || catalog.vendor, sku || line.name || catalog.name);
     line.matchedTitle = "";
     line.unitPriceCents = null;
     line.totalPriceCents = null;
@@ -2149,7 +2328,7 @@ function applyProcurementMatch(line, catalog, match) {
     line.matchError = match?.error || "";
     return;
   }
-  const vendor = canonicalProcurementVendor(match.vendor || match.vendorHostname || match.productUrl) || match.vendor || line.vendor || catalog.vendor || "Unassigned";
+  const vendor = canonicalProcurementVendor(match.vendor || match.vendorHostname || match.productUrl) || "Unassigned";
   const sku = line.vendorSku || match.sku || catalog.vendorSku || catalog.manufacturerSku || "";
   Object.assign(line, {
     vendor,
@@ -2334,6 +2513,18 @@ function frcToolsSearchLink(query) {
   return url.toString();
 }
 
+function vendorSearchLink(vendor, query) {
+  const canonical = canonicalProcurementVendor(vendor) || vendor;
+  const value = String(query || "").trim();
+  const encoded = encodeURIComponent(value);
+  if (canonical === "REV") return `https://www.revrobotics.com/search.php?search_query=${encoded}`;
+  if (canonical === "WCP") return `https://wcproducts.com/search?q=${encoded}`;
+  if (canonical === "Andymark") return `https://www.andymark.com/search?q=${encoded}`;
+  if (canonical === "The Thrifty Bot") return `https://www.thethriftybot.com/search?q=${encoded}`;
+  if (canonical === "McMaster-Carr") return value ? `https://www.mcmaster.com/${encoded}` : "https://www.mcmaster.com/";
+  return "";
+}
+
 function upsertVendorMatch(match) {
   const index = store.vendorMatches.findIndex((item) => item.id === match.id);
   if (index >= 0) store.vendorMatches.splice(index, 1, match);
@@ -2354,6 +2545,26 @@ function stripHtml(value) {
 
 function normalizeSku(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function shopifyHandle(urlValue) {
+  const match = String(urlValue || "").match(/\/products\/([^?/#]+)/);
+  return match ? match[1] : "";
+}
+
+function shopifyPriceCents(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Math.round(value);
+  return centsFromPrice(value);
+}
+
+function htmlDecode(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
 }
 
 function allowedProcurementVendor(value = {}) {
@@ -2430,7 +2641,7 @@ function procurementLines() {
         manufacturerSku: line.manufacturerSku || catalog.manufacturerSku || "",
         productUrl: trusted ? line.productUrl || line.vendorUrl || catalog.productUrl || catalog.vendorUrl || "" : "",
         vendorUrl: trusted ? line.vendorUrl || catalog.vendorUrl || "" : "",
-        searchUrl: line.searchUrl || frcToolsSearchLink(sku || line.name || catalog.name),
+        searchUrl: line.searchUrl || vendorSearchLink(vendor, sku || line.name || catalog.name),
         variantTitle: trusted ? line.variantTitle || "" : "",
         quantityNeeded: quantity,
         quantityOrdered: Number(line.quantityOrdered || 0),
@@ -2493,13 +2704,7 @@ function findProcurementLine(lineKey) {
 
 function inferredProcurementVendor(line, catalog) {
   const sku = String(line.vendorSku || catalog.vendorSku || line.partNumber || catalog.partNumber || line.manufacturerSku || catalog.manufacturerSku || "").trim();
-  const normalized = sku.toLowerCase();
-  if (/^rev[-_]/.test(normalized)) return "REV";
-  if (/^wcp[-_]/.test(normalized)) return "WCP";
-  if (/^am[-_]/.test(normalized)) return "Andymark";
-  if (/^ttb[-_]/.test(normalized)) return "The Thrifty Bot";
-  if (/^mcmaster[-_]/.test(normalized) || /^\d+[a-z]\d+/i.test(sku)) return "McMaster-Carr";
-  return canonicalProcurementVendor(line.vendor || catalog.vendor || "") || "Unassigned";
+  return inferredVendorFromSku(sku) || canonicalProcurementVendor(line.vendor || catalog.vendor || "") || "Unassigned";
 }
 
 function buildVendorBuckets(lines) {
@@ -3046,14 +3251,7 @@ function normalizePropertyName(value) {
 }
 
 function vendorLink(vendor, sku, name) {
-  const query = encodeURIComponent(sku || name || "");
-  const normalized = String(vendor || "").toLowerCase();
-  if (normalized.includes("rev")) return `https://www.revrobotics.com/search?q=${query}`;
-  if (normalized.includes("wcp") || normalized.includes("west coast")) return `https://wcproducts.com/search?q=${query}`;
-  if (normalized.includes("andymark")) return `https://andymark.com/search?q=${query}`;
-  if (normalized.includes("ttb") || normalized.includes("thrifty")) return `https://www.thethriftybot.com/search?q=${query}`;
-  if (normalized.includes("mcmaster")) return `https://www.mcmaster.com/${query}`;
-  return "";
+  return vendorSearchLink(vendor, sku || name || "");
 }
 
 async function exportStep(req, res, session) {
@@ -4148,6 +4346,34 @@ async function onshapeBlob(accessToken, url) {
     bytes: Buffer.from(await response.arrayBuffer()),
     contentType: response.headers.get("content-type")
   };
+}
+
+async function fetchVendorJson(url, timeoutMs = 6000) {
+  const response = await fetchVendor(url, timeoutMs);
+  if (!response.ok) throw new Error(`Vendor lookup returned ${response.status}`);
+  return response.json();
+}
+
+async function fetchVendorText(url, timeoutMs = 6000) {
+  const response = await fetchVendor(url, timeoutMs);
+  if (!response.ok) throw new Error(`Vendor lookup returned ${response.status}`);
+  return response.text();
+}
+
+async function fetchVendor(url, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json,text/html;q=0.9,*/*;q=0.8",
+        "User-Agent": "PlateFlow procurement matcher (FRC team inventory)"
+      }
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function fetchJson(url, options = {}) {
