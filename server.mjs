@@ -212,6 +212,15 @@ function defaultSettings() {
       sourceLength: 3,
       subsystemLength: 3,
       partLength: 4
+    },
+    routing: {
+      materials: ["Polycarbonate Smoked", "Polycarbonate Clear", "Aluminum", "Aluminium", "6061 Aluminum", "5052 Aluminum"],
+      stockTypes: ["Sheet/Plate", "Tube 1x1", "Tube 1x2", "Tube 2x2", "Spacer Stock", "Churro", "Rounded Hex"],
+      machines: ["Router", "Fabworks"],
+      rules: [
+        { match: "polycarbonate", machines: ["Router"], stockTypes: ["Sheet/Plate"] },
+        { match: "aluminum,aluminium", machines: ["Fabworks"], stockTypes: ["Sheet/Plate", "Tube 1x1", "Tube 1x2", "Tube 2x2", "Spacer Stock", "Churro", "Rounded Hex"] }
+      ]
     }
   };
 }
@@ -224,8 +233,32 @@ function mergeSettings(value) {
     partNumber: {
       ...fallback.partNumber,
       ...(value?.partNumber && typeof value.partNumber === "object" ? value.partNumber : {})
+    },
+    routing: {
+      ...fallback.routing,
+      ...(value?.routing && typeof value.routing === "object" ? value.routing : {}),
+      materials: cleanStringList(value?.routing?.materials, fallback.routing.materials, 40),
+      stockTypes: cleanStringList(value?.routing?.stockTypes, fallback.routing.stockTypes, 40),
+      machines: cleanStringList(value?.routing?.machines, fallback.routing.machines, 40),
+      rules: cleanRoutingRules(value?.routing?.rules, fallback.routing.rules)
     }
   };
+}
+
+function cleanStringList(value, fallback = [], limit = 40) {
+  if (!Array.isArray(value)) return fallback;
+  const clean = value.map((item) => String(item || "").trim().slice(0, 80)).filter(Boolean);
+  return [...new Set(clean)].slice(0, limit);
+}
+
+function cleanRoutingRules(value, fallback = []) {
+  if (!Array.isArray(value)) return fallback;
+  const rules = value.map((rule) => ({
+    match: String(rule?.match || "").trim().toLowerCase().slice(0, 120),
+    machines: cleanStringList(rule?.machines, [], 12),
+    stockTypes: cleanStringList(rule?.stockTypes, [], 20)
+  })).filter((rule) => rule.match);
+  return rules.slice(0, 40);
 }
 
 function defaultStore() {
@@ -240,6 +273,7 @@ function defaultStore() {
         id: "robot-2026",
         season: "2026",
         name: "2026 Robot",
+        targetType: "robot",
         status: "active",
         subsystems: [
           { id: "drive", name: "Drive", lead: "", status: "designing" },
@@ -732,6 +766,7 @@ async function importOnshape(req, res, session) {
   const accessToken = await ensureAccessToken(session);
   const base = normalizeOnshapeBase(input.baseUrl);
   await enrichSourceInfo(accessToken, base, input);
+  if (!body.previewOnly && input.robotId) ensureRobotSubassembly(input.robotId, input);
 
   const params = new URLSearchParams({
     elementId: input.elementId,
@@ -756,7 +791,8 @@ async function importOnshape(req, res, session) {
   );
   if (!normalized.length) throw httpError(400, "Select at least one custom part to submit");
   const saved = await saveInventory(input, normalized, "custom", "Part Studio custom sync", { mergeParts: Boolean(configuredParts.length) });
-  return json(res, 200, { parts: normalized, source: input, inventory: saved });
+  const requirementResult = input.robotId ? await syncRobotRequirementsFromRecord(input.robotId, saved, normalized, "custom", session.user?.label || "onshape") : { added: 0 };
+  return json(res, 200, { parts: normalized, source: input, inventory: saved, requirements: requirementResult });
 }
 
 function normalizeConfiguredParts(value) {
@@ -772,6 +808,7 @@ function normalizeConfiguredParts(value) {
       id,
       partKey,
       name: String(item.name || "").trim().slice(0, 140),
+      robotId: String(item.robotId || "").trim().slice(0, 80),
       subsystem: String(item.subsystem || "").trim().slice(0, 120),
       thickness: String(item.thickness || "").trim().slice(0, 40),
       materialType: String(item.materialType || item.material || "").trim().slice(0, 120),
@@ -797,7 +834,10 @@ function applyConfiguredParts(parts, configuredParts, input) {
       return {
         ...part,
         partNumber: config.partNumber || generatePartNumber(input, part, config, index),
-        subsystem: config.subsystem,
+        robotId: config.robotId || input.robotId || "",
+        subsystemId: input.subassemblyId || "",
+        subsystem: input.subassemblyName || config.subsystem || input.documentName || input.sourceTag,
+        subassemblyName: input.subassemblyName || input.documentName || input.sourceTag,
         thickness: config.thickness || part.thickness,
         material: config.materialType || part.material,
         stock: config.stock,
@@ -819,7 +859,7 @@ function ensureCustomPartNumber(part, input = {}, index = 0) {
   if (String(part.partNumber || "").trim()) return part;
   return {
     ...part,
-    partNumber: generatePartNumber(input || {}, part, { subsystem: part.subsystem || "GEN" }, index)
+    partNumber: generatePartNumber(input || {}, part, { subsystem: part.subsystem || input.subassemblyName || input.documentName || input.sourceTag || "DOC" }, index)
   };
 }
 
@@ -828,7 +868,7 @@ function generatePartNumber(input, part, config, index) {
   return formatPartNumber(settings, {
     prefix: settings.prefix,
     source: partNumberCode(input.sourceTag || input.documentName || part.sourceDocument || part.source?.sourceTag || "SRC", settings.sourceLength),
-    subsystem: partNumberCode(config?.subsystem || part.subsystem || "GEN", settings.subsystemLength),
+    subsystem: partNumberCode(config?.subsystem || part.subsystem || input.subassemblyName || input.documentName || input.sourceTag || "DOC", settings.subsystemLength),
     part: partNumberCode(part.name || part.id || String(index + 1), settings.partLength)
   });
 }
@@ -1018,20 +1058,23 @@ async function importCots(req, res, session) {
   const suppliedRows = Array.isArray(body.rows) && body.rows.length ? body.rows : null;
   let accessToken = "";
   if (suppliedRows) {
-    input.documentName = input.sourceTag || shortDocumentId(input.documentId);
+    input.documentName = input.documentName || input.sourceTag || shortDocumentId(input.documentId);
     input.sourceTag = input.sourceTag || input.documentName;
   } else {
     accessToken = await ensureAccessToken(session);
     await enrichSourceInfo(accessToken, base, input);
   }
+  if (input.robotId) ensureRobotSubassembly(input.robotId, input);
 
   const rows = suppliedRows || await fetchAssemblyBomRows(accessToken, base, input);
   if (!rows.length) {
     throw httpError(404, "No Assembly BOM rows were returned by Onshape for this tab.");
   }
   const normalized = rows.slice(0, 200).map((row, index) => normalizeCotsRow(row, input, index));
+  if (body.previewOnly) return json(res, 200, { parts: normalized, source: input });
   const saved = await saveInventory(input, normalized, "cots", "Assembly BOM procurement sync");
-  return json(res, 200, { parts: normalized, source: input, inventory: saved });
+  const requirementResult = input.robotId ? await syncRobotRequirementsFromRecord(input.robotId, saved, normalized, "cots", session.user?.label || "onshape") : { added: 0 };
+  return json(res, 200, { parts: normalized, source: input, inventory: saved, requirements: requirementResult });
 }
 
 async function fetchAssemblyBomRows(accessToken, base, input) {
@@ -1075,6 +1118,43 @@ async function enrichSourceInfo(accessToken, base, input) {
     input.documentName = "";
   }
   input.sourceTag = String(input.sourceTag || input.documentName || fallback).trim().slice(0, 80) || fallback;
+}
+
+function subassemblyNameForSource(input = {}) {
+  return String(input.documentName || input.sourceTag || shortDocumentId(input.documentId)).trim().slice(0, 120) || "Onshape document";
+}
+
+function ensureRobotSubassembly(robotId, input = {}) {
+  const robot = store.robots.find((item) => item.id === robotId);
+  if (!robot) throw httpError(404, "Select a robot or project before importing to a workspace");
+  robot.subsystems = Array.isArray(robot.subsystems) ? robot.subsystems : [];
+  const name = subassemblyNameForSource(input);
+  const sourceDocumentId = String(input.documentId || "");
+  let subsystem = robot.subsystems.find((item) => item.sourceDocumentId && item.sourceDocumentId === sourceDocumentId);
+  if (!subsystem) {
+    const slug = normalizeKey(name).slice(0, 36);
+    subsystem = {
+      id: `subasm-${slug}-${randomBytes(3).toString("hex")}`,
+      type: "subassembly",
+      name,
+      lead: "",
+      status: "active",
+      sourceDocumentId,
+      sourceWorkspaceId: input.workspaceId || "",
+      sourceElementId: input.elementId || "",
+      createdAt: new Date().toISOString()
+    };
+    robot.subsystems.push(subsystem);
+  } else {
+    subsystem.name = name;
+    subsystem.type = subsystem.type || "subassembly";
+    subsystem.sourceWorkspaceId = input.workspaceId || subsystem.sourceWorkspaceId || "";
+    subsystem.sourceElementId = input.elementId || subsystem.sourceElementId || "";
+  }
+  input.robotId = robot.id;
+  input.subassemblyId = subsystem.id;
+  input.subassemblyName = subsystem.name;
+  return subsystem;
 }
 
 function shortDocumentId(documentId) {
@@ -1145,6 +1225,7 @@ function fabricationStatusByCatalogPart(batchId) {
 }
 
 function inventorySnapshot() {
+  ensureIndividualFabricationJobs();
   const records = [...store.inventoryRecords].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const parts = records.flatMap((record) => record.parts.map((part) => {
     const catalog = findCatalogPartForInventoryPart(part, record.sourceType) || {};
@@ -1185,7 +1266,7 @@ function inventorySnapshot() {
       raw: store.rawMaterials.length,
       materials: new Set(parts.map((part) => part.material || "Unassigned")).size,
       procurement: parts.filter((part) => part.sourceType === "cots").length,
-      fabrication: parts.filter((part) => part.sourceType === "custom").length,
+      fabrication: store.fabricationJobs.filter((job) => job.status !== "canceled").length,
       lowStock: store.rawMaterials.filter((stock) => Number(stock.remainingQuantity || 0) <= 1).length
     },
     documents: [...new Set(parts.map((part) => part.sourceDocument || "Unassigned"))].sort()
@@ -1268,7 +1349,7 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
   const existing = store.catalogParts.find((item) => item.identity === identity);
   const next = {
     ...(existing || {}),
-    id: existing?.id || `part-${randomBytes(6).toString("hex")}`,
+      id: existing?.id || `part-${randomBytes(6).toString("hex")}`,
     identity,
     sourceType,
     type: sourceType,
@@ -1283,7 +1364,10 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     sourceDocument: part.sourceDocument || part.source?.sourceTag || "",
     sourceDocumentName: part.sourceDocumentName || part.source?.documentName || "",
     partNumber: part.partNumber || "",
+    robotId: part.robotId || existing?.robotId || "",
+    subsystemId: part.subsystemId || existing?.subsystemId || "",
     subsystem: part.subsystem || "",
+    subassemblyName: part.subassemblyName || part.subsystem || "",
     stock: part.stock || "",
     machine: part.machine || part.process || "",
     process: part.process || "",
@@ -1329,6 +1413,9 @@ function upsertOperationalQueue(batchId, sourceType, catalogParts, previousFabSt
       id: `F-${batchId.slice(2)}-${String(index + 1).padStart(2, "0")}`,
       syncBatchId: batchId,
       status: previousFabStatus.get(part.id) || "todo",
+      robotId: part.robotId || "",
+      subsystemId: part.subsystemId || "",
+      subassemblyName: part.subassemblyName || part.subsystem || "",
       grouping: groupCustomParts([part]),
       lines: [
         {
@@ -1336,7 +1423,10 @@ function upsertOperationalQueue(batchId, sourceType, catalogParts, previousFabSt
           name: part.name,
           material: part.material,
           thickness: part.thickness,
+          robotId: part.robotId || "",
+          subsystemId: part.subsystemId || "",
           subsystem: part.subsystem,
+          subassemblyName: part.subassemblyName || part.subsystem || "",
           stock: part.stock,
           process: part.process || "unknown",
           machine: part.machine || part.process || "unknown",
@@ -1447,7 +1537,7 @@ function dashboardSnapshot(user = null) {
         const lines = Array.isArray(order.lines) ? order.lines : Array.isArray(order.parts) ? order.parts : [];
         return sum + lines.reduce((lineSum, line) => lineSum + Number(line.quantityOrdered || line.quantity || 0), 0);
       }, 0),
-      partsInFabrication: customParts.length,
+      partsInFabrication: store.fabricationJobs.filter((job) => job.status !== "canceled").length,
       partsReceivedToday: 0,
       lowStockAlerts: inventory.totals.lowStock,
       activeRobots: robots.length,
@@ -1486,6 +1576,7 @@ function robotSnapshot() {
     const readiness = Math.round(procurementProgress * 0.4 + fabricationProgress * 0.35 + receiveInstallProgress * 0.25);
     return {
       ...robot,
+      targetType: robot.targetType || "robot",
       readiness,
       counts: {
         requirements: requirements.length,
@@ -1502,16 +1593,39 @@ function robotSnapshot() {
         receivedInstalled: receiveInstallProgress
       },
       requirements: requirements.map(publicRequirement),
-      subsystems: robot.subsystems.map((subsystem, index) => ({
-        ...subsystem,
-        readiness: Math.max(0, readiness - index * 4),
-        partsNeeded: Math.ceil(requirements.length / Math.max(1, robot.subsystems.length)),
-        procurementProgress,
-        fabricationProgress,
-        receivedInstalledProgress: receiveInstallProgress
-      }))
+      subsystems: robot.subsystems.map((subsystem) => subsystemSnapshot(robot, subsystem, requirements))
     };
   });
+}
+
+function subsystemSnapshot(robot, subsystem, robotRequirements) {
+  const requirements = robotRequirements.filter((requirement) => requirement.subsystemId === subsystem.id || requirement.subsystem === subsystem.name);
+  const customRequirements = requirements.filter((requirement) => requirement.sourceType === "custom");
+  const cotsRequirements = requirements.filter((requirement) => requirement.sourceType === "cots");
+  const procurementProgress = requirements.length && !cotsRequirements.length ? 100 : percentComplete(cotsRequirements, (requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1));
+  const fabricationProgress = requirements.length && !customRequirements.length ? 100 : percentComplete(customRequirements, (requirement) => ["received", "installed", "completed"].includes(requirement.status));
+  const receiveInstallProgress = percentComplete(requirements, (requirement) => Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1));
+  const readiness = requirements.length ? Math.round(procurementProgress * 0.4 + fabricationProgress * 0.35 + receiveInstallProgress * 0.25) : 0;
+  const jobs = store.fabricationJobs.filter((job) => {
+    if (job.status === "canceled") return false;
+    const line = Array.isArray(job.lines) ? job.lines[0] : {};
+    return (job.robotId === robot.id || line.robotId === robot.id) && (job.subsystemId === subsystem.id || line.subsystemId === subsystem.id || line.subsystem === subsystem.name);
+  });
+  return {
+    ...subsystem,
+    readiness,
+    partsNeeded: requirements.length,
+    procurementProgress,
+    fabricationProgress,
+    receivedInstalledProgress: receiveInstallProgress,
+    counts: {
+      requirements: requirements.length,
+      custom: customRequirements.length,
+      cots: cotsRequirements.length,
+      fabricationJobs: jobs.length,
+      ready: requirements.filter((requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1)).length
+    }
+  };
 }
 
 function percentComplete(items, complete) {
@@ -1540,6 +1654,8 @@ function publicRequirement(requirement) {
     robotId: requirement.robotId,
     inventoryRecordId: requirement.inventoryRecordId,
     name: requirement.name,
+    subsystemId: requirement.subsystemId || "",
+    subsystem: requirement.subsystem || "",
     sourceType: requirement.sourceType,
     sourceDocument: requirement.sourceDocument,
     vendor: requirement.vendor,
@@ -1665,6 +1781,10 @@ function normalizeCotsRow(row, input, index) {
     status: "needed",
     procurementStatus: "needed",
     vendorUrl: vendorLink(vendor, vendorSku || manufacturerSku, name),
+    robotId: input.robotId || "",
+    subsystemId: input.subassemblyId || "",
+    subsystem: input.subassemblyName || input.documentName || input.sourceTag,
+    subassemblyName: input.subassemblyName || input.documentName || input.sourceTag,
     sourceDocument: input.sourceTag,
     sourceDocumentName: input.documentName || input.sourceTag,
     source: {
@@ -1793,22 +1913,24 @@ async function createRobot(req, res, session, actor) {
   const body = await readJson(req);
   const name = String(body.name || "").trim().slice(0, 80);
   const season = String(body.season || new Date().getFullYear()).replace(/[^0-9]/g, "").slice(0, 4);
-  if (!name) throw httpError(400, "Robot name is required");
+  const targetType = String(body.targetType || body.type || "robot").trim() === "project" ? "project" : "robot";
+  if (!name) throw httpError(400, "Target name is required");
   if (!season) throw httpError(400, "Season is required");
   const robot = {
-    id: `robot-${season}-${randomBytes(4).toString("hex")}`,
+    id: `${targetType}-${season}-${randomBytes(4).toString("hex")}`,
     season,
     name,
+    targetType,
     status: "active",
-    subsystems: [
+    subsystems: targetType === "robot" ? [
       { id: `drive-${randomBytes(2).toString("hex")}`, name: "Drive", lead: "", status: "designing" },
       { id: `intake-${randomBytes(2).toString("hex")}`, name: "Intake", lead: "", status: "designing" },
       { id: `shooter-${randomBytes(2).toString("hex")}`, name: "Shooter", lead: "", status: "designing" }
-    ],
+    ] : [],
     createdAt: new Date().toISOString()
   };
   store.robots.unshift(robot);
-  audit("robot.created", `Created robot ${robot.name}`, actor.email);
+  audit("target.created", `Created ${targetType} ${robot.name}`, actor.email);
   await persistStore();
   return json(res, 201, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
 }
@@ -1816,10 +1938,10 @@ async function createRobot(req, res, session, actor) {
 async function deleteRobot(req, res, session, actor, robotId) {
   requireCsrf(req, session);
   const index = store.robots.findIndex((robot) => robot.id === robotId);
-  if (index === -1) throw httpError(404, "Robot not found");
+  if (index === -1) throw httpError(404, "Target not found");
   const [robot] = store.robots.splice(index, 1);
   store.requirements = store.requirements.filter((requirement) => requirement.robotId !== robotId);
-  audit("robot.deleted", `Deleted robot ${robot.name}`, actor.email);
+  audit("target.deleted", `Deleted ${robot.targetType || "target"} ${robot.name}`, actor.email);
   await persistStore();
   return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
 }
@@ -1827,28 +1949,53 @@ async function deleteRobot(req, res, session, actor, robotId) {
 async function attachRobotRequirements(req, res, session, actor, robotId) {
   requireCsrf(req, session);
   const robot = store.robots.find((item) => item.id === robotId);
-  if (!robot) throw httpError(404, "Robot not found");
+  if (!robot) throw httpError(404, "Target not found");
   const body = await readJson(req);
   const inventoryRecordId = String(body.inventoryRecordId || "").trim();
   const record = store.inventoryRecords.find((item) => item.id === inventoryRecordId && item.sourceType === "cots");
   if (!record) throw httpError(404, "Select a synced Assembly BOM source first");
+  const result = await syncRobotRequirementsFromRecord(robotId, record, record.parts, record.sourceType, actor.email);
+  return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot(), added: result.added });
+}
+
+async function syncRobotRequirementsFromRecord(robotId, record, selectedParts = record.parts, sourceType = record.sourceType, actor = "onshape") {
+  const robot = store.robots.find((item) => item.id === robotId);
+  if (!robot) throw httpError(404, "Target not found");
+  const input = { ...(record.source || {}), robotId };
+  const subassembly = ensureRobotSubassembly(robotId, input);
   const now = new Date().toISOString();
+  const selectedKeys = new Set((selectedParts || []).map((part) => inventoryItemPartKey(part) || part.id || part.name));
   let added = 0;
   for (const part of record.parts) {
-    const key = `${robotId}:${record.id}:${part.id || part.name}`;
-    if (store.requirements.some((requirement) => requirement.key === key)) continue;
+    const partKey = inventoryItemPartKey(part) || part.id || part.name;
+    if (selectedKeys.size && !selectedKeys.has(partKey)) continue;
+    const key = `${robotId}:${subassembly.id}:${record.id}:${partKey}`;
+    const quantityNeeded = Math.max(1, Number(part.quantityNeeded || part.quantity || 1));
+    const existing = store.requirements.find((requirement) => requirement.key === key);
+    if (existing) {
+      existing.name = part.name;
+      existing.subsystemId = subassembly.id;
+      existing.subsystem = subassembly.name;
+      existing.quantityNeeded = quantityNeeded;
+      existing.updatedAt = now;
+      continue;
+    }
     store.requirements.push({
       id: `req-${randomBytes(6).toString("hex")}`,
       key,
       robotId,
+      subsystemId: subassembly.id,
+      subsystem: subassembly.name,
       inventoryRecordId: record.id,
-      sourceType: record.sourceType,
+      sourceType,
       sourceDocument: part.sourceDocument || record.source?.sourceTag || record.source?.documentName || shortDocumentId(record.source?.documentId),
       name: part.name,
       vendor: part.vendor || "",
       vendorSku: part.vendorSku || "",
       material: part.material || "",
-      quantityNeeded: Math.max(1, Number(part.quantity || 1)),
+      partNumber: part.partNumber || "",
+      quantityNeeded,
+      quantityMade: 0,
       quantityReceived: 0,
       quantityInstalled: 0,
       status: "needed",
@@ -1857,15 +2004,15 @@ async function attachRobotRequirements(req, res, session, actor, robotId) {
     });
     added += 1;
   }
-  audit("robot.requirements_attached", `Attached ${added} BOM item${added === 1 ? "" : "s"} to ${robot.name}`, actor.email);
+  audit("robot.requirements_attached", `Attached ${added} ${sourceType === "custom" ? "custom part" : "BOM item"}${added === 1 ? "" : "s"} to ${robot.name} / ${subassembly.name}`, actor);
   await persistStore();
-  return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot(), added });
+  return { added, subassembly };
 }
 
 async function updateRobotRequirement(req, res, session, actor, ids) {
   requireCsrf(req, session);
   const robot = store.robots.find((item) => item.id === ids.robotId);
-  if (!robot) throw httpError(404, "Robot not found");
+  if (!robot) throw httpError(404, "Target not found");
   const requirement = store.requirements.find((item) => item.id === ids.requirementId && item.robotId === ids.robotId);
   if (!requirement) throw httpError(404, "Requirement not found");
   const body = await readJson(req);
@@ -2328,6 +2475,7 @@ function validateProcurementStatus(value) {
 function validateSettings(body) {
   const existing = settingsSnapshot();
   const partNumber = body?.partNumber || body || {};
+  const routing = body?.routing || {};
   const template = String(partNumber.template || existing.partNumber.template).trim().slice(0, 120);
   const prefix = String(partNumber.prefix ?? existing.partNumber.prefix).trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 12) || "PF";
   const sourceLength = boundedInteger(partNumber.sourceLength, existing.partNumber.sourceLength, 1, 12);
@@ -2341,6 +2489,12 @@ function validateSettings(body) {
       sourceLength,
       subsystemLength,
       partLength
+    },
+    routing: {
+      materials: cleanStringList(routing.materials, existing.routing.materials, 80),
+      stockTypes: cleanStringList(routing.stockTypes, existing.routing.stockTypes, 80),
+      machines: cleanStringList(routing.machines, existing.routing.machines, 80),
+      rules: cleanRoutingRules(routing.rules, existing.routing.rules)
     }
   };
 }
@@ -2372,7 +2526,8 @@ function downloadBlob(res, session, id) {
 async function inventoryItemThumbnail(res, session, itemKey) {
   const match = findInventoryItem(itemKey);
   if (!match) return placeholderThumbnail(res, "Missing");
-  const cached = imageFromDataUrl(match.part.previewDataUrl || match.part.source?.previewDataUrl);
+  const canUseCached = match.record.sourceType !== "custom" || match.part.source?.previewScope === "part";
+  const cached = canUseCached ? imageFromDataUrl(match.part.previewDataUrl || match.part.source?.previewDataUrl) : null;
   if (cached?.bytes?.length) {
     res.writeHead(200, {
       "Content-Type": cached.contentType,
@@ -2412,7 +2567,7 @@ async function cacheInventoryPreview(match, preview) {
   if (!/^image\//i.test(contentType) || !preview.bytes?.length || preview.bytes.length > 350_000) return;
   const dataUrl = `data:${contentType};base64,${preview.bytes.toString("base64")}`;
   match.part.previewDataUrl = dataUrl;
-  match.part.source = { ...(match.part.source || {}), previewDataUrl: dataUrl };
+  match.part.source = { ...(match.part.source || {}), previewDataUrl: dataUrl, previewScope: "part" };
   match.record.updatedAt = new Date().toISOString();
   const catalog = findCatalogPartForInventoryPart(match.part, match.record.sourceType);
   if (catalog) {
@@ -2427,31 +2582,59 @@ async function fetchOnshapePartPreview(session, record, part) {
   if (!source.documentId || !source.workspaceId || !source.elementId) return null;
   const accessToken = await ensureAccessToken(session);
   const base = normalizeOnshapeBase(source.baseUrl || record.source?.baseUrl || config.onshapeApiBase);
-  const storedPreview = await fetchOnshapePreviewHref(accessToken, base, part.previewHref || source.previewHref);
-  if (storedPreview?.bytes?.length) return storedPreview;
-  const params = new URLSearchParams({
+  const baseParams = new URLSearchParams({
     outputWidth: "160",
     outputHeight: "160",
     pixelSize: "0"
   });
-  if (source.partId) params.set("partIds", source.partId);
-  if (source.configuration) params.set("configuration", source.configuration);
+  if (source.configuration) baseParams.set("configuration", source.configuration);
   const workspacePath = source.workspacePath || record.source?.workspacePath || "w";
   const workspaceId = source.workspaceId || record.source?.workspaceId;
-  const urls = [
-    `${base}/api/v6/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`,
-    `${base}/api/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`
-  ];
-  for (const url of urls) {
-    try {
-      const result = await onshapeJson(accessToken, url);
-      const image = normalizeImagePayload(extractShadedImagePayload(result, source.partId));
-      if (image?.bytes?.length) return image;
-    } catch (error) {
-      if (![400, 404].includes(Number(error.status || 0))) throw error;
+  const encodedPartId = encodeURIComponent(source.partId || "");
+  const urls = [];
+  if (source.partId) {
+    for (const key of ["partIds", "partId", "ids"]) {
+      const params = new URLSearchParams(baseParams);
+      params.set(key, source.partId);
+      urls.push(`${base}/api/v6/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`);
+      urls.push(`${base}/api/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${params}`);
     }
+    urls.push(`${base}/api/v6/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/partid/${encodedPartId}/shadedviews?${baseParams}`);
+    urls.push(`${base}/api/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/partid/${encodedPartId}/shadedviews?${baseParams}`);
   }
+  urls.push(`${base}/api/v6/partstudios/d/${source.documentId}/${workspacePath}/${workspaceId}/e/${source.elementId}/shadedviews?${baseParams}`);
+  for (const url of urls) {
+    const image = await fetchOnshapeShadedView(accessToken, url, source.partId);
+    if (image?.bytes?.length) return image;
+  }
+  const storedPreview = await fetchOnshapePreviewHref(accessToken, base, part.previewHref || source.previewHref);
+  if (storedPreview?.bytes?.length) return storedPreview;
   return null;
+}
+
+async function fetchOnshapeShadedView(accessToken, url, partId = "") {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "image/*,application/json;q=0.8,*/*;q=0.4",
+        Authorization: `Bearer ${accessToken}`
+      }
+    });
+    if (!response.ok) {
+      if ([400, 404].includes(response.status)) return null;
+      throw httpError(response.status, await response.text());
+    }
+    const contentType = response.headers.get("content-type") || "";
+    if (/^image\//i.test(contentType)) {
+      return { bytes: Buffer.from(await response.arrayBuffer()), contentType };
+    }
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : {};
+    return normalizeImagePayload(extractShadedImagePayload(data, partId));
+  } catch (error) {
+    if ([400, 404].includes(Number(error.status || 0))) return null;
+    throw error;
+  }
 }
 
 async function fetchOnshapePreviewHref(accessToken, base, href) {
@@ -2549,6 +2732,8 @@ function validateImport(body) {
     workspaceId: String(body.workspaceId || body.wid || "").trim(),
     workspaceOrVersion: String(body.workspaceOrVersion || "w").trim().toLowerCase(),
     elementId: String(body.elementId || body.eid || "").trim(),
+    robotId: String(body.robotId || "").trim().slice(0, 80),
+    documentName: String(body.documentName || "").trim().slice(0, 120),
     configuration: String(body.configuration || "").trim(),
     sourceTag: String(body.sourceTag || body.documentTag || "").trim().slice(0, 80),
     baseUrl: String(body.baseUrl || config.onshapeApiBase).trim()

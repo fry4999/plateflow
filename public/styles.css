@@ -172,6 +172,7 @@ caption {
   border-radius: 8px;
   font-weight: 700;
   cursor: pointer;
+  transition: transform .14s ease, border-color .14s ease, background .14s ease, box-shadow .14s ease, opacity .14s ease;
 }
 
 .button {
@@ -182,6 +183,7 @@ caption {
 
 .button:hover {
   background: var(--blue-dark);
+  transform: translateY(-1px);
 }
 
 .button.danger {
@@ -202,6 +204,16 @@ caption {
   color: var(--ink);
   border-color: var(--line);
   background: white;
+}
+
+.ghost:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--blue) 46%, var(--line));
+}
+
+.button:active,
+.ghost:active {
+  transform: translateY(0);
 }
 
 [data-theme="dark"] .ghost {
@@ -534,7 +546,7 @@ td {
 }
 
 #inventory {
-  max-width: min(1880px, calc(100vw - 24px));
+  max-width: min(1420px, calc(100vw - 28px));
   padding-left: 24px;
   padding-right: 24px;
 }
@@ -576,6 +588,56 @@ td {
   margin-top: 8px;
   font-size: 42px;
   line-height: 1;
+}
+
+.overview-robot-panel {
+  display: grid;
+  grid-template-columns: minmax(260px, .7fr) minmax(0, 1.3fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.overview-robot-card,
+.subassembly-card,
+.overview-empty {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.overview-robot-card h3,
+.overview-robot-card p,
+.subassembly-card h3,
+.subassembly-card p,
+.robot-subassemblies h4,
+.robot-requirements h4 {
+  margin: 0;
+}
+
+.subassembly-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.subassembly-card {
+  display: grid;
+  gap: 12px;
+  cursor: pointer;
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+
+.subassembly-card:hover,
+.subassembly-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(96, 165, 250, .62);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, .12);
+}
+
+[data-theme="dark"] .subassembly-card:hover,
+[data-theme="dark"] .subassembly-card:focus-visible {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .32);
 }
 
 .section-heading h2 {
@@ -653,6 +715,12 @@ td {
 }
 
 .requirement-list {
+  display: grid;
+  gap: 18px;
+}
+
+.robot-subassemblies,
+.robot-requirements {
   display: grid;
   gap: 10px;
 }
@@ -783,7 +851,16 @@ td {
 }
 
 .settings-form {
-  grid-template-columns: minmax(260px, 2fr) repeat(4, minmax(120px, 1fr)) auto minmax(150px, .8fr);
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+}
+
+.settings-form .wide {
+  grid-column: span 2;
+}
+
+.settings-form button,
+.settings-form .settings-status {
+  align-self: end;
 }
 
 .settings-status {
@@ -823,6 +900,7 @@ select {
   background: white;
   color: var(--ink);
   font: inherit;
+  transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
 }
 
 [data-theme="dark"] input,
@@ -919,16 +997,23 @@ textarea {
   border-bottom: 1px solid var(--line);
 }
 
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: end;
+}
+
 .responsive-table {
   overflow-x: auto;
 }
 
 #inventory .table-shell {
-  overflow: visible;
+  overflow: hidden;
 }
 
 #inventory .responsive-table {
-  overflow-x: visible;
+  overflow-x: auto;
 }
 
 table {
@@ -938,8 +1023,8 @@ table {
 }
 
 .inventory-table {
-  min-width: 0;
-  table-layout: auto;
+  min-width: 1180px;
+  table-layout: fixed;
 }
 
 th,
@@ -974,22 +1059,57 @@ td input {
 
 .inventory-table th,
 .inventory-table td {
-  padding: 10px 12px;
+  padding: 9px 10px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+.inventory-table th:nth-child(1),
+.inventory-table td:nth-child(1) {
+  width: 64px;
+}
+
+.inventory-table th:nth-child(2),
+.inventory-table td:nth-child(2) {
+  width: 78px;
+}
+
+.inventory-table th:nth-child(3),
+.inventory-table td:nth-child(3) {
+  width: 120px;
+}
+
+.inventory-table th:nth-child(4),
 .inventory-table td:nth-child(4) {
-  width: 1%;
+  width: 220px;
+}
+
+.inventory-table th:nth-child(5),
+.inventory-table td:nth-child(5) {
+  width: 132px;
+}
+
+.inventory-table th:nth-child(8),
+.inventory-table td:nth-child(8),
+.inventory-table th:nth-child(9),
+.inventory-table td:nth-child(9) {
+  width: 78px;
+}
+
+.inventory-table th:nth-child(11),
+.inventory-table td:nth-child(11) {
+  width: 132px;
 }
 
 .inventory-table .part-name-input {
-  width: auto;
-  min-width: 260px;
-  max-width: none;
+  width: 100%;
+  min-width: 0;
 }
 
 .inventory-table .row-actions {
-  width: 1%;
+  display: flex;
+  gap: 6px;
 }
 
 .number-input {
@@ -1230,6 +1350,14 @@ body.dialog-open {
   padding: 24px;
   background: rgba(2, 3, 7, .66);
   backdrop-filter: blur(10px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease;
+}
+
+.dialog-backdrop.open {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .app-dialog {
@@ -1240,6 +1368,14 @@ body.dialog-open {
   color: var(--ink);
   background: var(--panel);
   box-shadow: 0 24px 80px rgba(0, 0, 0, .38);
+  transform: translateY(10px) scale(.98);
+  opacity: 0;
+  transition: transform .2s ease, opacity .2s ease;
+}
+
+.dialog-backdrop.open .app-dialog {
+  transform: translateY(0) scale(1);
+  opacity: 1;
 }
 
 .app-dialog .eyebrow,
@@ -1661,8 +1797,41 @@ body.dialog-open {
   grid-template-columns: 1fr;
 }
 
-.embedded .table-shell,
 .embedded .summary dl {
+  display: none;
+}
+
+.embedded #parts .table-shell {
+  display: block;
+  margin-top: 12px;
+}
+
+.embedded #parts .table-toolbar {
+  padding: 10px 12px;
+}
+
+.embedded #parts .responsive-table {
+  overflow-x: auto;
+}
+
+.embedded #parts table {
+  min-width: 620px;
+  font-size: 12px;
+}
+
+.embedded #parts th,
+.embedded #parts td {
+  padding: 8px;
+}
+
+.embedded #parts th:nth-child(2),
+.embedded #parts td:nth-child(2),
+.embedded #parts th:nth-child(4),
+.embedded #parts td:nth-child(4),
+.embedded #parts th:nth-child(5),
+.embedded #parts td:nth-child(5),
+.embedded #parts th:nth-child(7),
+.embedded #parts td:nth-child(7) {
   display: none;
 }
 

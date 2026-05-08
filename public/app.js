@@ -6,6 +6,7 @@ let bootstrapRequired = false;
 let inviteToken = "";
 let dashboardState = null;
 let selectedRobotId = "";
+let selectedSubassemblyId = "";
 let messageTimer = null;
 let dialogResolver = null;
 let lastFocusedElement = null;
@@ -31,6 +32,7 @@ const els = {
   demoButton: document.querySelector("#demoButton"),
   customConfigurator: document.querySelector("#customConfigurator"),
   configPartSelect: document.querySelector("#configPartSelect"),
+  configRobot: document.querySelector("#configRobot"),
   configSubsystem: document.querySelector("#configSubsystem"),
   configStock: document.querySelector("#configStock"),
   configMachine: document.querySelector("#configMachine"),
@@ -42,6 +44,10 @@ const els = {
   autoPartNumberButton: document.querySelector("#autoPartNumberButton"),
   clearConfigButton: document.querySelector("#clearConfigButton"),
   submitConfiguredPartButton: document.querySelector("#submitConfiguredPartButton"),
+  submitSelectedPartsButton: document.querySelector("#submitSelectedPartsButton"),
+  submitAllPartsButton: document.querySelector("#submitAllPartsButton"),
+  importSelectedRowsButton: document.querySelector("#importSelectedRowsButton"),
+  importAllRowsButton: document.querySelector("#importAllRowsButton"),
   partsBody: document.querySelector("#partsBody"),
   partCount: document.querySelector("#partCount"),
   exportButton: document.querySelector("#exportButton"),
@@ -56,6 +62,7 @@ const els = {
   metricCots: document.querySelector("#metricCots"),
   metricFabrication: document.querySelector("#metricFabrication"),
   metricProcurement: document.querySelector("#metricProcurement"),
+  overviewRobotPanel: document.querySelector("#overviewRobotPanel"),
   inventorySearch: document.querySelector("#inventorySearch"),
   inventoryTypeFilter: document.querySelector("#inventoryTypeFilter"),
   inventoryDocumentFilter: document.querySelector("#inventoryDocumentFilter"),
@@ -72,6 +79,8 @@ const els = {
   deleteRobotButton: document.querySelector("#deleteRobotButton"),
   robotRequirementList: document.querySelector("#robotRequirementList"),
   fabQueueCount: document.querySelector("#fabQueueCount"),
+  fabricationTitle: document.querySelector("#fabricationTitle"),
+  backToRobotsButton: document.querySelector("#backToRobotsButton"),
   procQueueCount: document.querySelector("#procQueueCount"),
   fabricationJobs: document.querySelector("#fabricationJobs"),
   procurementOrders: document.querySelector("#procurementOrders"),
@@ -186,12 +195,18 @@ function bindEvents() {
   if (els.procurementOrders) els.procurementOrders.addEventListener("change", onProcurementOrderChange);
   els.demoButton.addEventListener("click", loadDemo);
   els.configPartSelect?.addEventListener("change", onConfigPartChange);
+  els.configRobot?.addEventListener("change", onConfigRobotChange);
   els.configSubsystem?.addEventListener("change", onGeneratePartNumber);
   els.autoPartNumberButton?.addEventListener("click", onGeneratePartNumber);
   els.clearConfigButton?.addEventListener("click", onClearConfig);
   els.submitConfiguredPartButton?.addEventListener("click", onSubmitConfiguredPart);
+  els.submitSelectedPartsButton?.addEventListener("click", onSubmitSelectedParts);
+  els.submitAllPartsButton?.addEventListener("click", onSubmitAllParts);
+  els.importSelectedRowsButton?.addEventListener("click", onSubmitSelectedParts);
+  els.importAllRowsButton?.addEventListener("click", onSubmitAllParts);
   els.partsBody.addEventListener("input", onPartEdit);
   els.partsBody.addEventListener("change", onPartEdit);
+  els.partsBody.addEventListener("click", onPartsAction);
   els.selectAll.addEventListener("change", toggleAll);
   els.exportButton.addEventListener("click", onExport);
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
@@ -200,9 +215,15 @@ function bindEvents() {
   if (els.settingsForm) els.settingsForm.addEventListener("submit", onSettingsSave);
   if (els.robotForm) els.robotForm.addEventListener("submit", onRobotCreate);
   if (els.robotList) els.robotList.addEventListener("click", onRobotSelect);
+  if (els.overviewRobotPanel) els.overviewRobotPanel.addEventListener("click", onSubassemblyOpen);
   if (els.attachAssemblyButton) els.attachAssemblyButton.addEventListener("click", onRobotAttachAssembly);
   if (els.deleteRobotButton) els.deleteRobotButton.addEventListener("click", onRobotDelete);
   if (els.robotRequirementList) els.robotRequirementList.addEventListener("change", onRobotRequirementChange);
+  if (els.robotRequirementList) els.robotRequirementList.addEventListener("click", onSubassemblyOpen);
+  if (els.backToRobotsButton) els.backToRobotsButton.addEventListener("click", () => {
+    selectedSubassemblyId = "";
+    location.hash = "#robots";
+  });
   if (els.inventorySearch) els.inventorySearch.addEventListener("input", renderCurrentInventoryTable);
   if (els.inventoryTypeFilter) els.inventoryTypeFilter.addEventListener("change", renderCurrentInventoryTable);
   if (els.inventoryDocumentFilter) els.inventoryDocumentFilter.addEventListener("change", renderCurrentInventoryTable);
@@ -348,7 +369,7 @@ async function onImport(event) {
   const form = new FormData(els.importForm);
   source = Object.fromEntries(form.entries());
   const mode = source.syncMode === "cots" ? "cots" : "custom";
-  const previewOnly = embeddedMode && mode === "custom";
+  const previewOnly = embeddedMode;
   source.configuration = isUnresolvedMacro(source.configuration) ? "" : source.configuration;
   if (els.importForm.dataset.baseUrl) source.baseUrl = els.importForm.dataset.baseUrl;
   if (els.importForm.dataset.workspaceOrVersion) source.workspaceOrVersion = els.importForm.dataset.workspaceOrVersion;
@@ -362,7 +383,9 @@ async function onImport(event) {
     source = result.source;
     renderParts();
     if (previewOnly) {
-      setMessage(`Loaded ${parts.length} Onshape custom part${parts.length === 1 ? "" : "s"}. Pick one, add routing data, then submit it.`, "ok");
+      setMessage(mode === "cots"
+        ? `Loaded ${parts.length} Assembly BOM row${parts.length === 1 ? "" : "s"}. Deselect anything you do not want, then import.`
+        : `Loaded ${parts.length} Onshape custom part${parts.length === 1 ? "" : "s"}. Deselect reference geometry, then import selected or all.`, "ok");
       return;
     }
     if (!embeddedMode) await loadDashboard();
@@ -380,6 +403,7 @@ function setSyncMode(mode) {
   if (els.syncTitle) els.syncTitle.textContent = selected === "cots" ? "Assembly BOM COTS sync" : "Part Studio custom sync";
   if (els.importSubmitButton) {
     if (embeddedMode && selected === "custom") els.importSubmitButton.textContent = "Load parts from Onshape";
+    else if (embeddedMode && selected === "cots") els.importSubmitButton.textContent = "Load BOM from Onshape";
     else if (selected === "cots") els.importSubmitButton.textContent = "Submit Assembly BOM";
     else els.importSubmitButton.textContent = "Submit sync batch";
   }
@@ -427,7 +451,7 @@ function renderParts() {
   els.partCount.textContent = parts.length ? `${parts.length} part${parts.length === 1 ? "" : "s"} loaded` : "No parts loaded";
 
   if (!parts.length) {
-    els.partsBody.innerHTML = `<tr><td colspan="7" class="empty">Import from Onshape to populate inventory.</td></tr>`;
+    els.partsBody.innerHTML = `<tr><td colspan="8" class="empty">Import from Onshape to populate inventory.</td></tr>`;
     updateSummary();
     renderCustomConfigurator();
     return;
@@ -442,6 +466,7 @@ function renderParts() {
       <td>${escapeHtml(part.vendor || part.process || part.thickness || "review")}</td>
       <td><input data-index="${index}" data-field="quantity" type="number" min="1" max="999" value="${Number(part.quantity || 1)}"></td>
       <td><span class="status">${escapeHtml(part.status || part.procurementStatus || "needed")}</span></td>
+      <td><button class="ghost small" type="button" data-action="import-part" data-index="${index}">Import</button></td>
     </tr>
   `).join("");
   els.selectAll.checked = parts.every((part) => part.selected);
@@ -479,20 +504,42 @@ function renderCustomConfigurator() {
   if (![...els.configPartSelect.options].some((option) => option.value === currentId) && els.configPartSelect.options.length) {
     els.configPartSelect.selectedIndex = 0;
   }
+  renderRobotOptions();
   renderSubsystemOptions();
-  fillConfigFromSelectedPart({ preservePartNumber: true });
+  fillConfigFromSelectedPart({ preservePartNumber: false });
+}
+
+function renderRobotOptions() {
+  if (!els.configRobot) return;
+  const robots = dashboardState?.robots || [];
+  if (!selectedRobotId && robots.length) selectedRobotId = robots[0].id;
+  const current = els.configRobot.value || selectedRobotId;
+  els.configRobot.innerHTML = [
+    `<option value="">Select target</option>`,
+    ...robots.map((robot) => `<option value="${escapeAttr(robot.id)}"${robot.id === current ? " selected" : ""}>${escapeHtml(robot.name)} · ${escapeHtml(targetLabel(robot))} · ${escapeHtml(robot.season)}</option>`)
+  ].join("");
+  if (current && robots.some((robot) => robot.id === current)) {
+    els.configRobot.value = current;
+    selectedRobotId = current;
+    if (source) source.robotId = current;
+  }
 }
 
 function renderSubsystemOptions() {
   if (!els.configSubsystem) return;
-  const current = els.configSubsystem.value;
-  const subsystems = [...new Set((dashboardState?.robots || []).flatMap((robot) => robot.subsystems || []).map((subsystem) => subsystem.name).filter(Boolean))];
-  const options = subsystems.length ? subsystems : ["Drive", "Intake", "Shooter"];
-  els.configSubsystem.innerHTML = [
-    `<option value="">Unassigned</option>`,
-    ...options.map((name) => `<option value="${escapeAttr(name)}"${name === current ? " selected" : ""}>${escapeHtml(name)}</option>`)
-  ].join("");
-  if (current && !options.includes(current)) els.configSubsystem.value = "";
+  const name = subassemblyNameFromSource();
+  els.configSubsystem.innerHTML = `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`;
+}
+
+function subassemblyNameFromSource() {
+  return String(source?.documentName || source?.sourceTag || els.importForm?.elements.sourceTag?.value || "Onshape document").trim() || "Onshape document";
+}
+
+function onConfigRobotChange() {
+  selectedRobotId = els.configRobot?.value || "";
+  if (source) source.robotId = selectedRobotId;
+  onGeneratePartNumber();
+  renderOverview(dashboardState);
 }
 
 function selectedConfigPart() {
@@ -514,7 +561,58 @@ function fillConfigFromSelectedPart(options = {}) {
   els.configDetectedStatus.textContent = part.thickness ? "Onshape data loaded" : "Could not infer thickness";
   els.configDetectedStatus.classList.toggle("warn", !part.thickness);
   if (els.configQuantity) els.configQuantity.value = Math.max(1, Number(part.quantity || 1));
+  populateRoutingSelects(part, { preserve: true });
   if (!options.preservePartNumber || !els.configPartNumber?.value) onGeneratePartNumber();
+}
+
+function populateRoutingSelects(part, options = {}) {
+  const routing = routingSettings();
+  const rule = routingForMaterial(part?.material || "");
+  const machines = rule?.machines?.length ? rule.machines : routing.machines;
+  const stocks = rule?.stockTypes?.length ? rule.stockTypes : routing.stockTypes;
+  fillSelect(els.configMachine, machines, options.preserve ? els.configMachine?.value : "");
+  fillSelect(els.configStock, stocks, options.preserve ? els.configStock?.value : "");
+}
+
+function fillSelect(select, values, current = "") {
+  if (!select) return;
+  const clean = [...new Set((values || []).map((value) => String(value || "").trim()).filter(Boolean))];
+  const placeholder = select.id === "configStock" ? `<option value="">Select stock</option>` : "";
+  select.innerHTML = `${placeholder}${clean.map((value) => `<option value="${escapeAttr(value)}">${escapeHtml(value)}</option>`).join("")}`;
+  if (current && clean.includes(current)) select.value = current;
+  else if (placeholder && clean.length) select.value = clean[0];
+  else if (!placeholder && clean.length) select.value = clean[0];
+}
+
+function routingSettings() {
+  const routing = dashboardState?.settings?.routing || defaultRoutingSettings();
+  return {
+    materials: Array.isArray(routing.materials) && routing.materials.length ? routing.materials : defaultRoutingSettings().materials,
+    stockTypes: Array.isArray(routing.stockTypes) && routing.stockTypes.length ? routing.stockTypes : defaultRoutingSettings().stockTypes,
+    machines: Array.isArray(routing.machines) && routing.machines.length ? routing.machines : defaultRoutingSettings().machines,
+    rules: Array.isArray(routing.rules) && routing.rules.length ? routing.rules : defaultRoutingSettings().rules
+  };
+}
+
+function routingForMaterial(material) {
+  const normalized = String(material || "").toLowerCase();
+  if (!normalized) return null;
+  return routingSettings().rules.find((rule) => {
+    const matchers = String(rule.match || "").toLowerCase().split(/[,|]/).map((item) => item.trim()).filter(Boolean);
+    return matchers.some((matcher) => normalized.includes(matcher));
+  }) || null;
+}
+
+function defaultRoutingSettings() {
+  return {
+    materials: ["Polycarbonate Smoked", "Polycarbonate Clear", "Aluminum", "Aluminium", "6061 Aluminum", "5052 Aluminum"],
+    stockTypes: ["Sheet/Plate", "Tube 1x1", "Tube 1x2", "Tube 2x2", "Spacer Stock", "Churro", "Rounded Hex"],
+    machines: ["Router", "Fabworks"],
+    rules: [
+      { match: "polycarbonate", machines: ["Router"], stockTypes: ["Sheet/Plate"] },
+      { match: "aluminum,aluminium", machines: ["Fabworks"], stockTypes: ["Sheet/Plate", "Tube 1x1", "Tube 1x2", "Tube 2x2", "Spacer Stock", "Churro", "Rounded Hex"] }
+    ]
+  };
 }
 
 function onGeneratePartNumber() {
@@ -528,7 +626,7 @@ function generateClientPartNumber(part) {
   return formatPartNumber(settings, {
     prefix: settings.prefix || "PF",
     source: partNumberCode(source?.sourceTag || source?.documentName || "SRC", settings.sourceLength),
-    subsystem: partNumberCode(els.configSubsystem?.value || "GEN", settings.subsystemLength),
+    subsystem: partNumberCode(subassemblyNameFromSource() || els.configSubsystem?.value || "GEN", settings.subsystemLength),
     part: partNumberCode(part.name || part.id || "part", settings.partLength)
   });
 }
@@ -559,7 +657,6 @@ function formatPartNumber(settings, tokens) {
 }
 
 function onClearConfig() {
-  if (els.configSubsystem) els.configSubsystem.value = "";
   if (els.configStock) els.configStock.value = "";
   if (els.configMachine) els.configMachine.value = "Router";
   if (els.configQuantity) els.configQuantity.value = selectedConfigPart()?.quantity || 1;
@@ -567,10 +664,47 @@ function onClearConfig() {
   setMessage("Cleared routing fields. Onshape material and thickness stay attached to the selected part.", "");
 }
 
+function onPartsAction(event) {
+  const button = event.target.closest("button[data-action='import-part']");
+  if (!button) return;
+  const index = Number(button.dataset.index);
+  if (!Number.isInteger(index) || !parts[index]) return;
+  submitCurrentParts([parts[index]], { forceQuantityFromConfigurator: false });
+}
+
 async function onSubmitConfiguredPart() {
   const part = selectedConfigPart();
-  if (!source || !part) {
-    setMessage("Load Onshape parts before submitting a custom part.", "error");
+  await submitCurrentParts(part ? [part] : [], { forceQuantityFromConfigurator: true });
+}
+
+async function onSubmitSelectedParts() {
+  await submitCurrentParts(parts.filter((part) => part.selected), { forceQuantityFromConfigurator: false });
+}
+
+async function onSubmitAllParts() {
+  await submitCurrentParts(parts, { forceQuantityFromConfigurator: false });
+}
+
+async function submitCurrentParts(selectedParts, options = {}) {
+  const mode = els.importForm?.elements.syncMode?.value === "cots" ? "cots" : "custom";
+  if (mode === "cots") return submitCotsParts(selectedParts);
+  return submitConfiguredParts(selectedParts, options);
+}
+
+async function submitConfiguredParts(selectedParts, options = {}) {
+  if (!source) {
+    setMessage("Load Onshape parts before submitting custom parts.", "error");
+    return;
+  }
+  const selected = selectedParts.filter(Boolean);
+  if (!selected.length) {
+    setMessage("Select at least one part to import.", "error");
+    return;
+  }
+  const robotId = els.configRobot?.value || selectedRobotId || "";
+  if ((dashboardState?.robots || []).length && !robotId) {
+    setMessage("Choose the robot or project this Onshape document belongs to.", "error");
+    els.configRobot?.focus();
     return;
   }
   const stock = els.configStock?.value || "";
@@ -579,31 +713,64 @@ async function onSubmitConfiguredPart() {
     els.configStock?.focus();
     return;
   }
-  const configuredPart = {
-    id: part.id || "",
-    partKey: part.id || part.name || "",
-    name: part.name || "",
-    subsystem: els.configSubsystem?.value || "",
-    thickness: part.thickness || "",
-    materialType: part.material || "",
+  const configuredParts = selected.map((item) => ({
+    id: item.id || "",
+    partKey: item.id || item.name || "",
+    name: item.name || "",
+    robotId,
+    subsystem: subassemblyNameFromSource(),
+    thickness: item.thickness || "",
+    materialType: item.material || "",
     stock,
     machine: els.configMachine?.value || "Router",
-    partNumber: els.configPartNumber?.value || generateClientPartNumber(part),
-    quantity: Math.max(1, Number(els.configQuantity?.value || part.quantity || 1))
-  };
+    partNumber: selected.length === 1 ? (els.configPartNumber?.value || generateClientPartNumber(item)) : generateClientPartNumber(item),
+    quantity: Math.max(1, Number(options.forceQuantityFromConfigurator ? els.configQuantity?.value || item.quantity || 1 : item.quantity || 1))
+  }));
   const previousParts = parts;
-  setMessage(`Submitting ${part.name || part.id} to fabrication inventory...`);
+  setMessage(`Importing ${selected.length} custom part${selected.length === 1 ? "" : "s"} into ${subassemblyNameFromSource()}...`);
   try {
     const result = await api("/api/onshape/import", {
       method: "POST",
-      body: JSON.stringify({ ...source, configuredParts: [configuredPart] })
+      body: JSON.stringify({ ...source, robotId, configuredParts })
     });
-    const savedPart = result.parts[0] || {};
+    const savedByKey = new Map((result.parts || []).map((savedPart) => [savedPart.id || savedPart.name, savedPart]));
     source = result.source;
-    parts = previousParts.map((item) => (item.id === part.id ? { ...item, ...savedPart, selected: true } : item));
+    parts = previousParts.map((item) => {
+      const savedPart = savedByKey.get(item.id || item.name);
+      return savedPart ? { ...item, ...savedPart, selected: true } : item;
+    });
     renderParts();
     await loadDashboard({ preserveParts: true, quiet: true });
-    setMessage(`Sent ${savedPart.partNumber || configuredPart.partNumber} to fabrication inventory.`, "ok");
+    setMessage(`Imported ${selected.length} custom part${selected.length === 1 ? "" : "s"} into ${subassemblyNameFromSource()}.`, "ok");
+  } catch (error) {
+    parts = previousParts;
+    renderParts();
+    setMessage(error.message, "error");
+  }
+}
+
+async function submitCotsParts(selectedParts) {
+  if (!source) {
+    setMessage("Load the Assembly BOM before importing COTS rows.", "error");
+    return;
+  }
+  const selected = selectedParts.filter(Boolean);
+  if (!selected.length) {
+    setMessage("Select at least one BOM row to import.", "error");
+    return;
+  }
+  const previousParts = parts;
+  setMessage(`Importing ${selected.length} COTS row${selected.length === 1 ? "" : "s"} into procurement...`);
+  try {
+    const result = await api("/api/onshape/import-cots", {
+      method: "POST",
+      body: JSON.stringify({ ...source, rows: selected })
+    });
+    source = result.source;
+    parts = previousParts.map((item) => ({ ...item, selected: selected.some((part) => (part.id || part.name) === (item.id || item.name)) }));
+    renderParts();
+    await loadDashboard({ preserveParts: true, quiet: true });
+    setMessage(`Imported ${selected.length} COTS row${selected.length === 1 ? "" : "s"} into procurement.`, "ok");
   } catch (error) {
     parts = previousParts;
     renderParts();
@@ -663,6 +830,7 @@ async function loadDashboard(options = {}) {
   renderInventory(dashboard.inventory);
   renderInventoryTable(dashboard.inventory.parts);
   renderRobots(dashboard.robots);
+  renderOverview(dashboard);
   renderFabrication(dashboard.fabrication);
   renderProcurement(dashboard.procurement);
   renderRawMaterials(dashboard.rawMaterials);
@@ -737,14 +905,49 @@ function renderAdminUsers(result) {
 function renderSettings(settings) {
   if (!els.settingsForm) return;
   const partNumber = settings?.partNumber || defaultPartNumberSettings();
+  const routing = settings?.routing || defaultRoutingSettings();
   els.settingsForm.elements.template.value = partNumber.template || "";
   els.settingsForm.elements.prefix.value = partNumber.prefix || "PF";
   els.settingsForm.elements.sourceLength.value = Number(partNumber.sourceLength || 3);
   els.settingsForm.elements.subsystemLength.value = Number(partNumber.subsystemLength || 3);
   els.settingsForm.elements.partLength.value = Number(partNumber.partLength || 4);
+  if (els.settingsForm.elements.materials) els.settingsForm.elements.materials.value = (routing.materials || []).join("\n");
+  if (els.settingsForm.elements.stockTypes) els.settingsForm.elements.stockTypes.value = (routing.stockTypes || []).join("\n");
+  if (els.settingsForm.elements.machines) els.settingsForm.elements.machines.value = (routing.machines || []).join("\n");
+  if (els.settingsForm.elements.routingRules) {
+    els.settingsForm.elements.routingRules.value = (routing.rules || []).map((rule) => `${rule.match || ""} | ${(rule.machines || []).join(", ")} | ${(rule.stockTypes || []).join(", ")}`).join("\n");
+  }
   if (els.settingsSavedStatus) {
     els.settingsSavedStatus.textContent = settings?.updatedAt ? `Last saved ${formatDateTime(settings.updatedAt)}` : "Not saved yet";
   }
+}
+
+function renderOverview(dashboard) {
+  if (!els.overviewRobotPanel || !dashboard) return;
+  const robots = dashboard.robots || [];
+  if (!robots.length) {
+    els.overviewRobotPanel.innerHTML = `<article class="overview-empty">Add a robot or project to start tracking sub-assembly progress.</article>`;
+    return;
+  }
+  const robot = robots.find((item) => item.id === selectedRobotId) || robots[0];
+  selectedRobotId = robot.id;
+  const subassemblies = robotSubassemblies(robot);
+  els.overviewRobotPanel.innerHTML = `
+    <article class="overview-robot-card">
+      <div class="card-head">
+        <div>
+          <span class="eyebrow">Selected ${escapeHtml(targetLabel(robot))}</span>
+          <h3>${escapeHtml(robot.name)}</h3>
+          <p>${escapeHtml(robot.season)} · ${Number(robot.counts.requirements)} requirements</p>
+        </div>
+        <strong>${Number(robot.readiness)}%</strong>
+      </div>
+      <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(robot.readiness)))}%"></span></div>
+    </article>
+    <div class="subassembly-grid">
+      ${subassemblies.length ? subassemblies.map((subassembly) => renderSubassemblyCard(robot, subassembly)).join("") : `<article class="overview-empty">No Onshape sub-assemblies have been imported for this target yet.</article>`}
+    </div>
+  `;
 }
 
 function renderInventory(inventory) {
@@ -758,6 +961,10 @@ function renderInventory(inventory) {
   els.metricProcurement.textContent = String(inventory.totals.procurement || 0);
   if (els.fabQueueCount) els.fabQueueCount.textContent = inventory.totals.fabrication ? `${inventory.totals.fabrication} custom part${inventory.totals.fabrication === 1 ? "" : "s"} on the fabrication board.` : "No custom parts queued.";
   if (els.procQueueCount) els.procQueueCount.textContent = inventory.totals.procurement ? `${inventory.totals.procurement} COTS item${inventory.totals.procurement === 1 ? "" : "s"} awaiting procurement review.` : "No COTS parts queued.";
+}
+
+function targetLabel(target) {
+  return target?.targetType === "project" ? "project" : "robot";
 }
 
 function renderDocumentFilter(inventory) {
@@ -853,14 +1060,14 @@ function neededCell(part) {
   const details = neededBy.length ? neededBy.map((item) => {
     const owner = [item.robot, item.subsystem].filter(Boolean).join(" / ") || "Inventory";
     return `${owner}: ${Number(item.quantityNeeded || 1)} ${item.status || "needed"}`;
-  }).join("\n") : "No robot requirement is currently attached.";
+  }).join("\n") : "No target requirement is currently attached.";
   return `<span class="needed-tooltip" tabindex="0" data-quantity="${Number(total)}">${Number(total)}<span role="tooltip">${escapeHtml(details).replace(/\n/g, "<br>")}</span></span>`;
 }
 
 function renderRobots(robots) {
   if (!els.robotList) return;
   if (!robots.length) {
-    els.robotList.innerHTML = `<article><p>No robots configured.</p></article>`;
+    els.robotList.innerHTML = `<article><p>No build targets configured.</p></article>`;
     renderRobotWorkspace(null);
     return;
   }
@@ -870,7 +1077,7 @@ function renderRobots(robots) {
       <div class="card-head">
         <div>
           <h3>${escapeHtml(robot.name)}</h3>
-          <p>${escapeHtml(robot.season)} season · ${Number(robot.counts.requirements)} requirements</p>
+          <p>${escapeHtml(targetLabel(robot))} · ${escapeHtml(robot.season)} · ${Number(robot.counts.requirements)} requirements</p>
         </div>
         <strong>${Number(robot.readiness)}%</strong>
       </div>
@@ -881,9 +1088,9 @@ function renderRobots(robots) {
         <div><dt>Install</dt><dd>${Number(robot.progress.receivedInstalled)}%</dd></div>
       </dl>
       <div class="subsystem-list">
-        ${robot.subsystems.map((subsystem) => `
+        ${robotSubassemblies(robot).slice(0, 4).map((subsystem) => `
           <span>${escapeHtml(subsystem.name)} <b>${Number(subsystem.readiness)}%</b></span>
-        `).join("")}
+        `).join("") || `<span>No sub-assemblies yet</span>`}
       </div>
     </article>
   `).join("");
@@ -896,17 +1103,14 @@ function renderRobotWorkspace(robot) {
   if (!robot) return;
   const sources = dashboardState?.robotSources || [];
   els.robotWorkspaceTitle.textContent = robot.name;
-  els.robotWorkspaceMeta.textContent = `${robot.season} season · ${Number(robot.counts.requirements)} requirement${Number(robot.counts.requirements) === 1 ? "" : "s"} · ${Number(robot.readiness)}% ready`;
+  els.robotWorkspaceMeta.textContent = `${targetLabel(robot)} · ${robot.season} · ${Number(robot.counts.requirements)} requirement${Number(robot.counts.requirements) === 1 ? "" : "s"} · ${Number(robot.readiness)}% ready`;
   els.robotAssemblySelect.innerHTML = [
     `<option value="">Select synced Assembly BOM</option>`,
     ...sources.map((sourceItem) => `<option value="${escapeAttr(sourceItem.id)}">${escapeHtml(sourceItem.label)} · ${Number(sourceItem.partCount)} items</option>`)
   ].join("");
   const requirements = robot.requirements || [];
-  if (!requirements.length) {
-    els.robotRequirementList.innerHTML = `<p class="empty">No requirements yet. Select a synced Assembly BOM source above.</p>`;
-    return;
-  }
-  els.robotRequirementList.innerHTML = requirements.map((requirement) => {
+  const subassemblies = robotSubassemblies(robot);
+  const requirementRows = requirements.map((requirement) => {
     const received = Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1);
     const installed = Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1);
     return `
@@ -920,13 +1124,65 @@ function renderRobotWorkspace(robot) {
       </div>
     `;
   }).join("");
+  els.robotRequirementList.innerHTML = `
+    <div class="robot-subassemblies">
+      <h4>Sub-assemblies</h4>
+      <div class="subassembly-grid">
+        ${subassemblies.length ? subassemblies.map((subassembly) => renderSubassemblyCard(robot, subassembly)).join("") : `<article class="overview-empty">No Onshape documents attached yet. Import from the Onshape panel with this target selected.</article>`}
+      </div>
+    </div>
+    <div class="robot-requirements">
+      <h4>Parts</h4>
+      ${requirementRows || `<p class="empty">No requirements yet. Import from Onshape or select a synced Assembly BOM source above.</p>`}
+    </div>
+  `;
+}
+
+function robotSubassemblies(robot) {
+  return (robot?.subsystems || []).filter((subsystem) => subsystem.type === "subassembly" || Number(subsystem.counts?.requirements || subsystem.partsNeeded || 0) > 0);
+}
+
+function renderSubassemblyCard(robot, subassembly) {
+  return `
+    <article class="subassembly-card" data-robot-id="${escapeAttr(robot.id)}" data-subassembly-id="${escapeAttr(subassembly.id)}" tabindex="0">
+      <div class="card-head">
+        <div>
+          <h3>${escapeHtml(subassembly.name)}</h3>
+          <p>${Number(subassembly.counts?.requirements || subassembly.partsNeeded || 0)} part${Number(subassembly.counts?.requirements || subassembly.partsNeeded || 0) === 1 ? "" : "s"} · ${Number(subassembly.counts?.fabricationJobs || 0)} fab</p>
+        </div>
+        <strong>${Number(subassembly.readiness || 0)}%</strong>
+      </div>
+      <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(subassembly.readiness || 0)))}%"></span></div>
+      <button class="ghost small" type="button" data-action="open-subassembly">Open workspace</button>
+    </article>
+  `;
+}
+
+function onSubassemblyOpen(event) {
+  const card = event.target.closest("[data-subassembly-id]");
+  if (!card) return;
+  selectedRobotId = card.dataset.robotId || selectedRobotId;
+  selectedSubassemblyId = card.dataset.subassemblyId || "";
+  renderFabrication(dashboardState?.fabrication || { jobs: [] });
+  location.hash = "#fabrication";
+}
+
+function selectedSubassemblyContext() {
+  const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId) || (dashboardState?.robots || [])[0] || null;
+  const subassembly = robot ? (robot.subsystems || []).find((item) => item.id === selectedSubassemblyId) || robotSubassemblies(robot)[0] || null : null;
+  if (robot && subassembly && !selectedSubassemblyId) selectedSubassemblyId = subassembly.id;
+  return { robot, subassembly };
 }
 
 function renderFabrication(fabrication) {
   if (!els.fabricationJobs) return;
-  if (!fabrication.jobs.length) {
-    els.fabricationJobs.textContent = "No fabrication jobs yet.";
-    return;
+  const { robot, subassembly } = selectedSubassemblyContext();
+  const jobs = filterFabricationJobs(fabrication?.jobs || [], robot, subassembly);
+  if (els.fabricationTitle) els.fabricationTitle.textContent = subassembly ? subassembly.name : "Custom part queue";
+  if (els.fabQueueCount) {
+    els.fabQueueCount.textContent = subassembly
+      ? `${robot?.name || "Robot"} / ${subassembly.name} · ${jobs.length} custom fabrication card${jobs.length === 1 ? "" : "s"}.`
+      : `${jobs.length} custom fabrication card${jobs.length === 1 ? "" : "s"}.`;
   }
   const columns = [
     { status: "todo", label: "To make", tone: "red" },
@@ -936,21 +1192,31 @@ function renderFabrication(fabrication) {
   els.fabricationJobs.innerHTML = `
     <div class="kanban-board" aria-label="Fabrication kanban board">
       ${columns.map(({ status, label, tone }) => {
-        const jobs = fabrication.jobs.filter((job) => displayFabricationStatus(job.status) === status);
+        const columnJobs = jobs.filter((job) => displayFabricationStatus(job.status) === status);
         return `
           <section class="kanban-column ${escapeAttr(tone)}" data-status="${escapeAttr(status)}" aria-label="${escapeAttr(label)} fabrication parts">
             <div class="kanban-column-head">
               <h4>${escapeHtml(label)}</h4>
-              <span>${jobs.length}</span>
+              <span>${columnJobs.length}</span>
             </div>
             <div class="kanban-cards">
-              ${jobs.length ? jobs.map(renderFabricationCard).join("") : `<p class="kanban-empty">No jobs</p>`}
+              ${columnJobs.length ? columnJobs.map(renderFabricationCard).join("") : `<p class="kanban-empty">No jobs</p>`}
             </div>
           </section>
         `;
       }).join("")}
     </div>
   `;
+}
+
+function filterFabricationJobs(jobs, robot, subassembly) {
+  if (!robot || !subassembly) return jobs;
+  return jobs.filter((job) => {
+    const line = Array.isArray(job.lines) ? job.lines[0] : {};
+    const jobRobotId = job.robotId || line.robotId || "";
+    const jobSubsystemId = job.subsystemId || line.subsystemId || "";
+    return (!jobRobotId || jobRobotId === robot.id) && (jobSubsystemId === subassembly.id || line.subsystem === subassembly.name || job.subassemblyName === subassembly.name);
+  });
 }
 
 function renderFabricationCard(job) {
@@ -1196,16 +1462,38 @@ async function onSettingsSave(event) {
           sourceLength: Number(form.sourceLength),
           subsystemLength: Number(form.subsystemLength),
           partLength: Number(form.partLength)
+        },
+        routing: {
+          materials: parseLines(form.materials),
+          stockTypes: parseLines(form.stockTypes),
+          machines: parseLines(form.machines),
+          rules: parseRoutingRules(form.routingRules)
         }
       })
     });
     dashboardState = { ...(dashboardState || {}), settings: result.settings };
     renderSettings(result.settings);
+    populateRoutingSelects(selectedConfigPart(), { preserve: true });
     onGeneratePartNumber();
     setMessage("Settings saved for all users.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
+}
+
+function parseLines(value) {
+  return String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function parseRoutingRules(value) {
+  return String(value || "").split(/\r?\n/).map((line) => {
+    const [match = "", machines = "", stockTypes = ""] = line.split("|").map((part) => part.trim());
+    return {
+      match,
+      machines: machines.split(",").map((item) => item.trim()).filter(Boolean),
+      stockTypes: stockTypes.split(",").map((item) => item.trim()).filter(Boolean)
+    };
+  }).filter((rule) => rule.match);
 }
 
 function onRobotSelect(event) {
@@ -1228,7 +1516,7 @@ async function onRobotCreate(event) {
     els.robotForm.reset();
     await loadDashboard();
     location.hash = "#robots";
-    setMessage("Robot added.", "ok");
+    setMessage("Target added.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -1239,9 +1527,9 @@ async function onRobotDelete() {
   const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
   if (!robot) return;
   const confirmed = await confirmAction({
-    title: "Remove robot?",
+    title: "Remove target?",
     body: `Remove ${robot.name} and its requirements from PlateFlow? Inventory stays in the global catalog.`,
-    confirmLabel: "Remove robot",
+    confirmLabel: "Remove target",
     danger: true
   });
   if (!confirmed) return;
@@ -1250,7 +1538,7 @@ async function onRobotDelete() {
     dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
     selectedRobotId = result.robots[0]?.id || "";
     await loadDashboard();
-    setMessage("Robot removed.", "ok");
+    setMessage("Target removed.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -1266,7 +1554,7 @@ async function onRobotAttachAssembly() {
     });
     dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
     await loadDashboard();
-    setMessage(`Added ${Number(result.added || 0)} robot requirement${Number(result.added || 0) === 1 ? "" : "s"}.`, "ok");
+    setMessage(`Added ${Number(result.added || 0)} target requirement${Number(result.added || 0) === 1 ? "" : "s"}.`, "ok");
   } catch (error) {
     setMessage(error.message, "error");
   }
@@ -1283,7 +1571,7 @@ async function onRobotRequirementChange(event) {
     });
     dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
     renderRobots(result.robots);
-    setMessage("Robot requirement updated.", "ok");
+    setMessage("Target requirement updated.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();
@@ -1555,7 +1843,10 @@ function openDialog(options) {
   }
   els.dialogBackdrop.classList.remove("hidden");
   document.body.classList.add("dialog-open");
-  requestAnimationFrame(() => (options.inputLabel ? els.dialogInput : els.dialogConfirm).focus());
+  requestAnimationFrame(() => {
+    els.dialogBackdrop.classList.add("open");
+    (options.inputLabel ? els.dialogInput : els.dialogConfirm).focus();
+  });
   return new Promise((resolve) => {
     dialogResolver = resolve;
   });
@@ -1565,7 +1856,10 @@ function closeDialog(result) {
   if (!dialogResolver) return;
   const resolve = dialogResolver;
   dialogResolver = null;
-  els.dialogBackdrop.classList.add("hidden");
+  els.dialogBackdrop.classList.remove("open");
+  setTimeout(() => {
+    if (!dialogResolver) els.dialogBackdrop.classList.add("hidden");
+  }, 180);
   document.body.classList.remove("dialog-open");
   const value = result && !els.dialogInputWrap.classList.contains("hidden") ? els.dialogInput.value : Boolean(result);
   resolve(value);

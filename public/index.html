@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
     <link rel="icon" href="/plateflow-logo.png">
-    <link rel="stylesheet" href="/styles.css?v=22">
+    <link rel="stylesheet" href="/styles.css?v=23">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -17,8 +17,7 @@
       <nav class="nav">
         <a href="#dashboard">Overview</a>
         <a href="#inventory">Inventory</a>
-        <a href="#robots">Robots</a>
-        <a href="#fabrication">Fabrication</a>
+        <a href="#robots">Targets</a>
         <a href="#procurement">Procurement</a>
         <a href="#raw-material">Raw</a>
         <a href="#settings">Settings</a>
@@ -72,6 +71,7 @@
             <article><span>Fabrication</span><strong id="metricFabrication">0</strong></article>
             <article><span>Procurement</span><strong id="metricProcurement">0</strong></article>
           </div>
+          <div id="overviewRobotPanel" class="overview-robot-panel"></div>
         </section>
 
       <section id="inventory" class="workspace app-page" data-page hidden>
@@ -161,29 +161,36 @@
 
       <section id="robots" class="workspace app-page" data-page hidden>
         <div class="section-heading">
-          <span class="eyebrow">Robots</span>
-          <h2>Requirements and readiness</h2>
+          <span class="eyebrow">Build targets</span>
+          <h2>Robots and projects</h2>
         </div>
         <form id="robotForm" class="tool-surface robot-form">
           <label>
-            <span>Season</span>
+            <span>Type</span>
+            <select name="targetType">
+              <option value="robot">Robot</option>
+              <option value="project">Project / assembly</option>
+            </select>
+          </label>
+          <label>
+            <span>Season/year</span>
             <input name="season" inputmode="numeric" placeholder="2026">
           </label>
           <label>
-            <span>Robot name</span>
-            <input name="name" placeholder="Competition robot">
+            <span>Name</span>
+            <input name="name" placeholder="Competition robot or offseason climber">
           </label>
-          <button class="button" type="submit">Add robot</button>
+          <button class="button" type="submit">Add target</button>
         </form>
         <div id="robotList" class="ops-grid"></div>
         <div id="robotWorkspace" class="robot-workspace hidden">
           <div class="card-head">
             <div>
-              <span class="eyebrow">Robot Workspace</span>
-              <h3 id="robotWorkspaceTitle">Select a robot</h3>
+              <span class="eyebrow">Target workspace</span>
+              <h3 id="robotWorkspaceTitle">Select a target</h3>
               <p id="robotWorkspaceMeta"></p>
             </div>
-            <button id="deleteRobotButton" class="ghost danger" type="button">Remove robot</button>
+            <button id="deleteRobotButton" class="ghost danger" type="button">Remove target</button>
           </div>
           <div class="robot-source-row">
             <label>
@@ -194,7 +201,7 @@
             </label>
             <button id="attachAssemblyButton" class="button" type="button">Add BOM requirements</button>
           </div>
-          <div id="robotRequirementList" class="requirement-list">Select a robot to view requirements.</div>
+          <div id="robotRequirementList" class="requirement-list">Select a target to view requirements.</div>
         </div>
       </section>
 
@@ -248,7 +255,11 @@
             </div>
           </div>
           <label>
-            <span>Subsystem</span>
+            <span>Target</span>
+            <select id="configRobot"></select>
+          </label>
+          <label>
+            <span>Sub-assembly</span>
             <select id="configSubsystem"></select>
           </label>
           <label>
@@ -282,14 +293,20 @@
           <div class="config-actions wide">
             <button id="autoPartNumberButton" class="ghost small" type="button">Auto-generate</button>
             <button id="clearConfigButton" class="ghost small" type="button">Clear</button>
-            <button id="submitConfiguredPartButton" class="button small" type="button">Submit custom part</button>
+            <button id="submitConfiguredPartButton" class="ghost small" type="button">Import this part</button>
+            <button id="submitSelectedPartsButton" class="button small" type="button">Import selected</button>
+            <button id="submitAllPartsButton" class="button small" type="button">Import all</button>
           </div>
         </div>
 
         <div class="table-shell">
           <div class="table-toolbar">
             <strong id="partCount">No parts loaded</strong>
-            <button id="exportButton" class="button small" type="button" disabled>Download STEP</button>
+            <div class="toolbar-actions">
+              <button id="importSelectedRowsButton" class="ghost small" type="button">Import selected</button>
+              <button id="importAllRowsButton" class="ghost small" type="button">Import all</button>
+              <button id="exportButton" class="button small" type="button" disabled>Download STEP</button>
+            </div>
           </div>
           <div class="responsive-table">
             <table>
@@ -303,10 +320,11 @@
                   <th>Vendor/Process</th>
                   <th>Qty</th>
                   <th>Status</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="partsBody">
-                <tr><td colspan="7" class="empty">Import from Onshape to populate inventory.</td></tr>
+                <tr><td colspan="8" class="empty">Import from Onshape to populate inventory.</td></tr>
               </tbody>
             </table>
           </div>
@@ -314,9 +332,12 @@
       </section>
 
       <section id="fabrication" class="queue-grid fabrication-page app-page" data-page hidden>
-        <div class="section-heading">
-          <span class="eyebrow">Fabrication</span>
-          <h2>Custom part queue</h2>
+        <div class="section-heading split-heading">
+          <div>
+            <span class="eyebrow">Sub-assembly fabrication</span>
+            <h2 id="fabricationTitle">Custom part queue</h2>
+          </div>
+          <button id="backToRobotsButton" class="ghost small" type="button">Back to targets</button>
         </div>
         <p id="fabQueueCount" class="page-kicker">No custom parts queued.</p>
         <div id="fabricationJobs" class="fabrication-board">No fabrication jobs yet.</div>
@@ -331,7 +352,7 @@
           <h3>Review queue</h3>
           <p id="procQueueCount">No COTS parts queued.</p>
           <ul>
-            <li>Group by vendor, subsystem, robot, and sourcing status.</li>
+            <li>Group by vendor, subsystem, target, and sourcing status.</li>
             <li>Track needed, sourcing, ordered, partially received, received.</li>
           </ul>
         </article>
@@ -425,6 +446,23 @@
             <span>Part code length</span>
             <input name="partLength" type="number" min="1" max="16">
           </label>
+          <label class="wide">
+            <span>Material options</span>
+            <textarea name="materials" rows="5" placeholder="Polycarbonate Smoked&#10;Polycarbonate Clear&#10;Aluminum"></textarea>
+          </label>
+          <label class="wide">
+            <span>Stock types</span>
+            <textarea name="stockTypes" rows="5" placeholder="Sheet/Plate&#10;Tube 1x1&#10;Rounded Hex"></textarea>
+          </label>
+          <label class="wide">
+            <span>Machines/processes</span>
+            <textarea name="machines" rows="5" placeholder="Router&#10;Fabworks"></textarea>
+          </label>
+          <label class="wide">
+            <span>Material routing rules</span>
+            <textarea name="routingRules" rows="5" placeholder="polycarbonate | Router | Sheet/Plate&#10;aluminum, aluminium | Fabworks | Sheet/Plate, Tube 1x1"></textarea>
+            <small>Format: material match | machines | stock types</small>
+          </label>
           <button class="button" type="submit">Save settings</button>
           <span id="settingsSavedStatus" class="settings-status" aria-live="polite"></span>
         </form>
@@ -485,6 +523,6 @@
       </section>
     </div>
 
-    <script src="/app.js?v=22"></script>
+    <script src="/app.js?v=23"></script>
   </body>
 </html>
