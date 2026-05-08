@@ -107,7 +107,7 @@ caption {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 230px;
+  min-width: 150px;
 }
 
 .brand-mark {
@@ -121,14 +121,10 @@ caption {
   font-weight: 800;
 }
 
-.brand strong,
-.brand small {
+.brand strong {
   display: block;
-}
-
-.brand small {
-  color: var(--muted);
-  font-size: 12px;
+  font-size: 18px;
+  letter-spacing: 0;
 }
 
 .nav {
@@ -1455,7 +1451,6 @@ td input {
   min-width: 180px;
 }
 
-.embedded .brand small,
 .embedded .nav,
 .embedded .hero,
 .embedded .steps,
