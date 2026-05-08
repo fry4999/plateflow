@@ -261,13 +261,7 @@ function bindEvents() {
   if (els.inventorySelectAll) els.inventorySelectAll.addEventListener("change", onInventorySelectAllChange);
   if (els.inventoryBulkDeleteButton) els.inventoryBulkDeleteButton.addEventListener("click", onInventoryBulkDelete);
   if (els.clearCatalogButton) els.clearCatalogButton.addEventListener("click", onClearCatalog);
-  if (els.dashboardPage) {
-    els.dashboardPage.addEventListener("pointermove", onDashboardPointerMove);
-    els.dashboardPage.addEventListener("pointerleave", () => {
-      els.appShell?.style.setProperty("--overview-x", "65vw");
-      els.appShell?.style.setProperty("--overview-y", "180px");
-    });
-  }
+  window.addEventListener("pointermove", onPagePointerMove, { passive: true });
   if (els.dialogCancel) els.dialogCancel.addEventListener("click", () => closeDialog(false));
   if (els.dialogConfirm) els.dialogConfirm.addEventListener("click", () => closeDialog(true));
   if (els.dialogBackdrop) els.dialogBackdrop.addEventListener("click", (event) => {
@@ -291,7 +285,6 @@ function syncPageFromHash() {
   const requested = (location.hash || "#dashboard").slice(1);
   const fallback = visiblePages[0].id;
   const active = visiblePages.some((page) => page.id === requested) ? requested : fallback;
-  document.body.classList.toggle("dashboard-active", active === "dashboard");
   els.pages.forEach((page) => {
     const selected = page.id === active;
     page.classList.toggle("active-page", selected);
@@ -306,7 +299,6 @@ function syncPageFromHash() {
 
 function setupEmbeddedPage() {
   if (!embeddedMode) return;
-  document.body.classList.remove("dashboard-active");
   els.pages.forEach((page) => {
     const selected = page.id === "parts";
     page.classList.toggle("active-page", selected);
@@ -484,11 +476,9 @@ function toggleTheme() {
   applyTheme(next);
 }
 
-function onDashboardPointerMove(event) {
-  if (!els.appShell) return;
-  const rect = els.dashboardPage.getBoundingClientRect();
-  els.appShell.style.setProperty("--overview-x", `${Math.max(0, Math.min(window.innerWidth, event.clientX))}px`);
-  els.appShell.style.setProperty("--overview-y", `${Math.max(0, Math.min(rect.height, event.clientY - rect.top))}px`);
+function onPagePointerMove(event) {
+  document.body.style.setProperty("--page-glow-x", `${Math.max(0, Math.min(window.innerWidth, event.clientX))}px`);
+  document.body.style.setProperty("--page-glow-y", `${Math.max(0, Math.min(window.innerHeight, event.clientY))}px`);
 }
 
 function hasOnshapeContext() {
