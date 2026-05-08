@@ -555,7 +555,7 @@ td {
   align-content: start;
   position: relative;
   isolation: isolate;
-  overflow: hidden;
+  overflow: visible;
   --overview-x: 65%;
   --overview-y: 180px;
 }
@@ -563,14 +563,20 @@ td {
 .dashboard::before {
   content: "";
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: -80px;
+  left: 50%;
+  width: 100vw;
   z-index: -1;
   pointer-events: none;
+  transform: translateX(-50%);
   background:
     radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(37, 99, 235, .18), transparent 310px),
     radial-gradient(circle at var(--overview-x) var(--overview-y), rgba(96, 165, 250, .14), transparent 150px),
     radial-gradient(rgba(37, 99, 235, .18) 1px, transparent 1px);
   background-size: auto, auto, 24px 24px;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
   opacity: .72;
   transition: opacity .2s ease;
 }

@@ -485,7 +485,7 @@ function toggleTheme() {
 function onDashboardPointerMove(event) {
   if (!els.dashboardPage) return;
   const rect = els.dashboardPage.getBoundingClientRect();
-  els.dashboardPage.style.setProperty("--overview-x", `${Math.max(0, Math.min(rect.width, event.clientX - rect.left))}px`);
+  els.dashboardPage.style.setProperty("--overview-x", `${Math.max(0, Math.min(window.innerWidth, event.clientX))}px`);
   els.dashboardPage.style.setProperty("--overview-y", `${Math.max(0, Math.min(rect.height, event.clientY - rect.top))}px`);
 }
 
