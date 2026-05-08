@@ -484,14 +484,20 @@ function likelyCotsPart(part) {
     /#\s*t\s*\d*\s*5m/i,
     /\bwide\s+belt\b/i,
     /\b\d+\s*mm\s+wide\s+belt\b/i,
-    /\bbelt\b/i,
-    /\bpulley\b/i,
-    /\bbearing\b/i,
-    /\bmotor\b/i,
-    /\bgearbox\b/i,
-    /\bsprocket\b/i,
-    /\bchain\b/i
+    /\bbelt\b/i
   ].some((pattern) => pattern.test(text));
+}
+
+function syncMode() {
+  return els.importForm?.elements.syncMode?.value === "cots" ? "cots" : "custom";
+}
+
+function partImportBlocked(part) {
+  return syncMode() === "custom" && likelyCotsPart(part);
+}
+
+function eligibleImportParts(items = parts) {
+  return items.filter((part) => !partImportBlocked(part));
 }
 
 function renderParts() {
@@ -500,24 +506,30 @@ function renderParts() {
 
   if (!parts.length) {
     els.partsBody.innerHTML = `<tr><td colspan="8" class="empty">Import from Onshape to populate inventory.</td></tr>`;
+    els.selectAll.checked = false;
+    els.selectAll.indeterminate = false;
+    els.selectAll.disabled = true;
     updateSummary();
     renderCustomConfigurator();
     return;
   }
 
   els.partsBody.innerHTML = parts.map((part, index) => `
-    <tr>
-      <td><input type="checkbox" data-index="${index}" data-field="selected" ${part.selected ? "checked" : ""} aria-label="select ${escapeHtml(part.name)}"></td>
+    <tr class="${partImportBlocked(part) ? "blocked-import-row" : ""}">
+      <td><input type="checkbox" data-index="${index}" data-field="selected" ${part.selected && !partImportBlocked(part) ? "checked" : ""} ${partImportBlocked(part) ? "disabled" : ""} aria-label="select ${escapeHtml(part.name)}"></td>
       <td><span class="chip ${escapeAttr(part.sourceType || part.type || "custom")}">${escapeHtml((part.sourceType || part.type || "custom").toUpperCase())}</span></td>
       <td><span class="part-name">${escapeHtml(part.name)}</span><br><small>${escapeHtml(part.bodyType || part.id || "")}</small></td>
-      <td><input data-index="${index}" data-field="material" value="${escapeAttr(part.material || "Unassigned")}"></td>
+      <td><input data-index="${index}" data-field="material" value="${escapeAttr(part.material || "Unassigned")}" ${partImportBlocked(part) ? "disabled" : ""}></td>
       <td>${escapeHtml(part.vendor || part.process || part.thickness || "review")}</td>
-      <td><input data-index="${index}" data-field="quantity" type="number" min="1" max="999" value="${Number(part.quantity || 1)}"></td>
-      <td><span class="status">${escapeHtml(part.status || part.procurementStatus || "needed")}</span></td>
-      <td><button class="ghost small" type="button" data-action="import-part" data-index="${index}">Import</button></td>
+      <td><input data-index="${index}" data-field="quantity" type="number" min="1" max="999" value="${Number(part.quantity || 1)}" ${partImportBlocked(part) ? "disabled" : ""}></td>
+      <td><span class="status">${escapeHtml(partImportBlocked(part) ? "Assembly BOM only" : part.status || part.procurementStatus || "needed")}</span></td>
+      <td><button class="ghost small" type="button" data-action="import-part" data-index="${index}" ${partImportBlocked(part) ? "disabled" : ""}>${partImportBlocked(part) ? "Assembly only" : "Import"}</button></td>
     </tr>
   `).join("");
-  els.selectAll.checked = parts.every((part) => part.selected);
+  const eligible = eligibleImportParts();
+  els.selectAll.checked = Boolean(eligible.length) && eligible.every((part) => part.selected);
+  els.selectAll.indeterminate = eligible.some((part) => part.selected) && !els.selectAll.checked;
+  els.selectAll.disabled = !eligible.length;
   updateSummary();
   renderCustomConfigurator();
 }
@@ -539,20 +551,20 @@ function onPartEdit(event) {
 }
 
 function toggleAll(event) {
-  const customMode = els.importForm?.elements.syncMode?.value !== "cots";
-  parts = parts.map((part) => ({ ...part, selected: event.target.checked && !(customMode && likelyCotsPart(part)) }));
+  parts = parts.map((part) => ({ ...part, selected: event.target.checked && !partImportBlocked(part) }));
   renderParts();
 }
 
 function renderCustomConfigurator() {
   if (!els.customConfigurator) return;
-  const mode = els.importForm?.elements.syncMode?.value === "cots" ? "cots" : "custom";
-  const visible = mode === "custom" && Boolean(source) && parts.length > 0;
+  const mode = syncMode();
+  const configurableParts = eligibleImportParts();
+  const visible = mode === "custom" && Boolean(source) && configurableParts.length > 0;
   els.customConfigurator.classList.toggle("hidden", !visible);
   if (!visible) return;
 
-  const currentId = els.configPartSelect?.value || parts[0]?.id || "";
-  els.configPartSelect.innerHTML = parts.map((part) => `
+  const currentId = els.configPartSelect?.value || configurableParts[0]?.id || "";
+  els.configPartSelect.innerHTML = configurableParts.map((part) => `
     <option value="${escapeAttr(part.id || part.name)}"${(part.id || part.name) === currentId ? " selected" : ""}>
       ${escapeHtml(part.name || part.id || "Unnamed part")}
     </option>
@@ -600,7 +612,8 @@ function onConfigRobotChange() {
 
 function selectedConfigPart() {
   const selectedId = els.configPartSelect?.value || "";
-  return parts.find((part) => (part.id || part.name) === selectedId) || parts[0] || null;
+  const configurableParts = eligibleImportParts();
+  return configurableParts.find((part) => (part.id || part.name) === selectedId) || configurableParts[0] || null;
 }
 
 function onConfigPartChange() {
@@ -725,6 +738,10 @@ function onPartsAction(event) {
   if (!button) return;
   const index = Number(button.dataset.index);
   if (!Number.isInteger(index) || !parts[index]) return;
+  if (partImportBlocked(parts[index])) {
+    setMessage("Belts and other COTS rows must come from the Assembly BOM import.", "error");
+    return;
+  }
   submitCurrentParts([parts[index]], { forceQuantityFromConfigurator: false });
 }
 
@@ -738,7 +755,7 @@ async function onSubmitSelectedParts() {
 }
 
 async function onSubmitAllParts() {
-  await submitCurrentParts(parts, { forceQuantityFromConfigurator: false });
+  await submitCurrentParts(parts.filter((part) => part.selected && !partImportBlocked(part)), { forceQuantityFromConfigurator: false });
 }
 
 async function submitCurrentParts(selectedParts, options = {}) {
@@ -784,6 +801,12 @@ async function submitConfiguredParts(selectedParts, options = {}) {
     partNumber: selected.length === 1 ? (els.configPartNumber?.value || generateClientPartNumber(item)) : generateClientPartNumber(item),
     quantity: Math.max(1, Number(options.forceQuantityFromConfigurator ? els.configQuantity?.value || item.quantity || 1 : item.quantity || 1))
   }));
+  const confirmed = await confirmAction({
+    title: selected.length === 1 ? "Import custom part?" : "Import custom parts?",
+    body: `Send ${selected.length} checked custom part${selected.length === 1 ? "" : "s"} to ${subassemblyNameFromSource()} as a new revision.${cotsLike.length ? ` ${cotsLike.length} belt/COTS-like row${cotsLike.length === 1 ? "" : "s"} will stay out of fabrication.` : ""}`,
+    confirmLabel: selected.length === 1 ? "Import part" : "Import parts"
+  });
+  if (!confirmed) return;
   const previousParts = parts;
   setMessage(`Importing ${selected.length} custom part${selected.length === 1 ? "" : "s"} into ${subassemblyNameFromSource()}...${cotsLike.length ? ` Skipping ${cotsLike.length} COTS-like row${cotsLike.length === 1 ? "" : "s"}.` : ""}`);
   try {
@@ -819,6 +842,12 @@ async function submitCotsParts(selectedParts) {
     setMessage("Select at least one BOM row to import.", "error");
     return;
   }
+  const confirmed = await confirmAction({
+    title: selected.length === 1 ? "Import COTS row?" : "Import COTS rows?",
+    body: `Send ${selected.length} checked Assembly BOM row${selected.length === 1 ? "" : "s"} to procurement as a new revision.`,
+    confirmLabel: selected.length === 1 ? "Import row" : "Import rows"
+  });
+  if (!confirmed) return;
   const previousParts = parts;
   setMessage(`Importing ${selected.length} COTS row${selected.length === 1 ? "" : "s"} into procurement...`);
   try {
@@ -1259,7 +1288,10 @@ function renderSubassemblyCard(robot, subassembly) {
         <strong>${escapeHtml(counts.label)}</strong>
       </div>
       <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(subassembly.readiness || 0)))}%"></span></div>
-      <button class="ghost small" type="button" data-action="open-subassembly">Open workspace</button>
+      <div class="subassembly-actions">
+        <button class="ghost small" type="button" data-action="open-subassembly">Open workspace</button>
+        <button class="ghost small danger" type="button" data-action="delete-subassembly" data-robot-id="${escapeAttr(robot.id)}" data-subassembly-id="${escapeAttr(subassembly.id)}">Remove</button>
+      </div>
     </article>
   `;
 }
@@ -1276,12 +1308,42 @@ function readinessCounts(item) {
 }
 
 function onSubassemblyOpen(event) {
+  const deleteButton = event.target.closest("button[data-action='delete-subassembly']");
+  if (deleteButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    deleteSubassembly(deleteButton.dataset.robotId, deleteButton.dataset.subassemblyId);
+    return;
+  }
   const card = event.target.closest("[data-subassembly-id]");
   if (!card) return;
   selectedRobotId = card.dataset.robotId || selectedRobotId;
   selectedSubassemblyId = card.dataset.subassemblyId || "";
   renderFabrication(dashboardState?.fabrication || { jobs: [] });
   location.hash = "#fabrication";
+}
+
+async function deleteSubassembly(robotId, subassemblyId) {
+  const robot = (dashboardState?.robots || []).find((item) => item.id === robotId);
+  const subassembly = robotSubassemblies(robot).find((item) => item.id === subassemblyId);
+  if (!robot || !subassembly) return;
+  const confirmed = await confirmAction({
+    title: "Remove sub-assembly?",
+    body: `Remove ${subassembly.name} from ${robot.name}? This removes its project requirements and fabrication cards, but leaves the global inventory catalog alone.`,
+    confirmLabel: "Remove sub-assembly",
+    danger: true
+  });
+  if (!confirmed) return;
+  try {
+    const result = await api(`/api/robots/${encodeURIComponent(robotId)}/subassemblies/${encodeURIComponent(subassemblyId)}`, { method: "DELETE" });
+    applyInventoryMutation(result);
+    if (selectedSubassemblyId === subassemblyId) selectedSubassemblyId = robotSubassemblies((result.robots || []).find((item) => item.id === robotId))[0]?.id || "";
+    renderOverview(dashboardState);
+    renderFabrication(dashboardState?.fabrication || { jobs: [] });
+    setMessage("Sub-assembly removed.", "ok");
+  } catch (error) {
+    setMessage(error.message, "error");
+  }
 }
 
 function selectedSubassemblyContext() {

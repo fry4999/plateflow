@@ -74,6 +74,7 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/robots" && req.method === "POST") return withAppAccess(session, res, (user) => createRobot(req, res, session, user), ["admin", "mentor"]);
     if (url.pathname.startsWith("/api/robots/") && url.pathname.endsWith("/requirements") && req.method === "POST") return withAppAccess(session, res, (user) => attachRobotRequirements(req, res, session, user, pathId(url.pathname, "/api/robots/").replace(/\/requirements$/, "")), ["admin", "mentor", "student"]);
     if (url.pathname.startsWith("/api/robots/") && url.pathname.includes("/requirements/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateRobotRequirement(req, res, session, user, robotRequirementPath(url.pathname)), ["admin", "mentor", "student"]);
+    if (url.pathname.startsWith("/api/robots/") && url.pathname.includes("/subassemblies/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteRobotSubassembly(req, res, session, user, robotSubassemblyPath(url.pathname)), ["admin", "mentor"]);
     if (url.pathname.startsWith("/api/robots/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteRobot(req, res, session, user, pathId(url.pathname, "/api/robots/")), ["admin", "mentor"]);
     if (url.pathname === "/api/audit-log") return withAppAccess(session, res, () => json(res, 200, { auditLogs: store.auditLogs.slice(0, 50) }), ["admin", "mentor"]);
     if (url.pathname === "/api/admin/users" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, adminUsersSnapshot()), ["admin"]);
@@ -348,6 +349,7 @@ async function refreshStore() {
   Object.assign(store, latest);
   let changed = ensureMissingCustomPartNumbers();
   if (mergeDuplicateInventoryRecords()) changed = true;
+  if (removeLikelyPurchasedFromCustomPipeline()) changed = true;
   if (changed) await persistStore();
 }
 
@@ -362,6 +364,49 @@ function ensureMissingCustomPartNumbers() {
     });
   }
   return changed;
+}
+
+function removeLikelyPurchasedFromCustomPipeline() {
+  const removedCatalogIds = new Set();
+  const removedPartKeysByRecord = new Map();
+  let changed = false;
+
+  for (const record of store.inventoryRecords || []) {
+    if (record.sourceType !== "custom" || !Array.isArray(record.parts)) continue;
+    const keep = [];
+    const removedKeys = new Set();
+    for (const part of record.parts) {
+      if (!isLikelyPurchasedPart(part)) {
+        keep.push(part);
+        continue;
+      }
+      changed = true;
+      removedKeys.add(inventoryItemPartKey(part) || part.id || part.name);
+      const catalog = findCatalogPartForInventoryPart(part, "custom");
+      if (catalog?.id) removedCatalogIds.add(catalog.id);
+    }
+    if (removedKeys.size) removedPartKeysByRecord.set(record.id, removedKeys);
+    record.parts = keep;
+  }
+
+  if (!changed) return false;
+
+  store.inventoryRecords = store.inventoryRecords.filter((record) => record.sourceType !== "custom" || record.parts.length);
+  store.fabricationJobs = store.fabricationJobs.filter((job) => {
+    const line = Array.isArray(job.lines) ? job.lines[0] || {} : {};
+    return !removedCatalogIds.has(line.catalogPartId) && !isLikelyPurchasedPart(line) && !isLikelyPurchasedPart(job);
+  });
+  store.requirements = store.requirements.filter((requirement) => {
+    if (requirement.sourceType !== "custom") return true;
+    if (isLikelyPurchasedPart(requirement)) return false;
+    const removedKeys = removedPartKeysByRecord.get(requirement.inventoryRecordId);
+    if (!removedKeys) return true;
+    const key = String(requirement.key || "").split(":").pop();
+    return !removedKeys.has(key) && !removedKeys.has(requirement.name);
+  });
+  store.catalogParts = store.catalogParts.filter((part) => !removedCatalogIds.has(part.id) && !(part.sourceType === "custom" && isLikelyPurchasedPart(part)));
+  audit("inventory.custom_cots_cleanup", "Removed belt/COTS-like rows from custom fabrication inventory; import them from Assembly BOM instead", "system");
+  return true;
 }
 
 function subscribeEventStream(req, res, session) {
@@ -1990,13 +2035,7 @@ function isLikelyPurchasedPart(part) {
     /#\s*t\s*\d*\s*5m/i,
     /\bwide\s+belt\b/i,
     /\b\d+\s*mm\s+wide\s+belt\b/i,
-    /\bbelt\b/i,
-    /\bpulley\b/i,
-    /\bbearing\b/i,
-    /\bmotor\b/i,
-    /\bgearbox\b/i,
-    /\bsprocket\b/i,
-    /\bchain\b/i
+    /\bbelt\b/i
   ].some((pattern) => pattern.test(text));
 }
 
@@ -2220,6 +2259,37 @@ async function deleteRobot(req, res, session, actor, robotId) {
   return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
 }
 
+async function deleteRobotSubassembly(req, res, session, actor, ids) {
+  requireCsrf(req, session);
+  const robot = store.robots.find((item) => item.id === ids.robotId);
+  if (!robot) throw httpError(404, "Target not found");
+  const subsystems = Array.isArray(robot.subsystems) ? robot.subsystems : [];
+  const index = subsystems.findIndex((subsystem) => subsystem.id === ids.subassemblyId);
+  if (index === -1) throw httpError(404, "Sub-assembly not found");
+  const [subassembly] = subsystems.splice(index, 1);
+  robot.subsystems = subsystems;
+  const matchesSubassembly = (value = {}) => (
+    value.subsystemId === subassembly.id ||
+    value.subsystem === subassembly.name ||
+    value.subassemblyName === subassembly.name
+  );
+  const beforeRequirements = store.requirements.length;
+  store.requirements = store.requirements.filter((requirement) => !(requirement.robotId === robot.id && matchesSubassembly(requirement)));
+  const beforeJobs = store.fabricationJobs.length;
+  store.fabricationJobs = store.fabricationJobs.filter((job) => {
+    const line = Array.isArray(job.lines) ? job.lines[0] || {} : {};
+    const jobRobotId = job.robotId || line.robotId || "";
+    return !(jobRobotId === robot.id && (matchesSubassembly(job) || matchesSubassembly(line)));
+  });
+  audit(
+    "robot.subassembly_deleted",
+    `Removed ${subassembly.name} from ${robot.name}; removed ${beforeRequirements - store.requirements.length} requirement${beforeRequirements - store.requirements.length === 1 ? "" : "s"} and ${beforeJobs - store.fabricationJobs.length} fabrication card${beforeJobs - store.fabricationJobs.length === 1 ? "" : "s"}`,
+    actor.email
+  );
+  await persistStore();
+  return json(res, 200, inventoryMutationSnapshot());
+}
+
 async function attachRobotRequirements(req, res, session, actor, robotId) {
   requireCsrf(req, session);
   const robot = store.robots.find((item) => item.id === robotId);
@@ -2309,6 +2379,15 @@ function robotRequirementPath(pathname) {
   return {
     robotId: decodeURIComponent(match[1]),
     requirementId: decodeURIComponent(match[2])
+  };
+}
+
+function robotSubassemblyPath(pathname) {
+  const match = pathname.match(/^\/api\/robots\/([^/]+)\/subassemblies\/([^/]+)$/);
+  if (!match) throw httpError(404, "Sub-assembly not found");
+  return {
+    robotId: decodeURIComponent(match[1]),
+    subassemblyId: decodeURIComponent(match[2])
   };
 }
 

@@ -640,6 +640,12 @@ td {
   box-shadow: 0 16px 40px rgba(0, 0, 0, .32);
 }
 
+.subassembly-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .section-heading h2 {
   margin-bottom: 22px;
   font-size: 36px;
@@ -990,6 +996,25 @@ textarea {
 .table-shell {
   margin-top: 18px;
   overflow: hidden;
+}
+
+#customConfigurator:not(.hidden) ~ .table-shell #importSelectedRowsButton,
+#customConfigurator:not(.hidden) ~ .table-shell #importAllRowsButton {
+  display: none;
+}
+
+.blocked-import-row {
+  opacity: .62;
+}
+
+.blocked-import-row .status {
+  color: #92400e;
+  background: #fef3c7;
+}
+
+[data-theme="dark"] .blocked-import-row .status {
+  color: #fde68a;
+  background: rgba(245, 158, 11, .18);
 }
 
 .table-toolbar {
