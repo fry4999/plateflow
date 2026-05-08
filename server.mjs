@@ -4756,8 +4756,15 @@ async function updateProcurementLines(req, res, session, actor) {
   const matches = lineKeys.map(findProcurementLine).filter(Boolean);
   if (!matches.length) throw httpError(404, "Procurement line not found");
   const now = new Date().toISOString();
-  for (const match of matches) {
-    applyProcurementLineUpdate(match.line, body, now);
+  const hasQuantity = Object.prototype.hasOwnProperty.call(body, "quantityNeeded") || Object.prototype.hasOwnProperty.call(body, "quantity");
+  const distributedQuantities = hasQuantity && matches.length > 1
+    ? distributeProcurementQuantity(body.quantityNeeded ?? body.quantity, matches)
+    : [];
+  for (const [index, match] of matches.entries()) {
+    const scopedBody = distributedQuantities.length
+      ? { ...body, quantityNeeded: distributedQuantities[index], quantity: distributedQuantities[index] }
+      : body;
+    applyProcurementLineUpdate(match.line, scopedBody, now);
     updateCatalogFromProcurementLine(match.line);
     match.order.vendorGroups = groupCotsParts(match.order.lines);
     match.order.updatedAt = now;
@@ -4765,6 +4772,27 @@ async function updateProcurementLines(req, res, session, actor) {
   audit("procurement.line_updated", `Updated ${matches.length} procurement line${matches.length === 1 ? "" : "s"}`, actor.email);
   await persistStore();
   return json(res, 200, { procurement: dashboardSnapshot(actor).procurement });
+}
+
+function distributeProcurementQuantity(value, matches) {
+  const currentQuantities = matches.map((match) => Math.max(0, Number(match?.line?.quantityNeeded || 0)));
+  const currentTotal = currentQuantities.reduce((sum, quantity) => sum + quantity, 0);
+  const requestedTotal = boundedInteger(value, currentTotal, 0, 9999);
+  if (!matches.length) return [];
+  if (matches.length === 1) return [requestedTotal];
+  if (!currentTotal) return matches.map((_, index) => (index === 0 ? requestedTotal : 0));
+  const scaled = currentQuantities.map((quantity) => (requestedTotal * quantity) / currentTotal);
+  const whole = scaled.map(Math.floor);
+  let remainder = requestedTotal - whole.reduce((sum, quantity) => sum + quantity, 0);
+  const order = scaled
+    .map((quantity, index) => ({ index, fraction: quantity - Math.floor(quantity) }))
+    .sort((a, b) => b.fraction - a.fraction);
+  for (const item of order) {
+    if (remainder <= 0) break;
+    whole[item.index] += 1;
+    remainder -= 1;
+  }
+  return whole;
 }
 
 async function deleteProcurementLines(req, res, session, actor) {

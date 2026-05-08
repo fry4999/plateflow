@@ -257,6 +257,13 @@ caption {
   font-size: 13px;
 }
 
+.micro {
+  min-height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
 .hidden {
   display: none !important;
 }
@@ -969,16 +976,80 @@ td {
 }
 
 .settings-form {
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
 }
 
 .settings-form .wide {
-  grid-column: span 2;
+  grid-column: 1 / -1;
 }
 
-.settings-form button,
-.settings-form .settings-status {
-  align-self: end;
+.settings-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.settings-card header,
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-card h3,
+.settings-card p {
+  margin: 0;
+}
+
+.settings-card p {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.template-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-list,
+.settings-rule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-rule-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.1fr) minmax(160px, 1fr) minmax(160px, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.settings-rule-card.auto {
+  grid-template-columns: minmax(180px, 1.2fr) repeat(4, minmax(120px, .8fr)) auto;
 }
 
 .settings-status {
@@ -2003,6 +2074,35 @@ body.dialog-open {
   color: var(--ink);
 }
 
+.quantity-control {
+  display: inline-grid;
+  grid-template-columns: 28px 58px 28px;
+  align-items: center;
+  gap: 4px;
+}
+
+.quantity-control input {
+  width: 58px;
+  min-height: 28px;
+  padding: 0 6px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.quantity-control.aggregate input {
+  border-color: rgba(37, 99, 235, .3);
+  background: rgba(37, 99, 235, .08);
+}
+
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .match-chip {
   display: inline-flex;
   justify-content: center;
@@ -2627,6 +2727,12 @@ body.dialog-open {
   .queue-grid .vendor-bucket,
   .procurement-line-form,
   .procurement-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-row,
+  .settings-rule-card,
+  .settings-rule-card.auto {
     grid-template-columns: 1fr;
   }
 

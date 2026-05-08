@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PlateFlow Inventory</title>
     <link rel="icon" href="/plateflow-logo.png">
-    <link rel="stylesheet" href="/styles.css?v=34">
+    <link rel="stylesheet" href="/styles.css?v=35">
   </head>
   <body data-theme="dark">
     <a class="skip-link" href="#dashboard">Skip to main content</a>
@@ -431,51 +431,107 @@
           <h2>Global configuration</h2>
         </div>
         <form id="settingsForm" class="tool-surface settings-form">
-          <label class="wide">
-            <span>Part number template</span>
-            <input name="template" autocomplete="off" placeholder="{prefix}-{year}-{kind}-{number}-{subsystem}">
-            <small>Available tokens: {prefix}, {year}, {kind}, {number}, {subsystem}, {source}, {part}</small>
-          </label>
-          <label>
-            <span>Team prefix</span>
-            <input name="prefix" autocomplete="off" placeholder="4999">
-          </label>
-          <label>
-            <span>Source length</span>
-            <input name="sourceLength" type="number" min="1" max="12">
-          </label>
-          <label>
-            <span>Subsystem length</span>
-            <input name="subsystemLength" type="number" min="1" max="12">
-          </label>
-          <label>
-            <span>Part code length</span>
-            <input name="partLength" type="number" min="1" max="16">
-          </label>
-          <label class="wide">
-            <span>Material options</span>
-            <textarea name="materials" rows="5" placeholder="Polycarbonate Smoked&#10;Polycarbonate Clear&#10;Aluminum"></textarea>
-          </label>
-          <label class="wide">
-            <span>Stock types</span>
-            <textarea name="stockTypes" rows="5" placeholder="Sheet/Plate&#10;Tube 1x1&#10;Rounded Hex"></textarea>
-          </label>
-          <label class="wide">
-            <span>Machines/processes</span>
-            <textarea name="machines" rows="5" placeholder="Router&#10;Fabworks&#10;Manual fabrication"></textarea>
-          </label>
-          <label class="wide">
-            <span>Material routing rules</span>
-            <textarea name="routingRules" rows="5" placeholder="polycarbonate | Router | Sheet/Plate&#10;aluminum, aluminium | Fabworks | Sheet/Plate, Tube 1x1"></textarea>
-            <small>Format: material match | machines | stock types</small>
-          </label>
-          <label class="wide">
-            <span>Part name auto-routing rules</span>
-            <textarea name="autoRules" rows="5" placeholder="round spacer | Spacer Stock | Manual fabrication | stock | make_now"></textarea>
-            <small>Format: part-name match | stock type | machine/process | category | intent. Use this for names like ROUND Spacer 0.500 in.</small>
-          </label>
-          <button class="button" type="submit">Save settings</button>
-          <span id="settingsSavedStatus" class="settings-status" aria-live="polite"></span>
+          <section class="settings-card wide">
+            <header>
+              <div>
+                <h3>Part number template</h3>
+                <p>Pick a format, then adjust the pieces.</p>
+              </div>
+            </header>
+            <div class="template-presets">
+              <button class="ghost small" type="button" data-settings-action="template" data-template="{prefix}-{year}-{kind}-{number}-{subsystem}">4999-26-P-1001-DT</button>
+              <button class="ghost small" type="button" data-settings-action="template" data-template="{prefix}-{kind}-{subsystem}-{number}">4999-P-DT-1001</button>
+              <button class="ghost small" type="button" data-settings-action="template" data-template="{prefix}-{source}-{part}-{number}">4999-SRC-PART-1001</button>
+            </div>
+            <label>
+              <span>Template</span>
+              <input name="template" autocomplete="off" placeholder="{prefix}-{year}-{kind}-{number}-{subsystem}">
+              <small>Tokens: {prefix}, {year}, {kind}, {number}, {subsystem}, {source}, {part}</small>
+            </label>
+            <div class="settings-row">
+              <label>
+                <span>Team prefix</span>
+                <input name="prefix" autocomplete="off" placeholder="4999">
+              </label>
+              <label>
+                <span>Source length</span>
+                <input name="sourceLength" type="number" min="1" max="12">
+              </label>
+              <label>
+                <span>Subsystem length</span>
+                <input name="subsystemLength" type="number" min="1" max="12">
+              </label>
+              <label>
+                <span>Part code length</span>
+                <input name="partLength" type="number" min="1" max="16">
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-card">
+            <header>
+              <div>
+                <h3>Material options</h3>
+                <p>Choices shown in the Onshape panel.</p>
+              </div>
+              <button class="ghost small" type="button" data-settings-action="add-list-item" data-list="materials">Add</button>
+            </header>
+            <div id="settingsMaterialsList" class="settings-list"></div>
+            <textarea name="materials" hidden></textarea>
+          </section>
+
+          <section class="settings-card">
+            <header>
+              <div>
+                <h3>Stock types</h3>
+                <p>Tube, sheet, spacer stock, and similar shop stock.</p>
+              </div>
+              <button class="ghost small" type="button" data-settings-action="add-list-item" data-list="stockTypes">Add</button>
+            </header>
+            <div id="settingsStockTypesList" class="settings-list"></div>
+            <textarea name="stockTypes" hidden></textarea>
+          </section>
+
+          <section class="settings-card">
+            <header>
+              <div>
+                <h3>Machines/processes</h3>
+                <p>Where custom parts are routed.</p>
+              </div>
+              <button class="ghost small" type="button" data-settings-action="add-list-item" data-list="machines">Add</button>
+            </header>
+            <div id="settingsMachinesList" class="settings-list"></div>
+            <textarea name="machines" hidden></textarea>
+          </section>
+
+          <section class="settings-card wide">
+            <header>
+              <div>
+                <h3>Material routing</h3>
+                <p>When material matches a word, restrict machine and stock choices.</p>
+              </div>
+              <button class="ghost small" type="button" data-settings-action="add-routing-rule">Add rule</button>
+            </header>
+            <div id="settingsRoutingRulesList" class="settings-rule-list"></div>
+            <textarea name="routingRules" hidden></textarea>
+          </section>
+
+          <section class="settings-card wide">
+            <header>
+              <div>
+                <h3>Part name auto-routing</h3>
+                <p>When a part name matches, automatically assign stock, machine, category, and intent.</p>
+              </div>
+              <button class="ghost small" type="button" data-settings-action="add-auto-rule">Add rule</button>
+            </header>
+            <div id="settingsAutoRulesList" class="settings-rule-list"></div>
+            <textarea name="autoRules" hidden></textarea>
+          </section>
+
+          <div class="settings-actions wide">
+            <button class="button" type="submit">Save settings</button>
+            <span id="settingsSavedStatus" class="settings-status" aria-live="polite"></span>
+          </div>
         </form>
       </section>
 
@@ -539,6 +595,6 @@
       </section>
     </div>
 
-    <script src="/app.js?v=32"></script>
+    <script src="/app.js?v=33"></script>
   </body>
 </html>

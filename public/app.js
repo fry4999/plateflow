@@ -253,7 +253,12 @@ function bindEvents() {
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
   if (els.rawMaterialForm) els.rawMaterialForm.addEventListener("submit", onRawMaterialAdd);
   if (els.inventoryForm) els.inventoryForm.addEventListener("submit", onInventoryAdd);
-  if (els.settingsForm) els.settingsForm.addEventListener("submit", onSettingsSave);
+  if (els.settingsForm) {
+    els.settingsForm.addEventListener("submit", onSettingsSave);
+    els.settingsForm.addEventListener("click", onSettingsBuilderClick);
+    els.settingsForm.addEventListener("input", onSettingsBuilderInput);
+    els.settingsForm.addEventListener("change", onSettingsBuilderInput);
+  }
   if (els.robotForm) els.robotForm.addEventListener("submit", onRobotCreate);
   if (els.robotList) els.robotList.addEventListener("click", onRobotSelect);
   if (els.overviewRobotPanel) els.overviewRobotPanel.addEventListener("click", onSubassemblyOpen);
@@ -1278,9 +1283,106 @@ function renderSettings(settings) {
       rule.fabricationIntent || ""
     ].join(" | ")).join("\n");
   }
+  renderSettingsList("materials", routing.materials || []);
+  renderSettingsList("stockTypes", routing.stockTypes || []);
+  renderSettingsList("machines", routing.machines || []);
+  renderSettingsRoutingRules(routing.rules || []);
+  renderSettingsAutoRules(routing.autoRules || []);
+  syncSettingsBuilderToFields();
   if (els.settingsSavedStatus) {
     els.settingsSavedStatus.textContent = settings?.updatedAt ? `Last saved ${formatDateTime(settings.updatedAt)}` : "Not saved yet";
   }
+}
+
+function settingsListConfig(name) {
+  return {
+    materials: { id: "settingsMaterialsList", label: "Material" },
+    stockTypes: { id: "settingsStockTypesList", label: "Stock type" },
+    machines: { id: "settingsMachinesList", label: "Machine/process" }
+  }[name];
+}
+
+function renderSettingsList(name, values) {
+  const config = settingsListConfig(name);
+  const container = config ? document.querySelector(`#${config.id}`) : null;
+  if (!container) return;
+  const rows = (Array.isArray(values) ? values : []).filter(Boolean);
+  container.innerHTML = rows.length
+    ? rows.map((value) => settingsListRow(name, value, config.label)).join("")
+    : settingsListRow(name, "", config.label);
+}
+
+function settingsListRow(name, value, label) {
+  return `
+    <div class="settings-list-row" data-settings-list="${escapeAttr(name)}">
+      <input data-settings-list-value="${escapeAttr(name)}" value="${escapeAttr(value)}" aria-label="${escapeAttr(label)}">
+      <button class="ghost small" type="button" data-settings-action="remove-settings-row">Remove</button>
+    </div>
+  `;
+}
+
+function renderSettingsRoutingRules(rules) {
+  const container = document.querySelector("#settingsRoutingRulesList");
+  if (!container) return;
+  const rows = Array.isArray(rules) && rules.length ? rules : [{ match: "", machines: [], stockTypes: [] }];
+  container.innerHTML = rows.map(renderSettingsRoutingRuleFragment).join("");
+}
+
+function renderSettingsRoutingRuleFragment(rule) {
+  return `
+    <article class="settings-rule-card" data-settings-rule="routing">
+      <label>
+        <span>When material contains</span>
+        <input data-rule-field="match" value="${escapeAttr(rule.match || "")}" placeholder="polycarbonate, aluminum">
+      </label>
+      <label>
+        <span>Machines allowed</span>
+        <input data-rule-field="machines" value="${escapeAttr((rule.machines || []).join(", "))}" placeholder="Router, Fabworks">
+      </label>
+      <label>
+        <span>Stock allowed</span>
+        <input data-rule-field="stockTypes" value="${escapeAttr((rule.stockTypes || []).join(", "))}" placeholder="Sheet/Plate, Tube 1x1">
+      </label>
+      <button class="ghost small" type="button" data-settings-action="remove-settings-row">Remove</button>
+    </article>
+  `;
+}
+
+function renderSettingsAutoRules(rules) {
+  const container = document.querySelector("#settingsAutoRulesList");
+  if (!container) return;
+  const rows = Array.isArray(rules) && rules.length ? rules : [{ match: "", stock: "", machine: "", category: "", fabricationIntent: "make_now" }];
+  container.innerHTML = rows.map(renderSettingsAutoRuleFragment).join("");
+}
+
+function renderSettingsAutoRuleFragment(rule) {
+  return `
+    <article class="settings-rule-card auto" data-settings-rule="auto">
+      <label>
+        <span>When part name contains</span>
+        <input data-rule-field="match" value="${escapeAttr(rule.match || "")}" placeholder="round spacer">
+      </label>
+      <label>
+        <span>Stock</span>
+        <input data-rule-field="stock" value="${escapeAttr(rule.stock || "")}" placeholder="Spacer Stock">
+      </label>
+      <label>
+        <span>Machine/process</span>
+        <input data-rule-field="machine" value="${escapeAttr(rule.machine || "")}" placeholder="Manual fabrication">
+      </label>
+      <label>
+        <span>Category</span>
+        <input data-rule-field="category" value="${escapeAttr(rule.category || "")}" placeholder="stock">
+      </label>
+      <label>
+        <span>Intent</span>
+        <select data-rule-field="fabricationIntent">
+          ${["make_now", "send_out", "defer", "review_needed"].map((intent) => `<option value="${intent}"${intent === (rule.fabricationIntent || "make_now") ? " selected" : ""}>${intent.replace(/_/g, " ")}</option>`).join("")}
+        </select>
+      </label>
+      <button class="ghost small" type="button" data-settings-action="remove-settings-row">Remove</button>
+    </article>
+  `;
 }
 
 function renderOverview(dashboard) {
@@ -1595,8 +1697,8 @@ function renderSubassemblyCard(robot, subassembly) {
 
 function readinessCounts(item) {
   const counts = item?.counts || {};
-  const needed = Number(counts.quantityNeeded ?? item?.quantityNeeded ?? counts.requirements ?? item?.partsNeeded ?? 0);
-  const ready = Number(counts.quantityReady ?? item?.quantityReady ?? counts.ready ?? 0);
+  const needed = Number(counts.requirements ?? item?.partsNeeded ?? counts.quantityNeeded ?? item?.quantityNeeded ?? 0);
+  const ready = Number(counts.ready ?? item?.ready ?? counts.quantityReady ?? item?.quantityReady ?? 0);
   return {
     needed,
     ready,
@@ -2113,6 +2215,7 @@ function renderProcurementLine(line) {
   const exact = line.matchStatus === "sku_exact" || line.matchStatus === "manual";
   const name = exact ? line.matchedTitle || line.name || "Purchased item" : line.name || "Purchased item";
   const sku = line.vendorSku || line.partNumber || line.manufacturerSku || "No SKU";
+  const quantity = Number(line.quantityNeeded || 0);
   const unit = line.unitPriceCents == null ? "price n/a" : formatMoney(line.unitPriceCents);
   const total = line.totalPriceCents == null ? "n/a" : formatMoney(line.totalPriceCents);
   const neededBy = Array.isArray(line.neededBy) ? line.neededBy.map((item) => `${item.robotName || "No project"} / ${item.subassemblyName || "No subassembly"} x${Number(item.quantityNeeded || 0)}`).join("\n") : "";
@@ -2126,7 +2229,7 @@ function renderProcurementLine(line) {
   const selectedVendor = vendorOptions.includes(line.vendor) ? line.vendor : "Unassigned";
   const status = line.status || "needed";
   return `
-    <div class="procurement-line ${escapeAttr(status)}" data-line-keys="${escapeAttr(lineKeys)}">
+    <div class="procurement-line ${escapeAttr(status)}" data-line-keys="${escapeAttr(lineKeys)}" data-quantity="${quantity}">
       <div class="procurement-line-top">
         <div class="procurement-line-main">
           <strong>${escapeHtml(name)}</strong>
@@ -2136,7 +2239,11 @@ function renderProcurementLine(line) {
         <span class="match-chip ${escapeAttr(line.matchStatus || "unmatched")}">${escapeHtml(procurementMatchLabel(line.matchStatus))}</span>
         <span class="procurement-status ${escapeAttr(status)}">${escapeHtml(procurementStatusLabel(status))}</span>
         <span class="price-pack">
-          <b>qty ${Number(line.quantityNeeded || 0)}</b>
+          <span class="quantity-control${aggregate ? " aggregate" : ""}" title="${escapeAttr(aggregate ? `Total across ${keys.length} matching BOM lines` : "Quantity needed")}">
+            <button class="ghost micro" type="button" data-action="adjust-procurement-quantity" data-delta="-1" aria-label="Decrease quantity">-</button>
+            <input data-procurement-quantity type="number" min="0" max="9999" value="${quantity}" aria-label="Quantity needed">
+            <button class="ghost micro" type="button" data-action="adjust-procurement-quantity" data-delta="1" aria-label="Increase quantity">+</button>
+          </span>
           <b>${escapeHtml(unit)}</b>
           <strong>${escapeHtml(total)}</strong>
         </span>
@@ -2166,7 +2273,8 @@ function renderProcurementLine(line) {
           </label>
           <label>
             <span>Qty</span>
-            <input data-field="quantityNeeded" type="number" min="0" max="9999" value="${Number(line.quantityNeeded || 0)}" ${aggregate ? "disabled" : ""}>
+            <input data-field="quantityNeeded" type="number" min="0" max="9999" value="${quantity}">
+            ${aggregate ? `<small class="field-hint">Total across ${keys.length} matching BOM lines</small>` : ""}
           </label>
           <label>
             <span>Unit</span>
@@ -2430,6 +2538,7 @@ async function onClearCatalog() {
 
 async function onSettingsSave(event) {
   event.preventDefault();
+  syncSettingsBuilderToFields();
   const form = Object.fromEntries(new FormData(els.settingsForm).entries());
   try {
     const result = await api("/api/settings", {
@@ -2459,6 +2568,103 @@ async function onSettingsSave(event) {
   } catch (error) {
     setMessage(error.message, "error");
   }
+}
+
+function onSettingsBuilderClick(event) {
+  const button = event.target.closest("[data-settings-action]");
+  if (!button || !els.settingsForm?.contains(button)) return;
+  const action = button.dataset.settingsAction;
+  if (action === "template") {
+    const template = button.dataset.template || "";
+    if (els.settingsForm.elements.template) els.settingsForm.elements.template.value = template;
+    syncSettingsBuilderToFields();
+    return;
+  }
+  if (action === "add-list-item") {
+    const name = button.dataset.list || "";
+    const config = settingsListConfig(name);
+    const container = config ? document.querySelector(`#${config.id}`) : null;
+    if (container) {
+      container.insertAdjacentHTML("beforeend", settingsListRow(name, "", config.label));
+      container.lastElementChild?.querySelector("input")?.focus();
+    }
+    syncSettingsBuilderToFields();
+    return;
+  }
+  if (action === "add-routing-rule") {
+    const container = document.querySelector("#settingsRoutingRulesList");
+    if (container) {
+      container.insertAdjacentHTML("beforeend", renderSettingsRoutingRuleFragment({ match: "", machines: [], stockTypes: [] }));
+      container.querySelector(".settings-rule-card:last-child input")?.focus();
+    }
+    syncSettingsBuilderToFields();
+    return;
+  }
+  if (action === "add-auto-rule") {
+    const container = document.querySelector("#settingsAutoRulesList");
+    if (container) {
+      container.insertAdjacentHTML("beforeend", renderSettingsAutoRuleFragment({ match: "", stock: "", machine: "", category: "", fabricationIntent: "make_now" }));
+      container.querySelector(".settings-rule-card:last-child input")?.focus();
+    }
+    syncSettingsBuilderToFields();
+    return;
+  }
+  if (action === "remove-settings-row") {
+    const row = button.closest(".settings-list-row, .settings-rule-card");
+    row?.remove();
+    syncSettingsBuilderToFields();
+  }
+}
+
+function onSettingsBuilderInput(event) {
+  if (!event.target.closest(".settings-card")) return;
+  syncSettingsBuilderToFields();
+}
+
+function syncSettingsBuilderToFields() {
+  if (!els.settingsForm) return;
+  const setField = (name, value) => {
+    if (els.settingsForm.elements[name]) els.settingsForm.elements[name].value = value;
+  };
+  setField("materials", settingsListValues("materials").join("\n"));
+  setField("stockTypes", settingsListValues("stockTypes").join("\n"));
+  setField("machines", settingsListValues("machines").join("\n"));
+  setField("routingRules", settingsRoutingRuleValues().map((rule) => `${rule.match} | ${rule.machines.join(", ")} | ${rule.stockTypes.join(", ")}`).join("\n"));
+  setField("autoRules", settingsAutoRuleValues().map((rule) => [
+    rule.match,
+    rule.stock,
+    rule.machine,
+    rule.category,
+    rule.fabricationIntent
+  ].join(" | ")).join("\n"));
+}
+
+function settingsListValues(name) {
+  return [...document.querySelectorAll(`[data-settings-list-value="${name}"]`)]
+    .map((input) => input.value.trim())
+    .filter(Boolean);
+}
+
+function settingsRoutingRuleValues() {
+  return [...document.querySelectorAll('[data-settings-rule="routing"]')].map((row) => ({
+    match: row.querySelector('[data-rule-field="match"]')?.value.trim() || "",
+    machines: csvValues(row.querySelector('[data-rule-field="machines"]')?.value),
+    stockTypes: csvValues(row.querySelector('[data-rule-field="stockTypes"]')?.value)
+  })).filter((rule) => rule.match);
+}
+
+function settingsAutoRuleValues() {
+  return [...document.querySelectorAll('[data-settings-rule="auto"]')].map((row) => ({
+    match: row.querySelector('[data-rule-field="match"]')?.value.trim() || "",
+    stock: row.querySelector('[data-rule-field="stock"]')?.value.trim() || "",
+    machine: row.querySelector('[data-rule-field="machine"]')?.value.trim() || "",
+    category: row.querySelector('[data-rule-field="category"]')?.value.trim() || "",
+    fabricationIntent: row.querySelector('[data-rule-field="fabricationIntent"]')?.value.trim() || ""
+  })).filter((rule) => rule.match);
+}
+
+function csvValues(value) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 function parseLines(value) {
@@ -2717,6 +2923,17 @@ async function onFabricationDrop(event) {
 }
 
 async function onProcurementOrderChange(event) {
+  const quantityInput = event.target.closest("input[data-procurement-quantity]");
+  if (quantityInput) {
+    const row = quantityInput.closest(".procurement-line");
+    const lineKeys = parseLineKeys(row?.dataset.lineKeys);
+    if (!row || !lineKeys.length) {
+      setMessage("This procurement row is missing an edit key. Refresh and try again.", "error");
+      return;
+    }
+    await updateProcurementLineQuantity(row, lineKeys, quantityInput.value);
+    return;
+  }
   const select = event.target.closest("select[data-order-id]");
   if (!select) return;
   try {
@@ -2750,7 +2967,7 @@ async function onProcurementLineCreate(event) {
 }
 
 async function onProcurementLineAction(event) {
-  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line'], button[data-action='toggle-procurement-edit'], button[data-action='quick-procurement-status']");
+  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line'], button[data-action='toggle-procurement-edit'], button[data-action='quick-procurement-status'], button[data-action='adjust-procurement-quantity']");
   if (!button) return;
   const row = button.closest(".procurement-line");
   if (!row) return;
@@ -2769,6 +2986,15 @@ async function onProcurementLineAction(event) {
   if (button.dataset.action === "quick-procurement-status") {
     const status = button.dataset.status || "needed";
     await updateProcurementLineStatus(row, lineKeys, status);
+    return;
+  }
+  if (button.dataset.action === "adjust-procurement-quantity") {
+    const input = row.querySelector("input[data-procurement-quantity]");
+    const current = Number(input?.value || row.dataset.quantity || 0);
+    const delta = Number(button.dataset.delta || 0);
+    const next = Math.max(0, Math.min(9999, current + delta));
+    if (input) input.value = next;
+    await updateProcurementLineQuantity(row, lineKeys, next);
     return;
   }
   if (button.dataset.action === "delete-procurement-line") {
@@ -2805,6 +3031,36 @@ async function onProcurementLineAction(event) {
     renderProcurement(result.procurement);
     setMessage("Procurement line saved.", "ok");
   } catch (error) {
+    setMessage(error.message, "error");
+  }
+}
+
+async function updateProcurementLineQuantity(row, lineKeys, quantity) {
+  const previous = Number(row.dataset.quantity || row.querySelector("input[data-procurement-quantity]")?.value || 0);
+  const next = Math.max(0, Math.min(9999, Math.round(Number(quantity || 0))));
+  row.dataset.quantity = String(next);
+  row.querySelectorAll("input[data-procurement-quantity], input[data-field='quantityNeeded']").forEach((input) => {
+    input.value = String(next);
+  });
+  row.querySelectorAll("button[data-action='adjust-procurement-quantity'], input[data-procurement-quantity]").forEach((control) => {
+    control.disabled = true;
+  });
+  try {
+    const result = await api("/api/procurement/lines", {
+      method: "PATCH",
+      body: JSON.stringify({ lineKeys, quantityNeeded: next })
+    });
+    dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
+    renderProcurement(result.procurement);
+    setMessage(`Quantity updated to ${next}.`, "ok");
+  } catch (error) {
+    row.dataset.quantity = String(previous);
+    row.querySelectorAll("input[data-procurement-quantity], input[data-field='quantityNeeded']").forEach((input) => {
+      input.value = String(previous);
+    });
+    row.querySelectorAll("button[data-action='adjust-procurement-quantity'], input[data-procurement-quantity]").forEach((control) => {
+      control.disabled = false;
+    });
     setMessage(error.message, "error");
   }
 }
