@@ -420,6 +420,7 @@ async function refreshStore() {
   if (promoteShaftCutProcurementRowsToStockRollups()) changed = true;
   if (removeKnownCustomFromProcurementPipeline()) changed = true;
   if (normalizeShaftStockRollups()) changed = true;
+  if (backfillShaftCutManufacturingMetadata()) changed = true;
   if (normalizeDerivedProcurementVendors()) changed = true;
   if (changed) await persistStore();
 }
@@ -799,6 +800,70 @@ function ensureShaftCutManufacturingJob(order, line, profile, lengthInches, quan
     updatedAt: now
   });
   store.fabricationJobs.splice(200);
+}
+
+function backfillShaftCutManufacturingMetadata() {
+  let changed = false;
+  const apply = (item) => {
+    if (!item || item.shaftStockRollup || !isShaftCutPart(item)) return false;
+    const profile = shaftStockProfile(item);
+    const lengthInches = extractShaftLengthInches(item);
+    let itemChanged = false;
+    if (Number.isFinite(lengthInches) && lengthInches > 0 && Number(item.lengthInches || 0) !== Number(lengthInches.toFixed(3))) {
+      item.lengthInches = Number(lengthInches.toFixed(3));
+      itemChanged = true;
+    }
+    if (item.category !== "shaft") {
+      item.category = "shaft";
+      itemChanged = true;
+    }
+    if (profile?.shape && item.stock !== profile.shape) {
+      item.stock = profile.shape;
+      itemChanged = true;
+    }
+    if (item.process !== "Manual fabrication") {
+      item.process = "Manual fabrication";
+      itemChanged = true;
+    }
+    if (item.machine !== "Manual fabrication") {
+      item.machine = "Manual fabrication";
+      itemChanged = true;
+    }
+    if (!item.fabricationIntent || item.fabricationIntent === "review_needed") {
+      item.fabricationIntent = "make_now";
+      itemChanged = true;
+    }
+    return itemChanged;
+  };
+
+  for (const record of store.inventoryRecords || []) {
+    if (record.sourceType !== "custom") continue;
+    for (const part of record.parts || []) {
+      if (apply(part)) changed = true;
+    }
+  }
+  for (const part of store.catalogParts || []) {
+    if (part.sourceType === "custom" && apply(part)) changed = true;
+  }
+  for (const job of store.fabricationJobs || []) {
+    let jobChanged = false;
+    for (const line of job.lines || []) {
+      if (apply(line)) jobChanged = true;
+    }
+    if (jobChanged) {
+      const line = Array.isArray(job.lines) ? job.lines[0] : null;
+      if (line) {
+        job.robotId = line.robotId || job.robotId || "";
+        job.subsystemId = line.subsystemId || job.subsystemId || "";
+        job.subassemblyName = line.subassemblyName || line.subsystem || job.subassemblyName || "";
+        job.grouping = groupCustomParts([line]);
+      }
+      job.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) audit("fabrication.shaft_metadata_backfilled", "Backfilled shaft cut lengths and manual fabrication routing from Assembly BOM names", "system");
+  return changed;
 }
 
 function normalizeDerivedProcurementVendors() {
@@ -2330,6 +2395,7 @@ function upsertCatalogPart(part, sourceType, syncBatchId) {
     totalShaftLengthInches: part.totalShaftLengthInches ?? existing?.totalShaftLengthInches,
     plannedShaftStockLengthInches: part.plannedShaftStockLengthInches ?? existing?.plannedShaftStockLengthInches,
     stockLengthInches: part.stockLengthInches ?? existing?.stockLengthInches,
+    lengthInches: part.lengthInches ?? existing?.lengthInches,
     shaftSourceRows: Array.isArray(part.shaftSourceRows) ? part.shaftSourceRows : existing?.shaftSourceRows || [],
     status: part.status || (sourceType === "custom" ? "extracted" : "needed"),
     onHand: Number(part.onHand ?? existing?.onHand ?? 0),
@@ -2393,7 +2459,8 @@ async function upsertOperationalQueue(batchId, sourceType, catalogParts, previou
           quantityNeeded: part.quantityNeeded,
           quantityMade: 0,
           quantityReceived: 0,
-          quantityInstalled: 0
+          quantityInstalled: 0,
+          lengthInches: Number(part.lengthInches || extractShaftLengthInches(part) || 0) || undefined
         }
       ],
       createdAt: now,
@@ -4058,6 +4125,7 @@ function normalizeAssemblyCustomPart(row, input, index) {
   const text = String(row.name || "").toLowerCase();
   const shaftProfile = shaftStockProfile(row);
   const isShaftCut = isShaftCutPart(row);
+  const shaftLengthInches = isShaftCut ? extractShaftLengthInches(row) : 0;
   const stock = text.includes("churro")
     ? "Churro"
     : text.includes("spacer")
@@ -4080,6 +4148,7 @@ function normalizeAssemblyCustomPart(row, input, index) {
     process: "Manual fabrication",
     machine: "Manual fabrication",
     fabricationIntent: "make_now",
+    lengthInches: shaftLengthInches ? Number(shaftLengthInches.toFixed(3)) : undefined,
     status: "extracted",
     procurementStatus: "",
     vendorUrl: "",
