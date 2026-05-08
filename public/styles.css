@@ -1797,16 +1797,19 @@ body.dialog-open {
 
 #procurement {
   grid-template-columns: 1fr;
-  max-width: 1240px;
+  max-width: min(1780px, calc(100vw - 28px));
+  padding-left: 20px;
+  padding-right: 20px;
 }
 
 #procurement .wide-card {
   grid-column: 1 / -1;
+  padding: 18px;
 }
 
 .procurement-line-form {
   display: grid;
-  grid-template-columns: minmax(130px, .45fr) minmax(220px, 1.4fr) minmax(150px, .7fr) minmax(140px, .7fr) minmax(80px, .35fr) minmax(110px, .5fr) minmax(210px, 1fr) auto;
+  grid-template-columns: minmax(150px, .45fr) minmax(260px, 1.5fr) minmax(170px, .75fr) minmax(150px, .75fr) minmax(86px, .35fr) minmax(120px, .5fr) minmax(260px, 1.05fr) auto;
   gap: 10px;
   align-items: end;
 }
@@ -1901,9 +1904,9 @@ body.dialog-open {
 
 .queue-grid .vendor-bucket {
   display: grid;
-  grid-template-columns: minmax(150px, .2fr) minmax(0, 1fr);
-  gap: 12px;
-  padding: 10px 12px;
+  grid-template-columns: minmax(210px, 260px) minmax(0, 1fr);
+  gap: 16px;
+  padding: 12px 14px;
 }
 
 .vendor-bucket header,
@@ -2021,9 +2024,9 @@ body.dialog-open {
 
 .procurement-line-top {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto auto minmax(150px, auto) auto;
+  grid-template-columns: minmax(300px, 1.4fr) auto auto minmax(150px, auto) minmax(390px, auto);
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -2077,6 +2080,7 @@ body.dialog-open {
   justify-content: end;
   gap: 6px;
   align-items: center;
+  min-width: 0;
 }
 
 .price-pack {
