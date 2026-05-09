@@ -3035,6 +3035,8 @@ function applyProcurementMatch(line, catalog, match) {
   }
   const vendor = canonicalProcurementVendor(match.vendor || match.vendorHostname || match.productUrl) || "Unassigned";
   const sku = line.vendorSku || match.sku || catalog.vendorSku || catalog.manufacturerSku || "";
+  const packageQuantity = procurementPackageQuantity({ ...line, vendor, variantTitle: match.variantTitle || line.variantTitle || "" }, catalog);
+  const purchaseQuantity = procurementPurchaseQuantity(quantity, packageQuantity);
   Object.assign(line, {
     vendor,
     vendorId: match.vendorId || "",
@@ -3044,7 +3046,9 @@ function applyProcurementMatch(line, catalog, match) {
     vendorUrl: match.productUrl || line.vendorUrl || "",
     productUrl: match.productUrl || line.productUrl || "",
     unitPriceCents: match.unitPriceCents,
-    totalPriceCents: match.unitPriceCents == null ? null : match.unitPriceCents * quantity,
+    packageQuantity,
+    purchaseQuantity,
+    totalPriceCents: procurementTotalPriceCents(match.unitPriceCents, quantity, packageQuantity),
     currency: match.currency || "USD",
     variantId: match.variantId || "",
     variantTitle: match.variantTitle || "",
@@ -3062,6 +3066,8 @@ function applyProcurementMatch(line, catalog, match) {
       vendorUrl: match.productUrl || catalog.vendorUrl || "",
       productUrl: match.productUrl || catalog.productUrl || "",
       unitPriceCents: match.unitPriceCents,
+      packageQuantity,
+      variantTitle: match.variantTitle || catalog.variantTitle || "",
       priceUpdatedAt: match.updatedAt,
       vendorMatchId: match.id,
       matchConfidence: match.confidence,
@@ -3210,6 +3216,42 @@ function normalizeFrcToolsHit(id, query, hit, part, updatedAt) {
 
 function trustedProcurementMatchStatus(status) {
   return status === "sku_exact" || status === "manual";
+}
+
+function procurementPackageQuantity(line = {}, catalog = {}) {
+  const explicit = Number(line.packageQuantity || catalog.packageQuantity || 0);
+  if (Number.isFinite(explicit) && explicit > 1) return Math.round(explicit);
+  const text = [
+    line.variantTitle,
+    catalog.variantTitle,
+    line.name,
+    catalog.name,
+    line.description,
+    catalog.description
+  ].filter(Boolean).join(" ");
+  const patterns = [
+    /\bpack\s+of\s+(\d{1,5})\b/i,
+    /\bpkg\.?\s+of\s+(\d{1,5})\b/i,
+    /\bpackage\s+of\s+(\d{1,5})\b/i,
+    /\b(\d{1,5})\s*[- ]\s*(?:pack|pk|pkg)\b/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const value = Number(match?.[1] || 0);
+    if (Number.isFinite(value) && value > 1) return Math.round(value);
+  }
+  return 1;
+}
+
+function procurementPurchaseQuantity(quantityNeeded, packageQuantity = 1) {
+  const needed = Math.max(0, Number(quantityNeeded || 0));
+  const pack = Math.max(1, Number(packageQuantity || 1));
+  return pack > 1 ? Math.ceil(needed / pack) : needed;
+}
+
+function procurementTotalPriceCents(unitPriceCents, quantityNeeded, packageQuantity = 1) {
+  if (unitPriceCents === null || unitPriceCents === undefined || unitPriceCents === "") return null;
+  return Number(unitPriceCents) * procurementPurchaseQuantity(quantityNeeded, packageQuantity);
 }
 
 function frcToolsSearchLink(query) {
@@ -3486,8 +3528,9 @@ function procurementSnapshot(cotsParts = []) {
       lines: lines.length,
       vendors: vendorBuckets.length,
       quantity: lines.reduce((sum, line) => sum + Number(line.quantityNeeded || 0), 0),
+      purchaseQuantity: vendorBuckets.reduce((sum, bucket) => sum + Number(bucket.purchaseQuantity || 0), 0),
       matched: lines.filter((line) => line.matchStatus && !["unmatched", "lookup_failed"].includes(line.matchStatus)).length,
-      estimatedTotalCents: lines.reduce((sum, line) => sum + Number(line.totalPriceCents || 0), 0)
+      estimatedTotalCents: vendorBuckets.reduce((sum, bucket) => sum + Number(bucket.estimatedTotalCents || 0), 0)
     },
     lastMatchedAt: store.vendorMatches.reduce((latest, item) => String(item.updatedAt || "").localeCompare(latest) > 0 ? item.updatedAt : latest, "")
   };
@@ -3529,6 +3572,8 @@ function procurementLines() {
       const quantity = Number(line.quantityNeeded || catalog.quantityNeeded || 1);
       const trusted = trustedProcurementMatchStatus(line.matchStatus) && allowedProcurementVendor(line);
       const unitPriceCents = trusted ? line.unitPriceCents ?? catalog.unitPriceCents ?? null : null;
+      const packageQuantity = trusted ? procurementPackageQuantity(line, catalog) : 1;
+      const purchaseQuantity = procurementPurchaseQuantity(quantity, packageQuantity);
       const vendor = trusted ? line.vendor || catalog.vendor || "Unassigned" : inferredProcurementVendor(line, catalog);
       const sku = line.vendorSku || catalog.vendorSku || line.partNumber || catalog.partNumber || line.manufacturerSku || catalog.manufacturerSku || "";
       return {
@@ -3551,10 +3596,12 @@ function procurementLines() {
         searchUrl: line.searchUrl || vendorSearchLink(vendor, sku || line.name || catalog.name),
         variantTitle: trusted ? line.variantTitle || "" : "",
         quantityNeeded: quantity,
+        packageQuantity,
+        purchaseQuantity,
         quantityOrdered: Number(line.quantityOrdered || 0),
         quantityReceived: Number(line.quantityReceived || 0),
         unitPriceCents,
-        totalPriceCents: unitPriceCents == null ? null : unitPriceCents * quantity,
+        totalPriceCents: procurementTotalPriceCents(unitPriceCents, quantity, packageQuantity),
         currency: line.currency || "USD",
         status: line.status || order.status || "needed",
         matchStatus: trusted ? line.matchStatus : line.matchError ? "lookup_failed" : "unmatched",
@@ -3691,10 +3738,19 @@ function buildVendorBuckets(lines) {
     if (line.matchStatus && !["unmatched", "lookup_failed"].includes(line.matchStatus)) bucket.matched += 1;
     bucket.lines.push(line);
   }
-  return [...buckets.values()].map((bucket) => ({
+  return [...buckets.values()].map(finalizeProcurementVendorBucket).sort((a, b) => a.vendor.localeCompare(b.vendor));
+}
+
+function finalizeProcurementVendorBucket(bucket) {
+  const lines = aggregateProcurementLines(bucket.lines || []);
+  return {
     ...bucket,
-    lines: aggregateProcurementLines(bucket.lines)
-  })).sort((a, b) => a.vendor.localeCompare(b.vendor));
+    quantity: lines.reduce((sum, line) => sum + Number(line.quantityNeeded || 0), 0),
+    purchaseQuantity: lines.reduce((sum, line) => sum + Number(line.purchaseQuantity || line.quantityNeeded || 0), 0),
+    estimatedTotalCents: lines.reduce((sum, line) => sum + Number(line.totalPriceCents || 0), 0),
+    matched: lines.filter((line) => line.matchStatus && !["unmatched", "lookup_failed"].includes(line.matchStatus)).length,
+    lines
+  };
 }
 
 function aggregateProcurementLines(lines) {
@@ -3710,12 +3766,15 @@ function aggregateProcurementLines(lines) {
         neededBy: [],
         lineKeys: [],
         quantityNeeded: 0,
+        purchaseQuantity: 0,
         totalPriceCents: 0
       });
     }
     const existing = grouped.get(key);
     existing.quantityNeeded += Number(line.quantityNeeded || 0);
-    existing.totalPriceCents += Number(line.totalPriceCents || 0);
+    existing.packageQuantity = procurementPackageQuantity(existing, line);
+    existing.purchaseQuantity = procurementPurchaseQuantity(existing.quantityNeeded, existing.packageQuantity);
+    existing.totalPriceCents = procurementTotalPriceCents(existing.unitPriceCents, existing.quantityNeeded, existing.packageQuantity);
     existing.lineKeys = [...(existing.lineKeys || []), ...(line.lineKeys || (line.lineKey ? [line.lineKey] : []))];
     existing.neededBy.push({
       robotId: line.robotId,
@@ -3769,16 +3828,27 @@ function buildProcurementProjectBuckets(lines) {
     vendorBucket.estimatedTotalCents += Number(line.totalPriceCents || 0);
     vendorBucket.lines.push(line);
   }
-  return [...projects.values()].map((project) => ({
-    ...project,
-    subassemblies: [...project.subassemblies.values()].map((subassembly) => ({
-      ...subassembly,
-      vendorBuckets: [...subassembly.vendorBuckets.values()].map((bucket) => ({
-        ...bucket,
-        lines: aggregateProcurementLines(bucket.lines)
-      })).sort((a, b) => a.vendor.localeCompare(b.vendor))
-    })).sort((a, b) => a.name.localeCompare(b.name))
-  })).sort((a, b) => a.name.localeCompare(b.name));
+  return [...projects.values()].map((project) => {
+    const subassemblies = [...project.subassemblies.values()].map((subassembly) => {
+      const vendorBuckets = [...subassembly.vendorBuckets.values()]
+        .map(finalizeProcurementVendorBucket)
+        .sort((a, b) => a.vendor.localeCompare(b.vendor));
+      return {
+        ...subassembly,
+        quantity: vendorBuckets.reduce((sum, bucket) => sum + Number(bucket.quantity || 0), 0),
+        purchaseQuantity: vendorBuckets.reduce((sum, bucket) => sum + Number(bucket.purchaseQuantity || 0), 0),
+        estimatedTotalCents: vendorBuckets.reduce((sum, bucket) => sum + Number(bucket.estimatedTotalCents || 0), 0),
+        vendorBuckets
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      ...project,
+      quantity: subassemblies.reduce((sum, subassembly) => sum + Number(subassembly.quantity || 0), 0),
+      purchaseQuantity: subassemblies.reduce((sum, subassembly) => sum + Number(subassembly.purchaseQuantity || 0), 0),
+      estimatedTotalCents: subassemblies.reduce((sum, subassembly) => sum + Number(subassembly.estimatedTotalCents || 0), 0),
+      subassemblies
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function dashboardSnapshot(user = null) {
@@ -5474,6 +5544,14 @@ function validateProcurementLineInput(body = {}) {
     ? boundedInteger(body.unitPriceCents, null, 0, 99999999)
     : procurementCents(body.unitPriceDollars ?? body.unitPrice, null);
   const status = validateProcurementStatus(body.status || "needed");
+  const packageQuantity = procurementPackageQuantity({
+    ...body,
+    name,
+    vendor,
+    vendorSku,
+    partNumber,
+    variantTitle: body.variantTitle || body.unitOfMeasure || ""
+  });
   return {
     name,
     vendor,
@@ -5485,8 +5563,10 @@ function validateProcurementLineInput(body = {}) {
     productUrl: String(body.productUrl || body.vendorUrl || "").trim().slice(0, 400),
     vendorUrl: String(body.vendorUrl || body.productUrl || vendorLink(vendor, vendorSku || partNumber, name)).trim().slice(0, 400),
     quantityNeeded,
+    packageQuantity,
+    purchaseQuantity: procurementPurchaseQuantity(quantityNeeded, packageQuantity),
     unitPriceCents,
-    totalPriceCents: unitPriceCents === null ? null : unitPriceCents * quantityNeeded,
+    totalPriceCents: procurementTotalPriceCents(unitPriceCents, quantityNeeded, packageQuantity),
     currency: "USD",
     status
   };
@@ -5499,7 +5579,9 @@ function applyProcurementLineUpdate(line, body = {}, now = new Date().toISOStrin
     ...line,
     ...next,
     quantityNeeded: next.quantityNeeded,
-    totalPriceCents: next.unitPriceCents === null ? null : next.unitPriceCents * next.quantityNeeded,
+    packageQuantity: next.packageQuantity,
+    purchaseQuantity: next.purchaseQuantity,
+    totalPriceCents: procurementTotalPriceCents(next.unitPriceCents, next.quantityNeeded, next.packageQuantity),
     matchStatus: next.productUrl || next.unitPriceCents !== null ? "manual" : line.matchStatus || "unmatched",
     matchError: "",
     priceUpdatedAt: next.unitPriceCents !== existing.unitPriceCents ? now : line.priceUpdatedAt || ""

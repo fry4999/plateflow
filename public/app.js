@@ -2335,8 +2335,13 @@ function renderProcurementLine(line) {
   const name = exact ? line.matchedTitle || line.name || "Purchased item" : line.name || "Purchased item";
   const sku = line.vendorSku || line.partNumber || line.manufacturerSku || "No SKU";
   const quantity = Number(line.quantityNeeded || 0);
+  const packageQuantity = Math.max(1, Number(line.packageQuantity || 1));
+  const purchaseQuantity = Math.max(0, Number(line.purchaseQuantity || (packageQuantity > 1 ? Math.ceil(quantity / packageQuantity) : quantity)));
   const unit = line.unitPriceCents == null ? "price n/a" : formatMoney(line.unitPriceCents);
   const total = line.totalPriceCents == null ? "n/a" : formatMoney(line.totalPriceCents);
+  const unitLabel = packageQuantity > 1 ? `/pack of ${packageQuantity}` : "/ea";
+  const totalLabel = packageQuantity > 1 ? `${purchaseQuantity} pack${purchaseQuantity === 1 ? "" : "s"} total` : "total";
+  const packageHint = packageQuantity > 1 ? `Need ${quantity}; buy ${purchaseQuantity} pack${purchaseQuantity === 1 ? "" : "s"} of ${packageQuantity}` : "Quantity needed";
   const neededBy = Array.isArray(line.neededBy) ? line.neededBy.map((item) => `${item.robotName || "No project"} / ${item.subassemblyName || "No subassembly"} x${Number(item.quantityNeeded || 0)}`).join("\n") : "";
   const fallbackUrl = procurementFallbackUrl(line.vendor, sku, name);
   const actionUrl = line.productUrl || line.vendorUrl || line.searchUrl || fallbackUrl;
@@ -2358,13 +2363,13 @@ function renderProcurementLine(line) {
         <span class="match-chip ${escapeAttr(line.matchStatus || "unmatched")}">${escapeHtml(procurementMatchLabel(line.matchStatus))}</span>
         <span class="procurement-status ${escapeAttr(status)}">${escapeHtml(procurementStatusLabel(status))}</span>
         <span class="price-pack">
-          <span class="quantity-control${aggregate ? " aggregate" : ""}" title="${escapeAttr(aggregate ? `Total across ${keys.length} matching BOM lines` : "Quantity needed")}">
+          <span class="quantity-control${aggregate ? " aggregate" : ""}" title="${escapeAttr(aggregate ? `${packageHint}; total across ${keys.length} matching BOM lines` : packageHint)}">
             <button class="ghost micro" type="button" data-action="adjust-procurement-quantity" data-delta="-1" aria-label="Decrease quantity">-</button>
             <input data-procurement-quantity type="number" min="0" max="9999" value="${quantity}" aria-label="Quantity needed">
             <button class="ghost micro" type="button" data-action="adjust-procurement-quantity" data-delta="1" aria-label="Increase quantity">+</button>
           </span>
-          <b><span>${escapeHtml(unit)}</span><small>/ea</small></b>
-          <strong><span>${escapeHtml(total)}</span><small>total</small></strong>
+          <b><span>${escapeHtml(unit)}</span><small>${escapeHtml(unitLabel)}</small></b>
+          <strong><span>${escapeHtml(total)}</span><small>${escapeHtml(totalLabel)}</small></strong>
         </span>
         <span class="procurement-line-actions">
           ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
@@ -2395,9 +2400,9 @@ function renderProcurementLine(line) {
             <input data-field="vendorSku" value="${escapeAttr(sku === "No SKU" ? "" : sku)}">
           </label>
           <label>
-            <span>Qty</span>
+            <span>Needed qty</span>
             <input data-field="quantityNeeded" type="number" min="0" max="9999" value="${quantity}">
-            ${aggregate ? `<small class="field-hint">Total across ${keys.length} matching BOM lines</small>` : ""}
+            <small class="field-hint">${escapeHtml(packageQuantity > 1 ? packageHint : aggregate ? `Total across ${keys.length} matching BOM lines` : "Actual parts needed")}</small>
           </label>
           <label>
             <span>Unit</span>
