@@ -3819,9 +3819,13 @@ async function deleteProcurementLines(source, lineKeys, scope = "line") {
 
 async function transferProcurementToManufacturing(row, lineKeys) {
   const mutationSeq = nextProcurementMutationSeq();
-  row.classList.add("removing");
-  setProcurementPending(row, true);
-  requestAnimationFrame(() => row.remove());
+  const targets = procurementRowsForLineKeys(lineKeys);
+  const visibleTargets = targets.length ? targets : [row].filter(Boolean);
+  for (const target of visibleTargets) {
+    target.classList.add("removing");
+    setProcurementPending(target, true);
+  }
+  requestAnimationFrame(() => visibleTargets.forEach((target) => target.remove()));
   try {
     const result = await api("/api/procurement/lines/transfer-manufacturing", {
       method: "POST",
@@ -3836,11 +3840,20 @@ async function transferProcurementToManufacturing(row, lineKeys) {
       robots: result.robots || dashboardState?.robots
     };
     renderDashboardChrome(dashboardState);
-    renderActiveDashboardPage({ preserveParts: true, quiet: true });
+    if (currentPageId() === "procurement" && result.procurement) renderProcurement(result.procurement);
+    if (currentPageId() === "fabrication" && result.fabrication) renderFabrication(result.fabrication);
+    if (currentPageId() === "dashboard") renderOverview(dashboardState);
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();
   }
+}
+
+function procurementRowsForLineKeys(lineKeys = []) {
+  if (!els.procurementOrders) return [];
+  const wantedKeys = new Set(lineKeys);
+  return [...els.procurementOrders.querySelectorAll(".procurement-line")]
+    .filter((item) => parseLineKeys(item.dataset.lineKeys).some((key) => wantedKeys.has(key)));
 }
 
 function nextProcurementMutationSeq() {
