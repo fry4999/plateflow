@@ -147,7 +147,7 @@ const demoParts = [
   { id: "JRM", name: "battery-retainer", material: "304 Stainless Steel", thickness: "0.060 in", quantity: 2, finish: "Raw", selected: false }
 ];
 
-const roles = ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"];
+const roles = ["admin", "student"];
 const userStatuses = ["active", "disabled", "pending"];
 const fabricationStatuses = ["todo", "in_progress", "completed"];
 const procurementStatuses = ["needed", "sourcing", "ready_to_order", "ordered", "partially_received", "received", "backordered", "canceled"];
@@ -1385,7 +1385,7 @@ function renderAdminUsers(result) {
     `
       <div class="admin-counts">
         <strong>${Number(counts.users || users.length)} account${Number(counts.users || users.length) === 1 ? "" : "s"}</strong>
-        <span>${Number(counts.active || 0)} active · ${Number(counts.admins || 0)} admin · ${Number(counts.pendingInvites || invites.filter((invite) => invite.status === "pending").length)} pending invite${Number(counts.pendingInvites || 0) === 1 ? "" : "s"}</span>
+        <span>${Number(counts.active || 0)} active · ${Number(counts.admins || 0)} admin · ${Number(counts.students || 0)} student · ${Number(counts.pendingInvites || invites.filter((invite) => invite.status === "pending").length)} pending invite${Number(counts.pendingInvites || 0) === 1 ? "" : "s"}</span>
       </div>
     `,
     ...users.map((user) => `

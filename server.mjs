@@ -51,6 +51,9 @@ let mcmasterAuthCache = { token: "", expiresAtMs: 0 };
 let storeRevision = 0;
 let realtimeTimer = null;
 
+const APP_ROLES = ["admin", "student"];
+const WORK_ROLES = ["admin", "student"];
+
 const allowedProcurementVendorRules = [
   { name: "REV", patterns: [/revrobotics/i, /\brev\b/i] },
   { name: "The Thrifty Bot", patterns: [/thethriftybot/i, /thrifty\s*bot/i, /\bttb\b/i] },
@@ -99,40 +102,40 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/session") return json(res, 200, publicSession(session));
     if (url.pathname === "/api/events") return subscribeEventStream(req, res, session);
     if (url.pathname === "/api/inventory") return withAppAccess(session, res, () => json(res, 200, inventorySnapshot()));
-    if (url.pathname === "/api/inventory/items" && req.method === "POST") return withAppAccess(session, res, (user) => createInventoryItem(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
-    if (url.pathname === "/api/inventory/items/bulk-delete" && req.method === "POST") return withAppAccess(session, res, (user) => bulkDeleteInventoryItems(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
-    if (url.pathname.startsWith("/api/inventory/items/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), ["admin", "mentor", "purchaser", "fabricator"]);
-    if (url.pathname.startsWith("/api/inventory/items/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), ["admin", "mentor", "purchaser", "fabricator"]);
+    if (url.pathname === "/api/inventory/items" && req.method === "POST") return withAppAccess(session, res, (user) => createInventoryItem(req, res, session, user), WORK_ROLES);
+    if (url.pathname === "/api/inventory/items/bulk-delete" && req.method === "POST") return withAppAccess(session, res, (user) => bulkDeleteInventoryItems(req, res, session, user), WORK_ROLES);
+    if (url.pathname.startsWith("/api/inventory/items/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), WORK_ROLES);
+    if (url.pathname.startsWith("/api/inventory/items/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteInventoryItem(req, res, session, user, pathId(url.pathname, "/api/inventory/items/")), WORK_ROLES);
     if (url.pathname === "/api/dashboard") return withAppAccess(session, res, (user) => json(res, 200, dashboardSnapshot(user)));
     if (url.pathname === "/api/settings" && req.method === "PATCH") return withAppAccess(session, res, (user) => updateSettings(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/sync-batches") return withAppAccess(session, res, () => json(res, 200, syncBatchSnapshot()));
     if (url.pathname === "/api/raw-materials" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, { rawMaterials: store.rawMaterials }));
-    if (url.pathname === "/api/raw-materials" && req.method === "POST") return withAppAccess(session, res, () => addRawMaterial(req, res, session), ["admin", "mentor", "fabricator"]);
+    if (url.pathname === "/api/raw-materials" && req.method === "POST") return withAppAccess(session, res, () => addRawMaterial(req, res, session), WORK_ROLES);
     if (url.pathname === "/api/robots" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() }));
-    if (url.pathname === "/api/robots" && req.method === "POST") return withAppAccess(session, res, (user) => createRobot(req, res, session, user), ["admin", "mentor"]);
-    if (url.pathname.startsWith("/api/robots/") && url.pathname.endsWith("/requirements") && req.method === "POST") return withAppAccess(session, res, (user) => attachRobotRequirements(req, res, session, user, pathId(url.pathname, "/api/robots/").replace(/\/requirements$/, "")), ["admin", "mentor", "student"]);
-    if (url.pathname.startsWith("/api/robots/") && url.pathname.includes("/requirements/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateRobotRequirement(req, res, session, user, robotRequirementPath(url.pathname)), ["admin", "mentor", "student"]);
-    if (url.pathname.startsWith("/api/robots/") && url.pathname.includes("/subassemblies/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteRobotSubassembly(req, res, session, user, robotSubassemblyPath(url.pathname)), ["admin", "mentor"]);
-    if (url.pathname.startsWith("/api/robots/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteRobot(req, res, session, user, pathId(url.pathname, "/api/robots/")), ["admin", "mentor"]);
-    if (url.pathname === "/api/audit-log") return withAppAccess(session, res, () => json(res, 200, { auditLogs: store.auditLogs.slice(0, 50) }), ["admin", "mentor"]);
+    if (url.pathname === "/api/robots" && req.method === "POST") return withAppAccess(session, res, (user) => createRobot(req, res, session, user), WORK_ROLES);
+    if (url.pathname.startsWith("/api/robots/") && url.pathname.endsWith("/requirements") && req.method === "POST") return withAppAccess(session, res, (user) => attachRobotRequirements(req, res, session, user, pathId(url.pathname, "/api/robots/").replace(/\/requirements$/, "")), WORK_ROLES);
+    if (url.pathname.startsWith("/api/robots/") && url.pathname.includes("/requirements/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateRobotRequirement(req, res, session, user, robotRequirementPath(url.pathname)), WORK_ROLES);
+    if (url.pathname.startsWith("/api/robots/") && url.pathname.includes("/subassemblies/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteRobotSubassembly(req, res, session, user, robotSubassemblyPath(url.pathname)), WORK_ROLES);
+    if (url.pathname.startsWith("/api/robots/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteRobot(req, res, session, user, pathId(url.pathname, "/api/robots/")), WORK_ROLES);
+    if (url.pathname === "/api/audit-log") return withAppAccess(session, res, () => json(res, 200, { auditLogs: store.auditLogs.slice(0, 50) }), ["admin"]);
     if (url.pathname === "/api/admin/users" && req.method === "GET") return withAppAccess(session, res, () => json(res, 200, adminUsersSnapshot()), ["admin"]);
     if (url.pathname.startsWith("/api/admin/users/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateAdminUser(req, res, session, user, pathId(url.pathname, "/api/admin/users/")), ["admin"]);
     if (url.pathname.startsWith("/api/admin/users/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteAdminUser(req, res, session, user, pathId(url.pathname, "/api/admin/users/")), ["admin"]);
     if (url.pathname === "/api/admin/invites" && req.method === "POST") return withAppAccess(session, res, (user) => createInvite(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/admin/clear-catalog" && req.method === "POST") return withAppAccess(session, res, (user) => clearCatalog(req, res, session, user), ["admin"]);
     if (url.pathname === "/api/admin/remove-placeholder-cots" && req.method === "POST") return withAppAccess(session, res, () => removePlaceholderCots(req, res, session), ["admin"]);
-    if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
-    if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), ["admin", "mentor", "fabricator"]);
-    if (url.pathname === "/api/procurement/refresh" && req.method === "POST") return withAppAccess(session, res, (user) => refreshProcurement(req, res, session, user), ["admin", "mentor", "purchaser"]);
-    if (url.pathname === "/api/procurement/lines" && req.method === "POST") return withAppAccess(session, res, (user) => createProcurementLine(req, res, session, user), ["admin", "mentor", "purchaser"]);
-    if (url.pathname === "/api/procurement/lines" && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementLines(req, res, session, user), ["admin", "mentor", "purchaser"]);
-    if (url.pathname === "/api/procurement/lines" && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteProcurementLines(req, res, session, user), ["admin", "mentor", "purchaser"]);
-    if (url.pathname === "/api/procurement/lines/transfer-manufacturing" && req.method === "POST") return withAppAccess(session, res, (user) => transferProcurementLinesToManufacturing(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
-    if (url.pathname.startsWith("/api/procurement/orders/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementOrder(req, res, session, user, pathId(url.pathname, "/api/procurement/orders/")), ["admin", "mentor", "purchaser"]);
-    if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), ["admin", "mentor", "fabricator", "student"]);
-    if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), ["admin", "mentor", "purchaser", "student"]);
-    if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return withAppAccess(session, res, () => exportStep(req, res, session), ["admin", "mentor", "fabricator"]);
-    if (url.pathname === "/api/orders" && req.method === "POST") return withAppAccess(session, res, () => createOrder(req, res, session), ["admin", "mentor", "purchaser"]);
+    if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), WORK_ROLES);
+    if (url.pathname.startsWith("/api/fabrication/jobs/") && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteFabricationJob(req, res, session, user, pathId(url.pathname, "/api/fabrication/jobs/")), WORK_ROLES);
+    if (url.pathname === "/api/procurement/refresh" && req.method === "POST") return withAppAccess(session, res, (user) => refreshProcurement(req, res, session, user), WORK_ROLES);
+    if (url.pathname === "/api/procurement/lines" && req.method === "POST") return withAppAccess(session, res, (user) => createProcurementLine(req, res, session, user), WORK_ROLES);
+    if (url.pathname === "/api/procurement/lines" && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementLines(req, res, session, user), WORK_ROLES);
+    if (url.pathname === "/api/procurement/lines" && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteProcurementLines(req, res, session, user), WORK_ROLES);
+    if (url.pathname === "/api/procurement/lines/transfer-manufacturing" && req.method === "POST") return withAppAccess(session, res, (user) => transferProcurementLinesToManufacturing(req, res, session, user), WORK_ROLES);
+    if (url.pathname.startsWith("/api/procurement/orders/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementOrder(req, res, session, user, pathId(url.pathname, "/api/procurement/orders/")), WORK_ROLES);
+    if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), WORK_ROLES);
+    if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), WORK_ROLES);
+    if (url.pathname === "/api/onshape/export-step" && req.method === "POST") return withAppAccess(session, res, () => exportStep(req, res, session), WORK_ROLES);
+    if (url.pathname === "/api/orders" && req.method === "POST") return withAppAccess(session, res, () => createOrder(req, res, session), WORK_ROLES);
     if (url.pathname.startsWith("/api/downloads/")) return downloadBlob(res, session, url.pathname.split("/").pop());
     if (url.pathname.startsWith("/api/")) return json(res, 404, { error: "Not found" });
 
@@ -233,8 +236,8 @@ function mergeStore(parsed) {
     ...fallback,
     ...parsed,
     teams: Array.isArray(parsed.teams) ? parsed.teams : fallback.teams,
-    invites: Array.isArray(parsed.invites) ? parsed.invites : fallback.invites,
-    users: Array.isArray(parsed.users) ? parsed.users : fallback.users,
+    invites: Array.isArray(parsed.invites) ? parsed.invites.map(normalizeStoredIdentity) : fallback.invites,
+    users: Array.isArray(parsed.users) ? parsed.users.map(normalizeStoredIdentity) : fallback.users,
     robots: Array.isArray(parsed.robots) ? parsed.robots : fallback.robots,
     inventoryRecords: Array.isArray(parsed.inventoryRecords) ? parsed.inventoryRecords : fallback.inventoryRecords,
     syncBatches: Array.isArray(parsed.syncBatches) ? parsed.syncBatches : fallback.syncBatches,
@@ -250,6 +253,15 @@ function mergeStore(parsed) {
     settings: mergeSettings(parsed.settings || fallback.settings),
     auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : fallback.auditLogs
   };
+}
+
+function normalizeStoredIdentity(identity) {
+  if (!identity || typeof identity !== "object") return identity;
+  return { ...identity, role: normalizeRole(identity.role) };
+}
+
+function normalizeRole(value) {
+  return String(value || "").trim() === "admin" ? "admin" : "student";
 }
 
 function defaultSettings() {
@@ -4026,7 +4038,7 @@ function dashboardSnapshot(user = null) {
     rawMaterials: store.rawMaterials,
     settings: settingsSnapshot(),
     admin: {
-      roles: adminVisible ? ["admin", "mentor", "purchaser", "fabricator", "student", "read_only"] : [],
+      roles: adminVisible ? APP_ROLES : [],
       locations: adminVisible ? store.inventoryLocations : [],
       auditLogs: adminVisible ? store.auditLogs.slice(0, 20) : []
     }
@@ -5552,6 +5564,7 @@ function adminUsersSnapshot() {
       users: store.users.length,
       active: activeUsers.length,
       admins: activeUsers.filter((user) => user.role === "admin").length,
+      students: activeUsers.filter((user) => user.role === "student").length,
       pendingInvites: pendingInvites.length
     },
     users: store.users.map(publicAppUser),
@@ -6179,9 +6192,8 @@ function activeAdminCount() {
 }
 
 function validateRole(value) {
-  const role = String(value || "").trim();
-  const roles = new Set(["admin", "mentor", "purchaser", "fabricator", "student", "read_only"]);
-  if (!roles.has(role)) throw httpError(400, "Invalid role");
+  const role = String(value || "student").trim();
+  if (!APP_ROLES.includes(role)) throw httpError(400, "Invalid role");
   return role;
 }
 

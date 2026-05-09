@@ -569,7 +569,7 @@
             <li>Tokens stay on the server behind an HTTP-only session cookie.</li>
             <li>Mutating requests require CSRF tokens and validated input.</li>
             <li>Browser code never calls Onshape directly.</li>
-            <li>Roles planned: admin, mentor, purchaser, fabricator, student, read_only.</li>
+            <li>Roles: admin can manage settings and users; student can use the workspace.</li>
           </ul>
           <form id="inviteForm" class="invite-form">
             <label>
@@ -580,10 +580,6 @@
               <span>Role</span>
               <select name="role">
                 <option value="student">student</option>
-                <option value="mentor">mentor</option>
-                <option value="fabricator">fabricator</option>
-                <option value="purchaser">purchaser</option>
-                <option value="read_only">read_only</option>
                 <option value="admin">admin</option>
               </select>
             </label>
