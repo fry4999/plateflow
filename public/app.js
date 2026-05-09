@@ -1415,7 +1415,7 @@ function renderSettingsRoutingRuleFragment(rule) {
       <label>
         <span>Machines allowed</span>
         <input data-rule-field="machines" value="${escapeAttr((rule.machines || []).join(", "))}" placeholder="Router, Fabworks">
-        <small class="settings-help" tabindex="0" data-help="Comma-separated machines/processes that should be available for this material in the Onshape panel. Leave blank to allow the full machine list.">Allowed choices.</small>
+        <small class="settings-help" tabindex="0" data-help="Comma-separated machines/processes available for this material. The first one becomes the default process when an imported custom part has no real process set yet.">Allowed choices.</small>
       </label>
       <label>
         <span>Stock allowed</span>

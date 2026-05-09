@@ -1638,16 +1638,19 @@ function stockCategory(stock) {
 
 function applyAutoRouting(part) {
   const rule = autoRoutingRuleForPart(part);
-  if (!rule) return part;
-  const machine = rule.machine || part.machine || part.process || "";
+  const materialRule = materialRoutingRuleForPart(part);
+  if (!rule && !materialRule) return part;
+  const existingMachine = String(part.machine || part.process || "").trim();
+  const machine = rule?.machine || (isFallbackProcess(existingMachine) ? firstMaterialRoutingMachine(materialRule) : existingMachine) || existingMachine;
+  const stock = rule?.stock || part.stock || firstMaterialRoutingStock(materialRule) || "";
   return {
     ...part,
-    stock: rule.stock || part.stock || "",
+    stock,
     machine,
-    process: rule.machine || rule.process || part.process || machine,
-    category: rule.category || part.category || stockCategory(rule.stock || part.stock),
-    fabricationIntent: rule.fabricationIntent || part.fabricationIntent || (machine.toLowerCase() === "fabworks" ? "send_out" : "make_now"),
-    routingRule: rule.match
+    process: rule?.machine || rule?.process || (machine && machine !== existingMachine ? machine : part.process) || machine,
+    category: rule?.category || part.category || stockCategory(stock),
+    fabricationIntent: rule?.fabricationIntent || part.fabricationIntent || (String(machine).toLowerCase() === "fabworks" ? "send_out" : "make_now"),
+    routingRule: rule?.match || materialRule?.match
   };
 }
 
@@ -1662,6 +1665,25 @@ function autoRoutingRuleForPart(part) {
   ].filter(Boolean).join(" ").toLowerCase();
   if (!text) return null;
   return (settingsSnapshot().routing.autoRules || []).find((rule) => routingRuleMatches(rule.match, text)) || null;
+}
+
+function materialRoutingRuleForPart(part) {
+  const material = String(part?.material || "").toLowerCase();
+  if (!material || ["unassigned", "purchased"].includes(material)) return null;
+  return (settingsSnapshot().routing.rules || []).find((rule) => routingRuleMatches(rule.match, material)) || null;
+}
+
+function firstMaterialRoutingMachine(rule) {
+  return Array.isArray(rule?.machines) ? String(rule.machines.find(Boolean) || "").trim() : "";
+}
+
+function firstMaterialRoutingStock(rule) {
+  return Array.isArray(rule?.stockTypes) ? String(rule.stockTypes.find(Boolean) || "").trim() : "";
+}
+
+function isFallbackProcess(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[_-]+/g, " ");
+  return !normalized || normalized === "unknown" || normalized === "manual fabrication";
 }
 
 function routingRuleMatches(match, text) {
@@ -5598,7 +5620,13 @@ function procurementLineToCustomPart(line = {}, catalog = {}) {
     material: line.material || catalog.material,
     stock: line.stock || catalog.stock
   });
-  const machine = String(line.machine || line.process || catalog.machine || catalog.process || autoRule?.machine || "Manual fabrication").trim();
+  const materialRule = materialRoutingRuleForPart({
+    material: line.material || catalog.material,
+    name: line.name || catalog.name
+  });
+  const existingMachine = String(line.machine || line.process || catalog.machine || catalog.process || "").trim();
+  const machine = String(autoRule?.machine || (isFallbackProcess(existingMachine) ? firstMaterialRoutingMachine(materialRule) : existingMachine) || existingMachine || "Manual fabrication").trim();
+  const stock = autoRule?.stock || line.stock || catalog.stock || firstMaterialRoutingStock(materialRule) || "";
   const source = {
     ...(catalog.source || {}),
     ...(line.source || {}),
@@ -5612,13 +5640,13 @@ function procurementLineToCustomPart(line = {}, catalog = {}) {
     id: `custom-${line.id || normalizeKey(line.name || catalog.name)}`,
     name: line.name || catalog.name || "Custom part",
     partNumber: line.partNumber || catalog.partNumber || "",
-    category: autoRule?.category || line.category || catalog.category || "fabricated",
+    category: autoRule?.category || line.category || catalog.category || stockCategory(stock),
     material: line.material || catalog.material || "",
     thickness: line.thickness || catalog.thickness || "",
-    stock: line.stock || catalog.stock || autoRule?.stock || "",
+    stock,
     process: machine,
     machine,
-    fabricationIntent: line.fabricationIntent || catalog.fabricationIntent || autoRule?.fabricationIntent || "make_now",
+    fabricationIntent: line.fabricationIntent || catalog.fabricationIntent || autoRule?.fabricationIntent || (String(machine).toLowerCase() === "fabworks" ? "send_out" : "make_now"),
     quantityNeeded: Number(line.quantityNeeded || catalog.quantityNeeded || 1),
     quantity: Number(line.quantityNeeded || catalog.quantityNeeded || 1),
     robotId: line.robotId || catalog.robotId || "",
