@@ -1352,9 +1352,24 @@ function renderSettings(settings) {
 
 function settingsListConfig(name) {
   return {
-    materials: { id: "settingsMaterialsList", label: "Material" },
-    stockTypes: { id: "settingsStockTypesList", label: "Stock type" },
-    machines: { id: "settingsMachinesList", label: "Machine/process" }
+    materials: {
+      id: "settingsMaterialsList",
+      label: "Material option",
+      placeholder: "6061 Aluminum",
+      help: "A material name that can appear in the Onshape panel and material-routing rules."
+    },
+    stockTypes: {
+      id: "settingsStockTypesList",
+      label: "Stock type",
+      placeholder: "Tube 1x1",
+      help: "A physical stock form used for custom parts, such as Sheet/Plate, Tube 1x1, Spacer Stock, Churro, or Rounded Hex."
+    },
+    machines: {
+      id: "settingsMachinesList",
+      label: "Machine/process",
+      placeholder: "Router",
+      help: "A manufacturing process shown on fabrication cards, such as Router, Fabworks, Manual fabrication, or 3D print."
+    }
   }[name];
 }
 
@@ -1369,9 +1384,14 @@ function renderSettingsList(name, values) {
 }
 
 function settingsListRow(name, value, label) {
+  const config = settingsListConfig(name) || {};
   return `
     <div class="settings-list-row" data-settings-list="${escapeAttr(name)}">
-      <input data-settings-list-value="${escapeAttr(name)}" value="${escapeAttr(value)}" aria-label="${escapeAttr(label)}">
+      <label>
+        <span>${escapeHtml(label)}</span>
+        <input data-settings-list-value="${escapeAttr(name)}" value="${escapeAttr(value)}" aria-label="${escapeAttr(label)}" placeholder="${escapeAttr(config.placeholder || label)}">
+        <small class="settings-help" tabindex="0" data-help="${escapeAttr(config.help || "This option is available across PlateFlow for all users.")}">Used across all users.</small>
+      </label>
       <button class="ghost small" type="button" data-settings-action="remove-settings-row">Remove</button>
     </div>
   `;
@@ -1390,14 +1410,17 @@ function renderSettingsRoutingRuleFragment(rule) {
       <label>
         <span>When material contains</span>
         <input data-rule-field="match" value="${escapeAttr(rule.match || "")}" placeholder="polycarbonate, aluminum">
+        <small class="settings-help" tabindex="0" data-help="Comma-separated words to look for in a material name. If any word matches, this rule controls the machine and stock choices.">Match words.</small>
       </label>
       <label>
         <span>Machines allowed</span>
         <input data-rule-field="machines" value="${escapeAttr((rule.machines || []).join(", "))}" placeholder="Router, Fabworks">
+        <small class="settings-help" tabindex="0" data-help="Comma-separated machines/processes that should be available for this material in the Onshape panel. Leave blank to allow the full machine list.">Allowed choices.</small>
       </label>
       <label>
         <span>Stock allowed</span>
         <input data-rule-field="stockTypes" value="${escapeAttr((rule.stockTypes || []).join(", "))}" placeholder="Sheet/Plate, Tube 1x1">
+        <small class="settings-help" tabindex="0" data-help="Comma-separated stock types that should be available for this material. Leave blank to allow the full stock list.">Allowed stock.</small>
       </label>
       <button class="ghost small" type="button" data-settings-action="remove-settings-row">Remove</button>
     </article>
@@ -1417,24 +1440,29 @@ function renderSettingsAutoRuleFragment(rule) {
       <label>
         <span>When part name contains</span>
         <input data-rule-field="match" value="${escapeAttr(rule.match || "")}" placeholder="round spacer">
+        <small class="settings-help" tabindex="0" data-help="Comma-separated words or phrases to match against the part name, part number, category, material, and stock.">Match words.</small>
       </label>
       <label>
         <span>Stock</span>
         <input data-rule-field="stock" value="${escapeAttr(rule.stock || "")}" placeholder="Spacer Stock">
+        <small class="settings-help" tabindex="0" data-help="The stock type PlateFlow should assign automatically when the match rule triggers.">Auto stock.</small>
       </label>
       <label>
         <span>Machine/process</span>
         <input data-rule-field="machine" value="${escapeAttr(rule.machine || "")}" placeholder="Manual fabrication">
+        <small class="settings-help" tabindex="0" data-help="The manufacturing process PlateFlow should assign automatically when this rule triggers.">Auto process.</small>
       </label>
       <label>
         <span>Category</span>
         <input data-rule-field="category" value="${escapeAttr(rule.category || "")}" placeholder="stock">
+        <small class="settings-help" tabindex="0" data-help="The inventory/fabrication category to assign, such as shaft, spacer, plate, bracket, pulley, or stock.">Auto category.</small>
       </label>
       <label>
         <span>Intent</span>
         <select data-rule-field="fabricationIntent">
           ${["make_now", "send_out", "defer", "review_needed"].map((intent) => `<option value="${intent}"${intent === (rule.fabricationIntent || "make_now") ? " selected" : ""}>${intent.replace(/_/g, " ")}</option>`).join("")}
         </select>
+        <small class="settings-help" tabindex="0" data-help="make_now goes to in-house manufacturing, send_out routes external work, defer keeps it for later, and review_needed flags it for a human check.">Default intent.</small>
       </label>
       <button class="ghost small" type="button" data-settings-action="remove-settings-row">Remove</button>
     </article>

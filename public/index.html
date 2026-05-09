@@ -435,7 +435,7 @@
             <header>
               <div>
                 <h3>Part number template</h3>
-                <p>Pick a format, then adjust the pieces.</p>
+                <p class="settings-help" tabindex="0" data-help="This controls the part numbers PlateFlow generates for custom parts when Onshape does not already provide one. It does not rename anything inside Onshape.">Pick a format, then adjust the pieces.</p>
               </div>
             </header>
             <div class="template-presets">
@@ -446,24 +446,28 @@
             <label>
               <span>Template</span>
               <input name="template" autocomplete="off" placeholder="{prefix}-{year}-{kind}-{number}-{subsystem}">
-              <small>Tokens: {prefix}, {year}, {kind}, {number}, {subsystem}, {source}, {part}</small>
+              <small class="settings-help" tabindex="0" data-help="{prefix} is usually the team number. {year} is the season year. {kind} is P for part or A for assembly. {number} is the generated sequence. {subsystem} is the subsystem acronym. {source} and {part} are fallback codes from the source document and part name.">Tokens: {prefix}, {year}, {kind}, {number}, {subsystem}, {source}, {part}</small>
             </label>
             <div class="settings-row">
               <label>
                 <span>Team prefix</span>
                 <input name="prefix" autocomplete="off" placeholder="4999">
+                <small class="settings-help" tabindex="0" data-help="Used as the first part of generated part numbers. For FRC teams this is usually your team number.">Usually your team number.</small>
               </label>
               <label>
                 <span>Source length</span>
                 <input name="sourceLength" type="number" min="1" max="12">
+                <small class="settings-help" tabindex="0" data-help="Only used when the template includes {source}. It controls how many characters PlateFlow keeps from the source document code.">Length for {source}.</small>
               </label>
               <label>
                 <span>Subsystem length</span>
                 <input name="subsystemLength" type="number" min="1" max="12">
+                <small class="settings-help" tabindex="0" data-help="Controls the generated subsystem acronym length when PlateFlow has to infer one from a sub-assembly name.">Length for acronyms.</small>
               </label>
               <label>
                 <span>Part code length</span>
                 <input name="partLength" type="number" min="1" max="16">
+                <small class="settings-help" tabindex="0" data-help="Only used when the template includes {part}. It controls how many characters PlateFlow keeps from the part-name code.">Length for {part}.</small>
               </label>
             </div>
           </section>
@@ -472,7 +476,7 @@
             <header>
               <div>
                 <h3>Material options</h3>
-                <p>Choices shown in the Onshape panel.</p>
+                <p class="settings-help" tabindex="0" data-help="These are the material choices PlateFlow can show in the Onshape panel and use in routing rules. Onshape material reads can still override these when available.">Choices shown in the Onshape panel.</p>
               </div>
               <button class="ghost small" type="button" data-settings-action="add-list-item" data-list="materials">Add</button>
             </header>
@@ -484,7 +488,7 @@
             <header>
               <div>
                 <h3>Stock types</h3>
-                <p>Tube, sheet, spacer stock, and similar shop stock.</p>
+                <p class="settings-help" tabindex="0" data-help="These values describe the physical stock a custom part comes from, like sheet, tube, churro, rounded hex, or spacer stock.">Tube, sheet, spacer stock, and similar shop stock.</p>
               </div>
               <button class="ghost small" type="button" data-settings-action="add-list-item" data-list="stockTypes">Add</button>
             </header>
@@ -496,7 +500,7 @@
             <header>
               <div>
                 <h3>Machines/processes</h3>
-                <p>Where custom parts are routed.</p>
+                <p class="settings-help" tabindex="0" data-help="These are the process choices shown on custom parts and manufacturing cards, such as Router, Fabworks, Manual fabrication, or 3D print.">Where custom parts are routed.</p>
               </div>
               <button class="ghost small" type="button" data-settings-action="add-list-item" data-list="machines">Add</button>
             </header>
@@ -508,7 +512,7 @@
             <header>
               <div>
                 <h3>Material routing</h3>
-                <p>When material matches a word, restrict machine and stock choices.</p>
+                <p class="settings-help" tabindex="0" data-help="These rules narrow down the Onshape panel choices based on the material. Example: polycarbonate can show only Router and Sheet/Plate.">When material matches a word, restrict machine and stock choices.</p>
               </div>
               <button class="ghost small" type="button" data-settings-action="add-routing-rule">Add rule</button>
             </header>
@@ -520,7 +524,7 @@
             <header>
               <div>
                 <h3>Part name auto-routing</h3>
-                <p>When a part name matches, automatically assign stock, machine, category, and intent.</p>
+                <p class="settings-help" tabindex="0" data-help="These rules run when PlateFlow imports or transfers parts. If a part name contains a match phrase, PlateFlow can automatically set stock, machine, category, and whether it is made now or sent out.">When a part name matches, automatically assign stock, machine, category, and intent.</p>
               </div>
               <button class="ghost small" type="button" data-settings-action="add-auto-rule">Add rule</button>
             </header>
