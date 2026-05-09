@@ -2706,7 +2706,8 @@ body.dialog-open {
   border-radius: 8px;
   background: var(--panel);
   cursor: grab;
-  transition: opacity .12s ease, transform .12s ease, max-height .16s ease, padding .16s ease, margin .16s ease;
+  contain: layout paint style;
+  transition: opacity .08s ease, transform .08s ease;
   max-height: 220px;
 }
 
@@ -2731,6 +2732,7 @@ body.dialog-open {
 }
 
 .kanban-card.removing {
+  transition: opacity .12s ease, transform .12s ease;
   max-height: 0;
   padding-block: 0;
   margin: 0;

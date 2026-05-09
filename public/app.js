@@ -22,8 +22,11 @@ let pointerY = 0;
 let dashboardApplyFrame = 0;
 let pendingDashboard = null;
 let pendingDashboardOptions = {};
+let activeFabricationDragColumn = null;
+let fabricationStatusSyncSeq = 0;
 const inventoryAutosaveTimers = new Map();
 const inventoryAutosaveVersions = new Map();
+const fabricationStatusSyncs = new Map();
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -1183,7 +1186,7 @@ function applyDashboardState(dashboard, options = {}) {
   dashboardState = dashboard;
   normalizeSelectedTarget();
   renderDashboardChrome(dashboard);
-  renderActiveDashboardPage(options);
+  if (!options.skipActivePage) renderActiveDashboardPage(options);
   if (!options.preserveParts) {
     parts = dashboard.inventory.parts.map((part) => ({ ...part, selected: true }));
     source = null;
@@ -2218,6 +2221,24 @@ function fabricationProcessOptions(current = "") {
 function replaceDashboardFabrication(fabrication) {
   if (!dashboardState) return;
   dashboardState = { ...dashboardState, fabrication };
+}
+
+function replaceDashboardFabricationPreservingPending(fabrication) {
+  if (!dashboardState || !fabrication) return;
+  const pendingJobIds = new Set(fabricationStatusSyncs.keys());
+  if (!pendingJobIds.size || !Array.isArray(fabrication.jobs)) {
+    replaceDashboardFabrication(fabrication);
+    return;
+  }
+  const localJobs = new Map((dashboardState.fabrication?.jobs || []).map((job) => [job.id, job]));
+  replaceDashboardFabrication({
+    ...fabrication,
+    jobs: fabrication.jobs.map((job) => pendingJobIds.has(job.id) && localJobs.has(job.id) ? localJobs.get(job.id) : job)
+  });
+}
+
+function hasPendingFabricationSyncs() {
+  return fabricationStatusSyncs.size > 0;
 }
 
 function findLocalFabricationJob(jobId) {
@@ -3347,7 +3368,7 @@ async function onFabricationJobChange(event) {
       method: "PATCH",
       body: JSON.stringify(body)
     });
-    replaceDashboardFabrication(result.fabrication);
+    replaceDashboardFabricationPreservingPending(result.fabrication);
     if (field === "machine") updateFabricationCardDetails(card, jobId);
   } catch (error) {
     restoreLocalFabricationJob(jobId, localUpdate.previousJob);
@@ -3408,43 +3429,70 @@ function onFabricationDragOver(event) {
   const column = event.target.closest(".kanban-column[data-status]");
   if (!column) return;
   event.preventDefault();
+  if (activeFabricationDragColumn === column) return;
+  if (activeFabricationDragColumn) activeFabricationDragColumn.classList.remove("drag-over");
+  activeFabricationDragColumn = column;
   column.classList.add("drag-over");
-  for (const other of els.fabricationJobs.querySelectorAll(".kanban-column.drag-over")) {
-    if (other !== column) other.classList.remove("drag-over");
-  }
 }
 
 function onFabricationDragEnd() {
-  els.fabricationJobs.querySelectorAll(".dragging, .drag-over").forEach((item) => item.classList.remove("dragging", "drag-over"));
+  activeFabricationDragColumn?.classList.remove("drag-over");
+  activeFabricationDragColumn = null;
+  els.fabricationJobs.querySelectorAll(".dragging").forEach((item) => item.classList.remove("dragging"));
 }
 
-async function onFabricationDrop(event) {
+function scheduleFabricationStatusSync(jobId, status, previousJob) {
+  const current = fabricationStatusSyncs.get(jobId);
+  if (current?.timer) clearTimeout(current.timer);
+  const token = ++fabricationStatusSyncSeq;
+  const sync = {
+    status,
+    token,
+    previousJob: current?.previousJob || previousJob,
+    timer: setTimeout(() => flushFabricationStatusSync(jobId, token), 140)
+  };
+  fabricationStatusSyncs.set(jobId, sync);
+}
+
+async function flushFabricationStatusSync(jobId, token) {
+  const sync = fabricationStatusSyncs.get(jobId);
+  if (!sync || sync.token !== token) return;
+  sync.timer = null;
+  try {
+    const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: sync.status })
+    });
+    const latest = fabricationStatusSyncs.get(jobId);
+    if (!latest || latest.token !== token) return;
+    fabricationStatusSyncs.delete(jobId);
+    replaceDashboardFabricationPreservingPending(result.fabrication);
+  } catch (error) {
+    const latest = fabricationStatusSyncs.get(jobId);
+    if (!latest || latest.token !== token) return;
+    fabricationStatusSyncs.delete(jobId);
+    restoreLocalFabricationJob(jobId, sync.previousJob);
+    if (dashboardState?.fabrication) renderFabrication(dashboardState.fabrication);
+    setMessage(error.message, "error");
+  }
+}
+
+function onFabricationDrop(event) {
   const column = event.target.closest(".kanban-column[data-status]");
   if (!column) return;
   event.preventDefault();
   const jobId = event.dataTransfer.getData("text/plain");
   const status = column.dataset.status;
   const card = els.fabricationJobs.querySelector(".kanban-card.dragging");
-  els.fabricationJobs.querySelectorAll(".dragging, .drag-over").forEach((item) => item.classList.remove("dragging", "drag-over"));
+  activeFabricationDragColumn?.classList.remove("drag-over");
+  activeFabricationDragColumn = null;
+  card?.classList.remove("dragging");
   if (!jobId || !status) return;
   const localUpdate = updateLocalFabricationJob(jobId, { status });
   if (localUpdate?.changed === false) return;
   if (card) moveFabricationCardElement(card, column, status);
   else if (dashboardState?.fabrication) renderFabrication(dashboardState.fabrication);
-  try {
-    const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ status })
-    });
-    replaceDashboardFabrication(result.fabrication);
-  } catch (error) {
-    if (localUpdate?.previousJob) {
-      restoreLocalFabricationJob(jobId, localUpdate.previousJob);
-      renderFabrication(dashboardState.fabrication);
-    }
-    setMessage(error.message, "error");
-    if (!localUpdate?.previousJob) await loadDashboard();
-  }
+  scheduleFabricationStatusSync(jobId, status, localUpdate?.previousJob);
 }
 
 async function onProcurementOrderChange(event) {
@@ -3862,7 +3910,17 @@ function onRealtimeDashboard(event) {
     const revision = Number(payload.revision || 0);
     if (revision && revision <= dashboardRevision) return;
     dashboardRevision = revision;
-    scheduleDashboardApply(payload.dashboard, { preserveParts: true, quiet: true, skipAdminUsers: true });
+    const realtimeDashboard = payload.dashboard;
+    const preserveActiveFabrication = currentPageId() === "fabrication" && hasPendingFabricationSyncs() && dashboardState?.fabrication;
+    if (preserveActiveFabrication) {
+      realtimeDashboard.fabrication = dashboardState.fabrication;
+    }
+    scheduleDashboardApply(realtimeDashboard, {
+      preserveParts: true,
+      quiet: true,
+      skipAdminUsers: true,
+      skipActivePage: preserveActiveFabrication
+    });
   } catch {
     // Ignore malformed realtime frames; the polling fallback will recover if needed.
   }
@@ -3895,7 +3953,14 @@ async function refreshDashboardRealtimeFallback() {
   if (embeddedMode || !dashboardState) return;
   try {
     const dashboard = await api("/api/dashboard");
-    scheduleDashboardApply(dashboard, { preserveParts: true, quiet: true, skipAdminUsers: true });
+    const preserveActiveFabrication = currentPageId() === "fabrication" && hasPendingFabricationSyncs() && dashboardState?.fabrication;
+    if (preserveActiveFabrication) dashboard.fabrication = dashboardState.fabrication;
+    scheduleDashboardApply(dashboard, {
+      preserveParts: true,
+      quiet: true,
+      skipAdminUsers: true,
+      skipActivePage: preserveActiveFabrication
+    });
   } catch {
     // Keep the retry loop quiet; visible errors belong to direct user actions.
   }
