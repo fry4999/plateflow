@@ -1611,7 +1611,7 @@ function renderInventoryTable(items) {
     .slice(0, 200);
 
   if (!visible.length) {
-    els.inventoryBody.innerHTML = `<tr><td colspan="11" class="empty">No matching inventory.</td></tr>`;
+    els.inventoryBody.innerHTML = `<tr><td colspan="10" class="empty">No matching inventory.</td></tr>`;
     updateInventorySelectionControls([]);
     return;
   }
@@ -1623,13 +1623,11 @@ function renderInventoryTable(items) {
       <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span><small class="revision-note" title="${escapeAttr(revisionTooltip(part))}">${escapeHtml(revisionLabel(part))}</small></td>
       <td><input class="part-name-input" data-field="name" size="${partNameInputSize(part.name)}" value="${escapeAttr(part.name || "")}" aria-label="Part name"></td>
       <td><input data-field="partNumber" value="${escapeAttr(inventoryPartNumber(part))}" aria-label="Part number or SKU"></td>
-      <td><input data-field="category" value="${escapeAttr(part.category || "uncategorized")}" aria-label="Category"></td>
       <td><input data-field="${part.sourceType === "cots" ? "vendor" : "material"}" value="${escapeAttr(part.sourceType === "cots" ? part.vendor || "" : [part.material, part.thickness].filter(Boolean).join(" "))}" aria-label="${part.sourceType === "cots" ? "Vendor" : "Material"}"></td>
       <td class="needed-cell">${neededCell(part)}</td>
       <td><input class="number-input" data-field="onHand" type="number" min="0" value="${Number(part.onHand || 0)}" aria-label="On hand"></td>
       <td><span class="readonly-number" title="Reserved by project checklists">${Number(part.reserved || 0)}</span></td>
       <td class="row-actions">
-        <span class="autosave-state" aria-live="polite">Autosaved</span>
         <button class="ghost small danger" type="button" data-action="delete-inventory">Delete</button>
       </td>
     </tr>

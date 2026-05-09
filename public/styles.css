@@ -1575,7 +1575,7 @@ table {
 }
 
 .inventory-table {
-  min-width: 1380px;
+  min-width: 1260px;
   table-layout: fixed;
 }
 
@@ -1640,7 +1640,7 @@ th input[type="checkbox"] {
 
 .inventory-table th:nth-child(4),
 .inventory-table td:nth-child(4) {
-  width: 370px;
+  width: 430px;
 }
 
 .inventory-table th:nth-child(5),
@@ -1648,18 +1648,23 @@ th input[type="checkbox"] {
   width: 170px;
 }
 
+.inventory-table th:nth-child(6),
+.inventory-table td:nth-child(6) {
+  width: 190px;
+}
+
+.inventory-table th:nth-child(7),
+.inventory-table td:nth-child(7),
 .inventory-table th:nth-child(8),
 .inventory-table td:nth-child(8),
 .inventory-table th:nth-child(9),
-.inventory-table td:nth-child(9),
-.inventory-table th:nth-child(10),
-.inventory-table td:nth-child(10) {
+.inventory-table td:nth-child(9) {
   width: 78px;
 }
 
-.inventory-table th:nth-child(11),
-.inventory-table td:nth-child(11) {
-  width: 112px;
+.inventory-table th:nth-child(10),
+.inventory-table td:nth-child(10) {
+  width: 86px;
 }
 
 .inventory-table td.needed-cell {
@@ -1674,28 +1679,8 @@ th input[type="checkbox"] {
 .inventory-table .row-actions {
   display: flex;
   align-items: center;
+  justify-content: end;
   gap: 6px;
-}
-
-.inventory-table tr.dirty .autosave-state,
-.inventory-table tr.saving .autosave-state {
-  color: var(--blue);
-}
-
-.inventory-table tr.saved .autosave-state {
-  color: var(--green);
-}
-
-.inventory-table tr.error .autosave-state {
-  color: #ef4444;
-}
-
-.autosave-state {
-  min-width: 58px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 900;
-  text-transform: uppercase;
 }
 
 .readonly-number {
@@ -3205,7 +3190,7 @@ body.dialog-open {
   }
 
   #inventory .inventory-table {
-    min-width: 1380px;
+    min-width: 1260px;
   }
 
   .order-form {
