@@ -2357,7 +2357,7 @@ body.dialog-open {
 }
 
 .procurement-subassembly {
-  overflow: clip;
+  overflow: visible;
 }
 
 .procurement-subassembly + .procurement-subassembly {
@@ -2394,8 +2394,8 @@ body.dialog-open {
   padding: 10px 0;
   border-top: 1px solid var(--line);
   min-width: 0;
-  transition: opacity .12s ease, transform .12s ease, max-height .16s ease, padding .16s ease, background-color .08s ease;
-  max-height: 320px;
+  overflow: visible;
+  transition: opacity .12s ease, transform .12s ease, padding .16s ease, background-color .08s ease;
 }
 
 .procurement-line:hover {
