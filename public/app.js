@@ -3281,22 +3281,21 @@ async function updateProcurementVendorStatus(bucket, lineKeys, status) {
 async function deleteProcurementLines(source, lineKeys, scope = "line") {
   const mutationSeq = nextProcurementMutationSeq();
   const selector = scope === "vendor" ? ".vendor-bucket" : ".procurement-line";
+  const wantedKeys = new Set(lineKeys);
   const targets = scope === "vendor"
     ? [source.closest(selector)].filter(Boolean)
-    : [...els.procurementOrders.querySelectorAll(selector)].filter((item) => item.dataset.lineKeys === source.dataset.lineKeys);
+    : [...els.procurementOrders.querySelectorAll(selector)].filter((item) => parseLineKeys(item.dataset.lineKeys).some((key) => wantedKeys.has(key)));
   for (const item of targets) {
     item.classList.add("removing");
     setProcurementPending(item, true);
   }
-  setTimeout(() => targets.forEach((item) => item.remove()), 70);
-  setMessage(scope === "vendor" ? "Deleting vendor bucket..." : "Deleting procurement line...");
+  requestAnimationFrame(() => targets.forEach((item) => item.remove()));
   try {
     const result = await api("/api/procurement/lines", {
       method: "DELETE",
       body: JSON.stringify({ lineKeys })
     });
     applyProcurementResult(result, mutationSeq);
-    if (isCurrentProcurementMutation(mutationSeq)) setMessage(scope === "vendor" ? "Vendor bucket deleted." : "Procurement line deleted.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();

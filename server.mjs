@@ -5497,13 +5497,22 @@ async function deleteProcurementLines(req, res, session, actor) {
   const lineKeys = cleanLineKeys(body.lineKeys || body.lineKey);
   if (!lineKeys.length) throw httpError(400, "Select at least one procurement line");
   let removed = 0;
+  const touchedOrders = new Map();
   for (const lineKey of lineKeys) {
     const match = findProcurementLine(lineKey);
     if (!match) continue;
-    match.order.lines.splice(match.lineIndex, 1);
-    match.order.vendorGroups = groupCotsParts(match.order.lines);
-    match.order.updatedAt = new Date().toISOString();
-    removed += 1;
+    if (!touchedOrders.has(match.order.id)) touchedOrders.set(match.order.id, { order: match.order, lineIds: new Set() });
+    touchedOrders.get(match.order.id).lineIds.add(match.line.id);
+  }
+  for (const { order, lineIds } of touchedOrders.values()) {
+    const before = order.lines.length;
+    order.lines = order.lines.filter((line, index) => {
+      line.id = line.id || procurementLineId(order, line, index);
+      return !lineIds.has(line.id);
+    });
+    removed += before - order.lines.length;
+    order.vendorGroups = groupCotsParts(order.lines);
+    order.updatedAt = new Date().toISOString();
   }
   store.procurementOrders = store.procurementOrders.filter((order) => Array.isArray(order.lines) && order.lines.length);
   if (!removed) throw httpError(404, "Procurement line not found");
