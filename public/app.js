@@ -2381,6 +2381,7 @@ function renderProcurementLine(line) {
   const exact = line.matchStatus === "sku_exact" || line.matchStatus === "manual";
   const name = exact ? line.matchedTitle || line.name || "Purchased item" : line.name || "Purchased item";
   const sku = line.vendorSku || line.partNumber || line.manufacturerSku || "No SKU";
+  const canMoveToManufacturing = !String(line.vendorSku || line.partNumber || line.manufacturerSku || "").trim();
   const quantity = Number(line.quantityNeeded || 0);
   const packageQuantity = Math.max(1, Number(line.packageQuantity || 1));
   const purchaseQuantity = Math.max(0, Number(line.purchaseQuantity || (packageQuantity > 1 ? Math.ceil(quantity / packageQuantity) : quantity)));
@@ -2422,7 +2423,7 @@ function renderProcurementLine(line) {
           ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
           <button class="ghost small" type="button" data-action="quick-procurement-status" data-status="ordered">Bought</button>
           <button class="ghost small" type="button" data-action="quick-procurement-status" data-status="received">Arrived</button>
-          <button class="ghost small" type="button" data-action="transfer-procurement-manufacturing">Move to manufacturing</button>
+          ${canMoveToManufacturing ? `<button class="ghost small" type="button" data-action="transfer-procurement-manufacturing">Move to manufacturing</button>` : ""}
           <button class="ghost small" type="button" data-action="toggle-procurement-edit">Edit</button>
           <button class="ghost small danger" type="button" data-action="delete-procurement-line">Delete</button>
         </span>
