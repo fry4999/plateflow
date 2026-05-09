@@ -1971,18 +1971,37 @@ function renderFabricationCard(job) {
   const grouping = Array.isArray(job.grouping) ? job.grouping : [];
   const status = displayFabricationStatus(job.status);
   const material = [line.material, line.thickness].filter(Boolean).join(" / ") || grouping[0]?.key || "Material unknown";
-  const route = [line.stock, line.machine || line.process].filter(Boolean).join(" · ") || "Route not set";
+  const machine = line.machine || line.process || "";
+  const route = [line.stock, machine].filter(Boolean).join(" · ") || "Route not set";
+  const processOptions = fabricationProcessOptions(machine);
   return `
     <article class="kanban-card ${escapeAttr(status)}" draggable="true" data-job-id="${escapeAttr(job.id)}">
-      <div>
+      <div class="kanban-card-head">
         <strong>${escapeHtml(line.name || job.name || job.id)}</strong>
         <small>${escapeHtml(material)}</small>
       </div>
-      <p>${escapeHtml(route)}</p>
-      <span class="kanban-line">${escapeHtml(line.subsystem || "No subsystem")} · qty ${Number(line.quantityNeeded || 1)}</span>
+      <div class="kanban-route-row">
+        <span>${escapeHtml(line.stock || "No stock")}</span>
+        <select data-job-id="${escapeAttr(job.id)}" data-fab-field="machine" aria-label="Manufacturing process for ${escapeAttr(line.name || job.name || job.id)}">
+          ${processOptions.map((option) => `<option value="${escapeAttr(option)}"${option === machine ? " selected" : ""}>${escapeHtml(option || "Select process")}</option>`).join("")}
+        </select>
+      </div>
+      <span class="kanban-line">${escapeHtml(line.subsystem || "No subsystem")} · qty ${Number(line.quantityNeeded || 1)} · ${escapeHtml(route)}</span>
       <button class="ghost small danger" type="button" data-action="delete-fab-job" data-job-id="${escapeAttr(job.id)}">Delete</button>
     </article>
   `;
+}
+
+function fabricationProcessOptions(current = "") {
+  const machines = routingSettings().machines || [];
+  return [...new Set([
+    "",
+    current,
+    ...machines,
+    "Router",
+    "Fabworks",
+    "Manual fabrication"
+  ].map((item) => String(item || "").trim()).filter((item, index) => index === 0 || item))];
 }
 
 function replaceDashboardFabrication(fabrication) {
@@ -2375,6 +2394,7 @@ function renderProcurementLine(line) {
           ${actionUrl ? `<a class="ghost small" href="${escapeAttr(actionUrl)}" target="_blank" rel="noreferrer">${escapeHtml(actionLabel)}</a>` : `<span class="ghost small disabled">No link</span>`}
           <button class="ghost small" type="button" data-action="quick-procurement-status" data-status="ordered">Bought</button>
           <button class="ghost small" type="button" data-action="quick-procurement-status" data-status="received">Arrived</button>
+          <button class="ghost small" type="button" data-action="transfer-procurement-manufacturing">Move to manufacturing</button>
           <button class="ghost small" type="button" data-action="toggle-procurement-edit">Edit</button>
           <button class="ghost small danger" type="button" data-action="delete-procurement-line">Delete</button>
         </span>
@@ -2990,14 +3010,18 @@ async function onAdminUserAction(event) {
 async function onFabricationJobChange(event) {
   const select = event.target.closest("select[data-job-id]");
   if (!select) return;
+  const field = select.dataset.fabField || "status";
+  const body = field === "machine"
+    ? { machine: select.value, process: select.value }
+    : { status: select.value };
   try {
     const result = await api(`/api/fabrication/jobs/${encodeURIComponent(select.dataset.jobId)}`, {
       method: "PATCH",
-      body: JSON.stringify({ status: select.value })
+      body: JSON.stringify(body)
     });
     replaceDashboardFabrication(result.fabrication);
     renderFabrication(result.fabrication);
-    setMessage("Fabrication job status updated.", "ok");
+    setMessage(field === "machine" ? "Manufacturing process updated." : "Fabrication job status updated.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();
@@ -3016,15 +3040,30 @@ async function onFabricationJobAction(event) {
     danger: true
   });
   if (!confirmed) return;
+  const card = button.closest(".kanban-card");
+  removeLocalFabricationJob(jobId);
+  if (card) {
+    card.classList.add("removing");
+    requestAnimationFrame(() => {
+      card.remove();
+      refreshFabricationCounts();
+    });
+  } else if (dashboardState?.fabrication) {
+    renderFabrication(dashboardState.fabrication);
+  }
   try {
     const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
     replaceDashboardFabrication(result.fabrication);
-    renderFabrication(result.fabrication);
-    setMessage("Fabrication card deleted.", "ok");
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();
   }
+}
+
+function removeLocalFabricationJob(jobId) {
+  const jobs = dashboardState?.fabrication?.jobs;
+  if (!Array.isArray(jobs)) return;
+  dashboardState.fabrication.jobs = jobs.filter((job) => job.id !== jobId);
 }
 
 function onFabricationDragStart(event) {
@@ -3125,7 +3164,7 @@ async function onProcurementLineCreate(event) {
 }
 
 async function onProcurementLineAction(event) {
-  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line'], button[data-action='delete-procurement-vendor'], button[data-action='toggle-procurement-edit'], button[data-action='quick-procurement-status'], button[data-action='vendor-procurement-status'], button[data-action='adjust-procurement-quantity']");
+  const button = event.target.closest("button[data-action='save-procurement-line'], button[data-action='delete-procurement-line'], button[data-action='delete-procurement-vendor'], button[data-action='toggle-procurement-edit'], button[data-action='quick-procurement-status'], button[data-action='vendor-procurement-status'], button[data-action='adjust-procurement-quantity'], button[data-action='transfer-procurement-manufacturing']");
   if (!button) return;
   if (button.dataset.action === "vendor-procurement-status" || button.dataset.action === "delete-procurement-vendor") {
     const bucket = button.closest(".vendor-bucket");
@@ -3171,6 +3210,10 @@ async function onProcurementLineAction(event) {
   }
   if (button.dataset.action === "delete-procurement-line") {
     await deleteProcurementLines(row, lineKeys, "line");
+    return;
+  }
+  if (button.dataset.action === "transfer-procurement-manufacturing") {
+    await transferProcurementToManufacturing(row, lineKeys);
     return;
   }
   try {
@@ -3296,6 +3339,32 @@ async function deleteProcurementLines(source, lineKeys, scope = "line") {
       body: JSON.stringify({ lineKeys })
     });
     applyProcurementResult(result, mutationSeq);
+  } catch (error) {
+    setMessage(error.message, "error");
+    await loadDashboard();
+  }
+}
+
+async function transferProcurementToManufacturing(row, lineKeys) {
+  const mutationSeq = nextProcurementMutationSeq();
+  row.classList.add("removing");
+  setProcurementPending(row, true);
+  requestAnimationFrame(() => row.remove());
+  try {
+    const result = await api("/api/procurement/lines/transfer-manufacturing", {
+      method: "POST",
+      body: JSON.stringify({ lineKeys })
+    });
+    if (!isCurrentProcurementMutation(mutationSeq)) return;
+    dashboardState = {
+      ...(dashboardState || {}),
+      procurement: result.procurement || dashboardState?.procurement,
+      fabrication: result.fabrication || dashboardState?.fabrication,
+      inventory: result.inventory || dashboardState?.inventory,
+      robots: result.robots || dashboardState?.robots
+    };
+    renderDashboardChrome(dashboardState);
+    renderActiveDashboardPage({ preserveParts: true, quiet: true });
   } catch (error) {
     setMessage(error.message, "error");
     await loadDashboard();

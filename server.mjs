@@ -125,6 +125,7 @@ createServer(async (req, res) => {
     if (url.pathname === "/api/procurement/lines" && req.method === "POST") return withAppAccess(session, res, (user) => createProcurementLine(req, res, session, user), ["admin", "mentor", "purchaser"]);
     if (url.pathname === "/api/procurement/lines" && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementLines(req, res, session, user), ["admin", "mentor", "purchaser"]);
     if (url.pathname === "/api/procurement/lines" && req.method === "DELETE") return withAppAccess(session, res, (user) => deleteProcurementLines(req, res, session, user), ["admin", "mentor", "purchaser"]);
+    if (url.pathname === "/api/procurement/lines/transfer-manufacturing" && req.method === "POST") return withAppAccess(session, res, (user) => transferProcurementLinesToManufacturing(req, res, session, user), ["admin", "mentor", "purchaser", "fabricator"]);
     if (url.pathname.startsWith("/api/procurement/orders/") && req.method === "PATCH") return withAppAccess(session, res, (user) => updateProcurementOrder(req, res, session, user, pathId(url.pathname, "/api/procurement/orders/")), ["admin", "mentor", "purchaser"]);
     if (url.pathname === "/api/onshape/import" && req.method === "POST") return withAppAccess(session, res, () => importOnshape(req, res, session), ["admin", "mentor", "fabricator", "student"]);
     if (url.pathname === "/api/onshape/import-cots" && req.method === "POST") return withAppAccess(session, res, () => importCots(req, res, session), ["admin", "mentor", "purchaser", "student"]);
@@ -5364,13 +5365,21 @@ async function updateFabricationJob(req, res, session, actor, jobId) {
   if (body.status === "canceled" || body.status === "delete") {
     return deleteFabricationJob(req, res, session, actor, jobId, { csrfChecked: true });
   }
-  const status = validateFabricationStatus(body.status || job.status);
-  job.status = status;
+  const hasStatus = Object.prototype.hasOwnProperty.call(body, "status");
+  const hasProcess = Object.prototype.hasOwnProperty.call(body, "machine") || Object.prototype.hasOwnProperty.call(body, "process");
+  const status = hasStatus ? validateFabricationStatus(body.status || job.status) : job.status;
+  if (hasStatus) job.status = status;
+  const machine = hasProcess ? String(body.machine ?? body.process ?? "").trim().slice(0, 80) : "";
   job.updatedAt = new Date().toISOString();
   if (Array.isArray(job.lines)) {
-    job.lines = job.lines.map((line) => ({ ...line, status }));
+    job.lines = job.lines.map((line) => ({
+      ...line,
+      ...(hasStatus ? { status } : {}),
+      ...(hasProcess ? { machine, process: machine } : {})
+    }));
+    job.grouping = groupCustomParts(job.lines);
   }
-  audit("fabrication.job_updated", `Updated ${job.id} to ${job.status}`, actor.email);
+  audit("fabrication.job_updated", `Updated ${job.id}`, actor.email);
   await persistStore();
   return json(res, 200, { fabrication: dashboardSnapshot().fabrication });
 }
@@ -5519,6 +5528,171 @@ async function deleteProcurementLines(req, res, session, actor) {
   audit("procurement.line_deleted", `Deleted ${removed} procurement line${removed === 1 ? "" : "s"}`, actor.email);
   await persistStore();
   return json(res, 200, { procurement: dashboardSnapshot(actor).procurement });
+}
+
+async function transferProcurementLinesToManufacturing(req, res, session, actor) {
+  requireCsrf(req, session);
+  ensureIndividualFabricationJobs();
+  const body = await readJson(req);
+  const lineKeys = cleanLineKeys(body.lineKeys || body.lineKey);
+  if (!lineKeys.length) throw httpError(400, "Select at least one procurement line");
+  const now = new Date().toISOString();
+  const batchId = `X-${now.slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex").toUpperCase()}`;
+  const touchedOrders = new Map();
+  const transferred = [];
+  for (const lineKey of lineKeys) {
+    const match = findProcurementLine(lineKey);
+    if (!match) continue;
+    const catalog = store.catalogParts.find((part) => part.id === match.line.catalogPartId) || {};
+    const customPart = ensureCustomPartNumber(procurementLineToCustomPart(match.line, catalog), {
+      robotId: match.line.robotId || catalog.robotId || "",
+      subassemblyId: match.line.subsystemId || catalog.subsystemId || "",
+      subassemblyName: match.line.subassemblyName || match.line.subsystem || catalog.subassemblyName || catalog.subsystem || "",
+      documentName: match.line.sourceDocumentName || catalog.sourceDocumentName || "",
+      sourceTag: match.line.sourceDocument || catalog.sourceDocument || match.line.subassemblyName || match.line.subsystem || catalog.subassemblyName || catalog.subsystem || "MANUAL"
+    }, transferred.length);
+    const customCatalog = upsertCatalogPart(customPart, "custom", batchId);
+    upsertTransferredFabricationJob(customCatalog, customPart, batchId, match.line.id, now);
+    retargetProcurementRequirementsToCustom(match.line, catalog, customCatalog);
+    transferred.push(customCatalog);
+    if (!touchedOrders.has(match.order.id)) touchedOrders.set(match.order.id, { order: match.order, lineIds: new Set() });
+    touchedOrders.get(match.order.id).lineIds.add(match.line.id);
+  }
+  for (const { order, lineIds } of touchedOrders.values()) {
+    order.lines = order.lines.filter((line, index) => {
+      line.id = line.id || procurementLineId(order, line, index);
+      return !lineIds.has(line.id);
+    });
+    order.vendorGroups = groupCotsParts(order.lines);
+    order.updatedAt = now;
+  }
+  store.procurementOrders = store.procurementOrders.filter((order) => Array.isArray(order.lines) && order.lines.length);
+  if (!transferred.length) throw httpError(404, "Procurement line not found");
+  store.syncBatches.unshift({
+    id: batchId,
+    label: "Procurement to manufacturing transfer",
+    sourceType: "custom",
+    status: "received",
+    partCount: transferred.length,
+    createdAt: now,
+    source: { sourceTag: "Manual transfer" }
+  });
+  store.syncBatches.splice(100);
+  audit("procurement.transfer_manufacturing", `Moved ${transferred.length} procurement line${transferred.length === 1 ? "" : "s"} to manufacturing`, actor.email);
+  await persistStore();
+  const snapshot = dashboardSnapshot(actor);
+  return json(res, 200, {
+    procurement: snapshot.procurement,
+    fabrication: snapshot.fabrication,
+    inventory: snapshot.inventory,
+    robots: snapshot.robots,
+    transferred: transferred.length
+  });
+}
+
+function procurementLineToCustomPart(line = {}, catalog = {}) {
+  const autoRule = autoRoutingRuleForPart({
+    name: line.name || catalog.name,
+    partNumber: line.partNumber || catalog.partNumber || line.vendorSku || catalog.vendorSku,
+    category: line.category || catalog.category,
+    material: line.material || catalog.material,
+    stock: line.stock || catalog.stock
+  });
+  const machine = String(line.machine || line.process || catalog.machine || catalog.process || autoRule?.machine || "Manual fabrication").trim();
+  const source = {
+    ...(catalog.source || {}),
+    ...(line.source || {}),
+    bomRowKey: line.source?.bomRowKey || line.id || line.lineId || "",
+    partId: line.source?.partId || catalog.source?.partId || `procurement-${line.id || normalizeKey(line.name || catalog.name)}`,
+    documentId: line.source?.documentId || catalog.source?.documentId || "",
+    workspaceId: line.source?.workspaceId || catalog.source?.workspaceId || "",
+    elementId: line.source?.elementId || catalog.source?.elementId || ""
+  };
+  return {
+    id: `custom-${line.id || normalizeKey(line.name || catalog.name)}`,
+    name: line.name || catalog.name || "Custom part",
+    partNumber: line.partNumber || catalog.partNumber || "",
+    category: autoRule?.category || line.category || catalog.category || "fabricated",
+    material: line.material || catalog.material || "",
+    thickness: line.thickness || catalog.thickness || "",
+    stock: line.stock || catalog.stock || autoRule?.stock || "",
+    process: machine,
+    machine,
+    fabricationIntent: line.fabricationIntent || catalog.fabricationIntent || autoRule?.fabricationIntent || "make_now",
+    quantityNeeded: Number(line.quantityNeeded || catalog.quantityNeeded || 1),
+    quantity: Number(line.quantityNeeded || catalog.quantityNeeded || 1),
+    robotId: line.robotId || catalog.robotId || "",
+    subsystemId: line.subsystemId || catalog.subsystemId || "",
+    subsystem: line.subassemblyName || line.subsystem || catalog.subassemblyName || catalog.subsystem || "",
+    subassemblyName: line.subassemblyName || line.subsystem || catalog.subassemblyName || catalog.subsystem || "",
+    sourceDocument: line.sourceDocument || catalog.sourceDocument || "",
+    sourceDocumentName: line.sourceDocumentName || catalog.sourceDocumentName || "",
+    source
+  };
+}
+
+function upsertTransferredFabricationJob(catalogPart, part, batchId, sourceLineId, now) {
+  const existing = store.fabricationJobs.find((job) => (
+    job.transferSourceLineId === sourceLineId ||
+    (Array.isArray(job.lines) && job.lines.some((line) => line.catalogPartId === catalogPart.id))
+  ));
+  const line = {
+    catalogPartId: catalogPart.id,
+    name: part.name,
+    material: part.material,
+    thickness: part.thickness,
+    robotId: part.robotId || "",
+    subsystemId: part.subsystemId || "",
+    subsystem: part.subsystem || "",
+    subassemblyName: part.subassemblyName || part.subsystem || "",
+    stock: part.stock,
+    process: part.process || part.machine || "Manual fabrication",
+    machine: part.machine || part.process || "Manual fabrication",
+    fabricationIntent: part.fabricationIntent || "make_now",
+    quantityNeeded: part.quantityNeeded,
+    quantityMade: 0,
+    quantityReceived: 0,
+    quantityInstalled: 0
+  };
+  if (existing) {
+    existing.syncBatchId = existing.syncBatchId || batchId;
+    existing.transferSourceLineId = existing.transferSourceLineId || sourceLineId;
+    existing.lines = [line];
+    existing.grouping = groupCustomParts(existing.lines);
+    existing.updatedAt = now;
+    return existing;
+  }
+  const job = {
+    id: `F-XFER-${createHash("sha1").update(String(sourceLineId || part.name)).digest("hex").slice(0, 10).toUpperCase()}`,
+    syncBatchId: batchId,
+    transferSourceLineId: sourceLineId,
+    status: "todo",
+    robotId: part.robotId || "",
+    subsystemId: part.subsystemId || "",
+    subassemblyName: part.subassemblyName || part.subsystem || "",
+    grouping: groupCustomParts([line]),
+    lines: [line],
+    createdAt: now,
+    updatedAt: now
+  };
+  store.fabricationJobs.unshift(job);
+  store.fabricationJobs.splice(200);
+  return job;
+}
+
+function retargetProcurementRequirementsToCustom(line, oldCatalog, customCatalog) {
+  const oldCatalogId = line.catalogPartId || oldCatalog.id || "";
+  for (const requirement of store.requirements || []) {
+    if (
+      (oldCatalogId && requirement.catalogPartId === oldCatalogId) ||
+      (requirement.name === (line.name || oldCatalog.name) && (!line.robotId || requirement.robotId === line.robotId))
+    ) {
+      requirement.catalogPartId = customCatalog.id;
+      requirement.sourceType = "custom";
+      requirement.status = requirement.status || "needed";
+      requirement.updatedAt = new Date().toISOString();
+    }
+  }
 }
 
 async function updateProcurementOrder(req, res, session, actor, orderId) {

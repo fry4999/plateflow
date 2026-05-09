@@ -2376,8 +2376,8 @@ body.dialog-open {
 .kanban-board {
   display: grid;
   grid-template-columns: repeat(3, minmax(260px, 1fr));
-  gap: 18px;
-  min-height: 480px;
+  gap: 14px;
+  min-height: 360px;
 }
 
 .kanban-column {
@@ -2434,18 +2434,24 @@ body.dialog-open {
 
 .kanban-cards {
   display: grid;
-  gap: 10px;
+  align-content: start;
+  gap: 8px;
+  max-height: min(680px, calc(100vh - 320px));
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .kanban-card {
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 7px;
+  padding: 10px;
   border: 1px solid var(--line);
   border-left: 5px solid var(--blue);
   border-radius: 8px;
   background: var(--panel);
   cursor: grab;
+  transition: opacity .12s ease, transform .12s ease, max-height .16s ease, padding .16s ease, margin .16s ease;
+  max-height: 220px;
 }
 
 .kanban-card:active {
@@ -2466,6 +2472,19 @@ body.dialog-open {
 
 .kanban-card.completed {
   border-left-color: #22c55e;
+}
+
+.kanban-card.removing {
+  max-height: 0;
+  padding-block: 0;
+  margin: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateX(8px);
+}
+
+.kanban-card-head {
+  min-width: 0;
 }
 
 .kanban-card strong,
@@ -2490,13 +2509,39 @@ body.dialog-open {
 }
 
 .kanban-card strong {
-  font-size: 16px;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.18;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .kanban-line {
-  padding: 6px 8px;
+  padding: 5px 7px;
   border-radius: 6px;
   background: var(--soft);
+}
+
+.kanban-route-row {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(120px, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+
+.kanban-route-row span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kanban-route-row select {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 12px;
 }
 
 .kanban-card .danger {
