@@ -611,6 +611,19 @@ td {
   padding-right: 16px;
 }
 
+#inventory .section-heading {
+  align-items: center;
+  margin-bottom: 28px;
+}
+
+#inventory .section-heading h2 {
+  margin-bottom: 0;
+}
+
+#inventory .inventory-controls {
+  padding: 6px 0;
+}
+
 .dashboard {
   align-content: start;
 }
