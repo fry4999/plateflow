@@ -1706,6 +1706,7 @@ function renderInventoryTable(items) {
     part.material,
     part.vendor,
     part.vendorSku,
+    part.machine,
     part.process,
     part.sourceDocument,
     part.sourceDocumentName
@@ -1726,7 +1727,7 @@ function renderInventoryTable(items) {
       <td><span class="status">${escapeHtml(part.sourceDocument || "Unassigned")}</span><small class="revision-note" title="${escapeAttr(revisionTooltip(part))}">${escapeHtml(revisionLabel(part))}</small></td>
       <td><input class="part-name-input" data-field="name" size="${partNameInputSize(part.name)}" value="${escapeAttr(part.name || "")}" aria-label="Part name"></td>
       <td><input data-field="partNumber" value="${escapeAttr(inventoryPartNumber(part))}" aria-label="Part number or SKU"></td>
-      <td><input data-field="${part.sourceType === "cots" ? "vendor" : "material"}" value="${escapeAttr(part.sourceType === "cots" ? part.vendor || "" : [part.material, part.thickness].filter(Boolean).join(" "))}" aria-label="${part.sourceType === "cots" ? "Vendor" : "Material"}"></td>
+      <td><input data-field="${inventoryVendorMachineField(part)}" value="${escapeAttr(inventoryVendorMachineValue(part))}" aria-label="${escapeAttr(inventoryVendorMachineLabel(part))}"></td>
       <td class="needed-cell">${neededCell(part)}</td>
       <td><input class="number-input" data-field="onHand" type="number" min="0" value="${Number(part.onHand || 0)}" aria-label="On hand"></td>
       <td><span class="readonly-number" title="Reserved by project checklists">${Number(part.reserved || 0)}</span></td>
@@ -1736,6 +1737,18 @@ function renderInventoryTable(items) {
     </tr>
   `).join("");
   updateInventorySelectionControls(visible);
+}
+
+function inventoryVendorMachineField(part) {
+  return (part.sourceType || part.type || "custom") === "cots" ? "vendor" : "machine";
+}
+
+function inventoryVendorMachineValue(part) {
+  return inventoryVendorMachineField(part) === "vendor" ? part.vendor || "" : part.machine || part.process || "";
+}
+
+function inventoryVendorMachineLabel(part) {
+  return inventoryVendorMachineField(part) === "vendor" ? "Vendor" : "Machine";
 }
 
 function onInventoryCellInput(event) {
@@ -2968,14 +2981,20 @@ async function onInventoryAdd(event) {
     setMessage("Part name is required.", "error");
     return;
   }
+  const body = {
+    ...form,
+    onHand: Number(form.onHand || 0),
+    quantityNeeded: 0
+  };
+  if (body.sourceType === "custom") {
+    body.machine = body.material || "";
+    body.process = body.material || "";
+    delete body.material;
+  }
   try {
     const result = await api("/api/inventory/items", {
       method: "POST",
-      body: JSON.stringify({
-        ...form,
-        onHand: Number(form.onHand || 0),
-        quantityNeeded: 0
-      })
+      body: JSON.stringify(body)
     });
     applyInventoryMutation(result);
     els.inventoryForm.reset();
@@ -3078,8 +3097,12 @@ function optimisticInventoryItemUpdate(itemKey, payload) {
     onHand,
     available: Math.max(0, onHand - reserved)
   });
-  if (part.sourceType === "cots") part.vendor = payload.vendor ?? part.vendor;
-  else part.material = payload.material ?? part.material;
+  if ((part.sourceType || part.type || "custom") === "cots") part.vendor = payload.vendor ?? part.vendor;
+  else if (Object.prototype.hasOwnProperty.call(payload, "machine") || Object.prototype.hasOwnProperty.call(payload, "process")) {
+    const machine = payload.machine ?? payload.process ?? "";
+    part.machine = machine;
+    part.process = machine;
+  }
 }
 
 async function onInventoryBulkDelete() {
