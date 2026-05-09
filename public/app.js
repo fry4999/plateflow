@@ -3647,8 +3647,19 @@ function isCurrentProcurementMutation(mutationSeq) {
 
 function applyProcurementResult(result, mutationSeq) {
   if (!result?.procurement || !isCurrentProcurementMutation(mutationSeq)) return false;
-  dashboardState = { ...(dashboardState || {}), procurement: result.procurement };
+  dashboardState = {
+    ...(dashboardState || {}),
+    procurement: result.procurement,
+    inventory: result.inventory || dashboardState?.inventory,
+    robots: result.robots || dashboardState?.robots
+  };
   renderProcurement(result.procurement);
+  if (result.inventory) renderInventory(result.inventory);
+  if (result.inventory && currentPageId() === "inventory") renderInventoryTable(result.inventory.parts || []);
+  if (result.robots) {
+    renderRobots(result.robots);
+    renderOverview(dashboardState);
+  }
   return true;
 }
 

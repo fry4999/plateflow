@@ -5603,18 +5603,27 @@ async function updateProcurementLines(req, res, session, actor) {
   const distributedQuantities = hasQuantity && matches.length > 1
     ? distributeProcurementQuantity(body.quantityNeeded ?? body.quantity, matches)
     : [];
+  let stockDelta = 0;
   for (const [index, match] of matches.entries()) {
+    const previousReceived = Number(match.line.inventoryReceivedQuantity || 0);
     const scopedBody = distributedQuantities.length
       ? { ...body, quantityNeeded: distributedQuantities[index], quantity: distributedQuantities[index] }
       : body;
     applyProcurementLineUpdate(match.line, scopedBody, now);
     updateCatalogFromProcurementLine(match.line);
+    stockDelta += applyProcurementArrivalToInventory(match.line, previousReceived, now);
     match.order.vendorGroups = groupCotsParts(match.order.lines);
     match.order.updatedAt = now;
   }
-  audit("procurement.line_updated", `Updated ${matches.length} procurement line${matches.length === 1 ? "" : "s"}`, actor.email);
+  audit("procurement.line_updated", `Updated ${matches.length} procurement line${matches.length === 1 ? "" : "s"}${stockDelta ? `; adjusted inventory by ${stockDelta}` : ""}`, actor.email);
   await persistStore();
-  return json(res, 200, { procurement: dashboardSnapshot(actor).procurement });
+  const snapshot = dashboardSnapshot(actor);
+  return json(res, 200, {
+    procurement: snapshot.procurement,
+    inventory: stockDelta ? snapshot.inventory : undefined,
+    robots: stockDelta ? snapshot.robots : undefined,
+    stockDelta
+  });
 }
 
 function distributeProcurementQuantity(value, matches) {
@@ -5845,14 +5854,28 @@ async function updateProcurementOrder(req, res, session, actor, orderId) {
   if (!order) throw httpError(404, "Procurement order not found");
   const body = await readJson(req);
   const status = validateProcurementStatus(body.status || order.status);
+  const now = new Date().toISOString();
+  let stockDelta = 0;
   order.status = status;
-  order.updatedAt = new Date().toISOString();
+  order.updatedAt = now;
   if (Array.isArray(order.lines)) {
-    order.lines = order.lines.map((line) => ({ ...line, status }));
+    for (const [index, line] of order.lines.entries()) {
+      line.id = line.id || procurementLineId(order, line, index);
+      const previousReceived = Number(line.inventoryReceivedQuantity || 0);
+      line.status = status;
+      stockDelta += applyProcurementArrivalToInventory(line, previousReceived, now);
+    }
+    order.vendorGroups = groupCotsParts(order.lines);
   }
-  audit("procurement.order_updated", `Updated ${order.id} to ${order.status}`, actor.email);
+  audit("procurement.order_updated", `Updated ${order.id} to ${order.status}${stockDelta ? `; adjusted inventory by ${stockDelta}` : ""}`, actor.email);
   await persistStore();
-  return json(res, 200, { procurement: dashboardSnapshot().procurement });
+  const snapshot = dashboardSnapshot(actor);
+  return json(res, 200, {
+    procurement: snapshot.procurement,
+    inventory: stockDelta ? snapshot.inventory : undefined,
+    robots: stockDelta ? snapshot.robots : undefined,
+    stockDelta
+  });
 }
 
 function cleanLineKeys(value) {
@@ -5933,6 +5956,76 @@ function updateCatalogFromProcurementLine(line) {
     status: line.status || catalog.status,
     quantityNeeded: Number(line.quantityNeeded || catalog.quantityNeeded || 1),
     updatedAt: new Date().toISOString()
+  });
+}
+
+function applyProcurementArrivalToInventory(line, previousReceived = 0, now = new Date().toISOString()) {
+  const catalog = store.catalogParts.find((part) => part.id === line.catalogPartId);
+  if (!catalog) return 0;
+  const receivedTarget = line.status === "received" ? procurementDeliveredStockQuantity(line, catalog) : 0;
+  const previous = Math.max(0, Number(previousReceived || line.inventoryReceivedQuantity || 0));
+  const delta = receivedTarget - previous;
+  line.inventoryReceivedQuantity = receivedTarget;
+  line.quantityReceived = receivedTarget;
+  if (line.status === "ordered" || line.status === "partially_received" || line.status === "received") {
+    line.quantityOrdered = Math.max(Number(line.quantityOrdered || 0), procurementDeliveredStockQuantity(line, catalog));
+  }
+  if (!delta) return 0;
+  catalog.onHand = Math.max(0, Number(catalog.onHand || 0) + delta);
+  catalog.available = Math.max(0, Number(catalog.onHand || 0) - Number(catalog.reserved || 0));
+  catalog.status = Number(catalog.onHand || 0) > 0 ? "stocked" : catalog.status || "needed";
+  catalog.updatedAt = now;
+  ensureProcurementReceiptInventoryRecord(line, catalog, now);
+  return delta;
+}
+
+function procurementDeliveredStockQuantity(line = {}, catalog = {}) {
+  const quantityNeeded = Math.max(0, Number(line.quantityNeeded || catalog.quantityNeeded || 0));
+  const packageQuantity = Math.max(1, Number(procurementPackageQuantity(line, catalog) || 1));
+  const purchaseQuantity = Math.max(0, Number(line.purchaseQuantity || procurementPurchaseQuantity(quantityNeeded, packageQuantity)));
+  return packageQuantity > 1 ? purchaseQuantity * packageQuantity : purchaseQuantity;
+}
+
+function ensureProcurementReceiptInventoryRecord(line, catalog, now = new Date().toISOString()) {
+  const alreadyVisible = store.inventoryRecords.some((record) => (
+    record.sourceType === "cots" &&
+    (record.parts || []).some((part) => findCatalogPartForInventoryPart(part, "cots")?.id === catalog.id)
+  ));
+  if (alreadyVisible) return;
+  const id = `receipt-${catalog.id}`;
+  store.inventoryRecords.unshift({
+    id: `receipt:cots:${catalog.id}`,
+    batchId: `R-${now.slice(0, 10).replaceAll("-", "")}-${randomBytes(3).toString("hex").toUpperCase()}`,
+    sourceType: "cots",
+    updatedAt: now,
+    source: {
+      sourceTag: "Procurement receipts",
+      documentName: "Procurement receipts"
+    },
+    parts: [{
+      id,
+      type: "cots",
+      name: line.name || catalog.name || "Received item",
+      category: line.category || catalog.category || "purchased",
+      vendor: line.vendor || catalog.vendor || "",
+      vendorSku: line.vendorSku || catalog.vendorSku || "",
+      manufacturer: line.manufacturer || catalog.manufacturer || "",
+      manufacturerSku: line.manufacturerSku || catalog.manufacturerSku || "",
+      partNumber: line.partNumber || catalog.partNumber || line.vendorSku || catalog.vendorSku || "",
+      quantityNeeded: 0,
+      quantity: 0,
+      onHand: Number(catalog.onHand || 0),
+      status: "stocked",
+      sourceDocument: "Procurement receipts",
+      sourceDocumentName: "Procurement receipts",
+      source: {
+        sourceTag: "Procurement receipts",
+        documentName: "Procurement receipts",
+        partId: id
+      },
+      createdAt: now,
+      updatedAt: now
+    }]
   });
 }
 
