@@ -72,6 +72,8 @@ body::after {
   transform: translate3d(calc(var(--page-glow-x) - 360px), calc(var(--page-glow-y) - 360px), 0);
   background: radial-gradient(circle, rgba(37, 99, 235, .20), rgba(96, 165, 250, .10) 28%, transparent 62%);
   opacity: .82;
+  contain: layout paint style;
+  backface-visibility: hidden;
   will-change: transform;
 }
 
@@ -1015,13 +1017,12 @@ td {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--soft);
-  transition: opacity .14s ease, border-color .14s ease, background .14s ease, box-shadow .14s ease;
+  transition: opacity .12s ease, border-color .12s ease, background-color .12s ease;
 }
 
 .subsystem-check-row:hover {
   border-color: color-mix(in srgb, var(--blue) 36%, var(--line));
   background: color-mix(in srgb, var(--blue) 8%, var(--soft));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 14%, transparent);
 }
 
 .subsystem-check-row.complete {
@@ -1643,17 +1644,15 @@ th input[type="checkbox"] {
 }
 
 .inventory-table tbody tr {
-  transition: background .12s ease, box-shadow .12s ease;
+  transition: background-color .08s ease;
 }
 
 .inventory-table tbody tr:hover {
-  background: color-mix(in srgb, var(--blue) 7%, var(--panel));
-  box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--blue) 5%, transparent);
+  background: rgba(37, 99, 235, .06);
 }
 
 [data-theme="dark"] .inventory-table tbody tr:hover {
-  background: color-mix(in srgb, var(--blue) 14%, var(--panel));
-  box-shadow: inset 0 0 0 9999px rgba(96, 165, 250, .05);
+  background: rgba(96, 165, 250, .08);
 }
 
 .inventory-table th:nth-child(1),
@@ -2395,13 +2394,12 @@ body.dialog-open {
   padding: 10px 0;
   border-top: 1px solid var(--line);
   min-width: 0;
-  transition: opacity .12s ease, transform .12s ease, max-height .16s ease, padding .16s ease, background .12s ease, box-shadow .12s ease;
+  transition: opacity .12s ease, transform .12s ease, max-height .16s ease, padding .16s ease, background-color .08s ease;
   max-height: 320px;
 }
 
 .procurement-line:hover {
-  background: color-mix(in srgb, var(--blue) 7%, transparent);
-  box-shadow: 0 0 0 8px color-mix(in srgb, var(--blue) 7%, transparent);
+  background: rgba(37, 99, 235, .05);
 }
 
 .vendor-bucket.pending,

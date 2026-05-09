@@ -1206,6 +1206,10 @@ function activePageId() {
   return (location.hash || "#dashboard").slice(1) || "dashboard";
 }
 
+function currentPageId() {
+  return activePageId();
+}
+
 function renderActiveDashboardPage(options = {}) {
   if (!dashboardState) return;
   const page = activePageId();
@@ -1960,8 +1964,10 @@ async function updateRequirementReservation(button) {
       : { reserveDelta: Number(button.dataset.delta || 0) };
   const changed = optimisticRequirementReservation(robotId, requirementId, body);
   if (changed) {
-    renderRobots(dashboardState?.robots || []);
-    renderInventoryTable(dashboardState?.inventory?.parts || []);
+    const robot = (dashboardState?.robots || []).find((item) => item.id === robotId);
+    if (robot) renderRobotWorkspace(robot);
+    else renderRobots(dashboardState?.robots || []);
+    if (currentPageId() === "inventory") renderInventoryTable(dashboardState?.inventory?.parts || []);
   } else {
     row.classList.add("pending");
   }
@@ -1970,7 +1976,7 @@ async function updateRequirementReservation(button) {
       method: "PATCH",
       body: JSON.stringify(body)
     });
-    applyInventoryMutation(result, { skipInventoryTable: currentPageId() === "inventory" ? false : true, quiet: true });
+    applyInventoryMutation(result, { skipInventoryTable: currentPageId() !== "inventory", skipRobots: currentPageId() === "robots", quiet: true });
   } catch (error) {
     row.classList.remove("pending");
     setMessage(error.message, "error");
@@ -2214,19 +2220,69 @@ function replaceDashboardFabrication(fabrication) {
   dashboardState = { ...dashboardState, fabrication };
 }
 
-function updateLocalFabricationJob(jobId, status) {
+function findLocalFabricationJob(jobId) {
   const jobs = dashboardState?.fabrication?.jobs;
   if (!Array.isArray(jobs)) return null;
-  const job = jobs.find((item) => item.id === jobId);
+  return jobs.find((item) => item.id === jobId) || null;
+}
+
+function cloneFabricationJob(job) {
+  return JSON.parse(JSON.stringify(job));
+}
+
+function restoreLocalFabricationJob(jobId, previousJob) {
+  const jobs = dashboardState?.fabrication?.jobs;
+  if (!Array.isArray(jobs) || !previousJob) return;
+  const index = jobs.findIndex((item) => item.id === jobId);
+  if (index === -1) return;
+  jobs[index] = previousJob;
+}
+
+function updateLocalFabricationJob(jobId, update) {
+  const job = findLocalFabricationJob(jobId);
   if (!job) return null;
+  const updates = typeof update === "string" ? { status: update } : { ...(update || {}) };
+  const previousJob = cloneFabricationJob(job);
   const previousStatus = job.status;
-  if (displayFabricationStatus(previousStatus) === status) return { changed: false, previousStatus };
-  job.status = status;
-  job.updatedAt = new Date().toISOString();
-  if (Array.isArray(job.lines)) {
-    job.lines = job.lines.map((line) => ({ ...line, status }));
+  let changed = false;
+
+  if (Object.prototype.hasOwnProperty.call(updates, "status")) {
+    const status = String(updates.status || "");
+    if (displayFabricationStatus(previousStatus) !== status || previousStatus !== status) {
+      job.status = status;
+      if (Array.isArray(job.lines)) {
+        job.lines = job.lines.map((line) => ({ ...line, status }));
+      }
+      changed = true;
+    }
   }
-  return { changed: true, previousStatus };
+
+  if (Object.prototype.hasOwnProperty.call(updates, "machine") || Object.prototype.hasOwnProperty.call(updates, "process")) {
+    const machine = String(updates.machine ?? updates.process ?? "").trim();
+    if (Array.isArray(job.lines)) {
+      job.lines = job.lines.map((line) => {
+        if (String(line.machine || "") === machine && String(line.process || "") === machine) return line;
+        changed = true;
+        return { ...line, machine, process: machine };
+      });
+    }
+  }
+
+  if (!changed) return { changed: false, previousStatus, previousJob };
+  job.updatedAt = new Date().toISOString();
+  return { changed: true, previousStatus, previousJob };
+}
+
+function updateFabricationCardDetails(card, jobId) {
+  const job = findLocalFabricationJob(jobId);
+  const line = Array.isArray(job?.lines) ? job.lines[0] : {};
+  if (!card || !job || !line) return;
+  const routeLine = card.querySelector(".kanban-line");
+  const stockLabel = card.querySelector(".kanban-route-row > span");
+  const machine = line.machine || line.process || "";
+  const route = [line.stock, machine].filter(Boolean).join(" · ") || "Route not set";
+  if (stockLabel) stockLabel.textContent = line.stock || "No stock";
+  if (routeLine) routeLine.textContent = `${line.subsystem || "No subsystem"} · qty ${Number(line.quantityNeeded || 1)} · ${route}`;
 }
 
 function moveFabricationCardElement(card, column, status) {
@@ -2947,9 +3003,9 @@ function applyInventoryMutation(result, options = {}) {
   } else {
     renderInventory(result.inventory);
   }
-  if (result.fabrication) renderFabrication(result.fabrication);
-  if (result.procurement) renderProcurement(result.procurement);
-  if (result.robots) renderRobots(result.robots);
+  if (result.fabrication && !options.skipFabrication) renderFabrication(result.fabrication);
+  if (result.procurement && !options.skipProcurement) renderProcurement(result.procurement);
+  if (result.robots && !options.skipRobots) renderRobots(result.robots);
   renderDocumentFilter(result.inventory);
 }
 
@@ -3276,20 +3332,29 @@ async function onFabricationJobChange(event) {
   const select = event.target.closest("select[data-job-id]");
   if (!select) return;
   const field = select.dataset.fabField || "status";
+  const jobId = select.dataset.jobId;
   const body = field === "machine"
     ? { machine: select.value, process: select.value }
     : { status: select.value };
+  const localUpdate = updateLocalFabricationJob(jobId, body);
+  if (!localUpdate) return;
+  const card = select.closest(".kanban-card");
+  if (field === "machine") updateFabricationCardDetails(card, jobId);
+  if (localUpdate.changed === false) return;
+  select.classList.add("pending");
   try {
-    const result = await api(`/api/fabrication/jobs/${encodeURIComponent(select.dataset.jobId)}`, {
+    const result = await api(`/api/fabrication/jobs/${encodeURIComponent(jobId)}`, {
       method: "PATCH",
       body: JSON.stringify(body)
     });
     replaceDashboardFabrication(result.fabrication);
-    renderFabrication(result.fabrication);
-    setMessage(field === "machine" ? "Manufacturing process updated." : "Fabrication job status updated.", "ok");
+    if (field === "machine") updateFabricationCardDetails(card, jobId);
   } catch (error) {
+    restoreLocalFabricationJob(jobId, localUpdate.previousJob);
+    if (dashboardState?.fabrication) renderFabrication(dashboardState.fabrication);
     setMessage(error.message, "error");
-    await loadDashboard();
+  } finally {
+    select.classList.remove("pending");
   }
 }
 
@@ -3362,7 +3427,7 @@ async function onFabricationDrop(event) {
   const card = els.fabricationJobs.querySelector(".kanban-card.dragging");
   els.fabricationJobs.querySelectorAll(".dragging, .drag-over").forEach((item) => item.classList.remove("dragging", "drag-over"));
   if (!jobId || !status) return;
-  const localUpdate = updateLocalFabricationJob(jobId, status);
+  const localUpdate = updateLocalFabricationJob(jobId, { status });
   if (localUpdate?.changed === false) return;
   if (card) moveFabricationCardElement(card, column, status);
   else if (dashboardState?.fabrication) renderFabrication(dashboardState.fabrication);
@@ -3372,15 +3437,13 @@ async function onFabricationDrop(event) {
       body: JSON.stringify({ status })
     });
     replaceDashboardFabrication(result.fabrication);
-    renderFabrication(result.fabrication);
-    setMessage("Fabrication card moved.", "ok");
   } catch (error) {
-    if (localUpdate?.previousStatus) {
-      updateLocalFabricationJob(jobId, localUpdate.previousStatus);
+    if (localUpdate?.previousJob) {
+      restoreLocalFabricationJob(jobId, localUpdate.previousJob);
       renderFabrication(dashboardState.fabrication);
     }
     setMessage(error.message, "error");
-    if (!localUpdate?.previousStatus) await loadDashboard();
+    if (!localUpdate?.previousJob) await loadDashboard();
   }
 }
 
