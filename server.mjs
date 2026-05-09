@@ -2356,9 +2356,15 @@ function findCatalogPartForInventoryPart(part, sourceType) {
 
 function neededByForInventoryPart(record, part) {
   const partKey = inventoryItemPartKey(part);
+  const catalog = findCatalogPartForInventoryPart(part, record.sourceType);
   const matches = store.requirements.filter((requirement) => (
     requirement.inventoryRecordId === record.id &&
-    (String(requirement.key || "").endsWith(`:${record.id}:${partKey}`) || requirement.name === part.name)
+    (
+      (requirement.partKey && requirement.partKey === partKey) ||
+      (catalog?.id && requirement.catalogPartId === catalog.id) ||
+      String(requirement.key || "").endsWith(`:${record.id}:${partKey}`) ||
+      requirement.name === part.name
+    )
   ));
   if (!matches.length && part.subsystem) {
     return [{ robot: "", subsystem: part.subsystem, quantityNeeded: Number(part.quantityNeeded || part.quantity || 1), status: part.status || "needed" }];

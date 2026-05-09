@@ -22,6 +22,8 @@ let pointerY = 0;
 let dashboardApplyFrame = 0;
 let pendingDashboard = null;
 let pendingDashboardOptions = {};
+const inventoryAutosaveTimers = new Map();
+const inventoryAutosaveVersions = new Map();
 
 const els = {
   appShell: document.querySelector("#appShell"),
@@ -1609,7 +1611,7 @@ function renderInventoryTable(items) {
     .slice(0, 200);
 
   if (!visible.length) {
-    els.inventoryBody.innerHTML = `<tr><td colspan="10" class="empty">No matching inventory.</td></tr>`;
+    els.inventoryBody.innerHTML = `<tr><td colspan="11" class="empty">No matching inventory.</td></tr>`;
     updateInventorySelectionControls([]);
     return;
   }
@@ -1623,10 +1625,11 @@ function renderInventoryTable(items) {
       <td><input data-field="partNumber" value="${escapeAttr(inventoryPartNumber(part))}" aria-label="Part number or SKU"></td>
       <td><input data-field="category" value="${escapeAttr(part.category || "uncategorized")}" aria-label="Category"></td>
       <td><input data-field="${part.sourceType === "cots" ? "vendor" : "material"}" value="${escapeAttr(part.sourceType === "cots" ? part.vendor || "" : [part.material, part.thickness].filter(Boolean).join(" "))}" aria-label="${part.sourceType === "cots" ? "Vendor" : "Material"}"></td>
-      <td>${neededCell(part)}</td>
+      <td class="needed-cell">${neededCell(part)}</td>
       <td><input class="number-input" data-field="onHand" type="number" min="0" value="${Number(part.onHand || 0)}" aria-label="On hand"></td>
+      <td><span class="readonly-number" title="Reserved by project checklists">${Number(part.reserved || 0)}</span></td>
       <td class="row-actions">
-        <button class="ghost small" type="button" data-action="save-inventory">Save</button>
+        <span class="autosave-state" aria-live="polite">Autosaved</span>
         <button class="ghost small danger" type="button" data-action="delete-inventory">Delete</button>
       </td>
     </tr>
@@ -1636,8 +1639,11 @@ function renderInventoryTable(items) {
 
 function onInventoryCellInput(event) {
   const input = event.target.closest(".part-name-input");
-  if (!input) return;
-  input.size = partNameInputSize(input.value);
+  if (input) input.size = partNameInputSize(input.value);
+  const field = event.target.closest("[data-field]");
+  if (!field) return;
+  const row = field.closest("tr[data-item-key]");
+  if (row) scheduleInventoryAutosave(row);
 }
 
 function syncInventorySelection(items = []) {
@@ -1663,12 +1669,17 @@ function updateInventorySelectionControls(visible = []) {
 
 function onInventorySelectionChange(event) {
   const input = event.target.closest("input[data-action='select-inventory']");
-  if (!input) return;
-  const key = input.dataset.itemKey || "";
-  if (!key) return;
-  if (input.checked) selectedInventoryItems.add(key);
-  else selectedInventoryItems.delete(key);
-  updateInventorySelectionControls(visibleInventoryItemsFromDom());
+  if (input) {
+    const key = input.dataset.itemKey || "";
+    if (!key) return;
+    if (input.checked) selectedInventoryItems.add(key);
+    else selectedInventoryItems.delete(key);
+    updateInventorySelectionControls(visibleInventoryItemsFromDom());
+    return;
+  }
+  const field = event.target.closest("[data-field]");
+  const row = field?.closest("tr[data-item-key]");
+  if (row) scheduleInventoryAutosave(row, { delay: 120 });
 }
 
 function onInventorySelectAllChange(event) {
@@ -1949,21 +1960,89 @@ async function updateRequirementReservation(button) {
     : button.dataset.mode === "clear"
       ? { reserved: 0 }
       : { reserveDelta: Number(button.dataset.delta || 0) };
-  row.classList.add("pending");
-  row.querySelectorAll("button").forEach((control) => {
-    control.disabled = true;
-  });
+  const changed = optimisticRequirementReservation(robotId, requirementId, body);
+  if (changed) {
+    renderRobots(dashboardState?.robots || []);
+    renderInventoryTable(dashboardState?.inventory?.parts || []);
+  } else {
+    row.classList.add("pending");
+  }
   try {
     const result = await api(`/api/robots/${encodeURIComponent(robotId)}/requirements/${encodeURIComponent(requirementId)}`, {
       method: "PATCH",
       body: JSON.stringify(body)
     });
-    applyInventoryMutation(result);
-    setMessage("Subsystem reservation updated.", "ok");
+    applyInventoryMutation(result, { skipInventoryTable: currentPageId() === "inventory" ? false : true, quiet: true });
   } catch (error) {
     row.classList.remove("pending");
     setMessage(error.message, "error");
     await loadDashboard();
+  }
+}
+
+function optimisticRequirementReservation(robotId, requirementId, body) {
+  const robot = (dashboardState?.robots || []).find((item) => item.id === robotId);
+  const requirement = robot?.requirements?.find((item) => item.id === requirementId);
+  if (!requirement) return false;
+  const current = Number(requirement.quantityReserved || 0);
+  const needed = Math.max(1, Number(requirement.quantityNeeded || 1));
+  const available = Math.max(0, Number(requirement.available || 0));
+  const maxReserved = Math.min(needed, current + available);
+  const requested = body.reserveToNeeded
+    ? maxReserved
+    : body.reserveDelta !== undefined
+      ? current + Number(body.reserveDelta || 0)
+      : Number(body.reserved ?? current);
+  const next = Math.max(0, Math.min(maxReserved, requested));
+  if (next === current) return false;
+  requirement.quantityReserved = next;
+  requirement.status = next >= needed ? "reserved" : "needed";
+  recomputeLocalReservationState();
+  updateRobotReadinessFromRequirements(robot);
+  return true;
+}
+
+function recomputeLocalReservationState() {
+  const inventoryParts = dashboardState?.inventory?.parts || [];
+  const allRequirements = (dashboardState?.robots || []).flatMap((robot) => robot.requirements || []);
+  const reservedByCatalog = new Map();
+  for (const requirement of allRequirements) {
+    const catalogId = requirement.catalogPartId || "";
+    if (!catalogId) continue;
+    reservedByCatalog.set(catalogId, (reservedByCatalog.get(catalogId) || 0) + Number(requirement.quantityReserved || 0));
+  }
+  const onHandByCatalog = new Map();
+  for (const part of inventoryParts) {
+    if (!part.catalogPartId) continue;
+    const reserved = Number(reservedByCatalog.get(part.catalogPartId) || 0);
+    const onHand = Number(part.onHand || 0);
+    part.reserved = reserved;
+    part.available = Math.max(0, onHand - reserved);
+    onHandByCatalog.set(part.catalogPartId, onHand);
+  }
+  for (const requirement of allRequirements) {
+    const onHand = Number(onHandByCatalog.get(requirement.catalogPartId) ?? requirement.onHand ?? 0);
+    const reserved = Number(reservedByCatalog.get(requirement.catalogPartId) || 0);
+    requirement.onHand = onHand;
+    requirement.available = Math.max(0, onHand - reserved);
+  }
+}
+
+function updateRobotReadinessFromRequirements(robot) {
+  const requirements = robot?.requirements || [];
+  const subassemblies = robotSubassemblies(robot);
+  const quantityNeeded = requirements.reduce((sum, requirement) => sum + Number(requirement.quantityNeeded || 0), 0);
+  const quantityReady = requirements.reduce((sum, requirement) => sum + Math.min(Number(requirement.quantityNeeded || 0), Number(requirement.quantityReserved || 0)), 0);
+  const percent = quantityNeeded ? Math.round((quantityReady / quantityNeeded) * 100) : 0;
+  robot.counts = { ...(robot.counts || {}), quantityNeeded, quantityReady };
+  robot.progress = { ...(robot.progress || {}), procurement: percent, fabrication: percent, receivedInstalled: percent };
+  robot.readiness = percent;
+  for (const subassembly of subassemblies) {
+    const rows = requirements.filter((requirement) => requirement.subsystemId === subassembly.id || requirement.subsystem === subassembly.name);
+    const subNeeded = rows.reduce((sum, requirement) => sum + Number(requirement.quantityNeeded || 0), 0);
+    const subReady = rows.reduce((sum, requirement) => sum + Math.min(Number(requirement.quantityNeeded || 0), Number(requirement.quantityReserved || 0)), 0);
+    subassembly.counts = { ...(subassembly.counts || {}), quantityNeeded: subNeeded, quantityReady: subReady };
+    subassembly.readiness = subNeeded ? Math.round((subReady / subNeeded) * 100) : 0;
   }
 }
 
@@ -2761,20 +2840,75 @@ async function onInventoryAction(event) {
     }
     return;
   }
-  if (button.dataset.action !== "save-inventory") return;
+}
+
+function inventoryPayloadFromRow(row) {
   const payload = Object.fromEntries([...row.querySelectorAll("[data-field]")].map((input) => [input.dataset.field, input.value]));
   payload.quantityNeeded = Number(row.querySelector(".needed-tooltip")?.dataset.quantity || 1);
   payload.onHand = Number(payload.onHand || 0);
+  return payload;
+}
+
+function scheduleInventoryAutosave(row, options = {}) {
+  const itemKey = row?.dataset.itemKey || "";
+  if (!itemKey) return;
+  const delay = Number(options.delay ?? 420);
+  clearTimeout(inventoryAutosaveTimers.get(itemKey));
+  row.classList.add("dirty");
+  setInventoryAutosaveState(row, "Saving...");
+  inventoryAutosaveTimers.set(itemKey, setTimeout(() => {
+    saveInventoryRow(row);
+  }, delay));
+  optimisticInventoryItemUpdate(itemKey, inventoryPayloadFromRow(row));
+}
+
+async function saveInventoryRow(row) {
+  const itemKey = row?.dataset.itemKey || "";
+  if (!itemKey) return;
+  const payload = inventoryPayloadFromRow(row);
+  const version = (inventoryAutosaveVersions.get(itemKey) || 0) + 1;
+  inventoryAutosaveVersions.set(itemKey, version);
+  row.classList.add("saving");
+  row.classList.remove("error");
   try {
     const result = await api(`/api/inventory/items/${encodeURIComponent(itemKey)}`, {
       method: "PATCH",
       body: JSON.stringify(payload)
     });
-    applyInventoryMutation(result);
-    setMessage("Inventory item saved.", "ok");
+    if (inventoryAutosaveVersions.get(itemKey) !== version) return;
+    applyInventoryMutation(result, { skipInventoryTable: true, quiet: true });
+    row.classList.remove("dirty", "saving");
+    row.classList.add("saved");
+    setInventoryAutosaveState(row, "Saved");
+    setTimeout(() => row.classList.remove("saved"), 900);
   } catch (error) {
+    if (inventoryAutosaveVersions.get(itemKey) !== version) return;
+    row.classList.remove("saving");
+    row.classList.add("error");
+    setInventoryAutosaveState(row, "Not saved");
     setMessage(error.message, "error");
   }
+}
+
+function setInventoryAutosaveState(row, text) {
+  const status = row?.querySelector(".autosave-state");
+  if (status) status.textContent = text;
+}
+
+function optimisticInventoryItemUpdate(itemKey, payload) {
+  const part = dashboardState?.inventory?.parts?.find((item) => item.itemKey === itemKey);
+  if (!part) return;
+  const onHand = Number(payload.onHand ?? part.onHand ?? 0);
+  const reserved = Number(part.reserved || 0);
+  Object.assign(part, {
+    name: payload.name ?? part.name,
+    partNumber: payload.partNumber ?? part.partNumber,
+    category: payload.category ?? part.category,
+    onHand,
+    available: Math.max(0, onHand - reserved)
+  });
+  if (part.sourceType === "cots") part.vendor = payload.vendor ?? part.vendor;
+  else part.material = payload.material ?? part.material;
 }
 
 async function onInventoryBulkDelete() {
@@ -2800,7 +2934,7 @@ async function onInventoryBulkDelete() {
   }
 }
 
-function applyInventoryMutation(result) {
+function applyInventoryMutation(result, options = {}) {
   dashboardState = {
     ...(dashboardState || {}),
     inventory: result.inventory,
@@ -2809,8 +2943,12 @@ function applyInventoryMutation(result) {
     robots: result.robots || dashboardState?.robots,
     robotSources: result.robotSources || dashboardState?.robotSources
   };
-  renderInventory(result.inventory);
-  renderInventoryTable(result.inventory.parts);
+  if (!options.skipInventoryTable) {
+    renderInventory(result.inventory);
+    renderInventoryTable(result.inventory.parts);
+  } else {
+    renderInventory(result.inventory);
+  }
   if (result.fabrication) renderFabrication(result.fabrication);
   if (result.procurement) renderProcurement(result.procurement);
   if (result.robots) renderRobots(result.robots);

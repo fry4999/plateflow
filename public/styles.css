@@ -606,9 +606,9 @@ td {
 }
 
 #inventory {
-  max-width: min(1420px, calc(100vw - 28px));
-  padding-left: 24px;
-  padding-right: 24px;
+  max-width: min(1760px, calc(100vw - 18px));
+  padding-left: 16px;
+  padding-right: 16px;
 }
 
 .dashboard {
@@ -1546,7 +1546,7 @@ textarea {
 .inventory-bulkbar {
   align-items: center;
   border-bottom: 1px solid var(--line);
-  padding: 12px 14px;
+  padding: 14px 18px;
 }
 
 .inventory-bulkbar > div {
@@ -1560,21 +1560,22 @@ textarea {
 }
 
 #inventory .table-shell {
-  overflow: hidden;
+  width: 100%;
+  overflow: visible;
 }
 
 #inventory .responsive-table {
-  overflow-x: auto;
+  overflow: visible;
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1120px;
+  min-width: 1200px;
 }
 
 .inventory-table {
-  min-width: 1120px;
+  min-width: 1380px;
   table-layout: fixed;
 }
 
@@ -1634,12 +1635,12 @@ th input[type="checkbox"] {
 
 .inventory-table th:nth-child(3),
 .inventory-table td:nth-child(3) {
-  width: 130px;
+  width: 150px;
 }
 
 .inventory-table th:nth-child(4),
 .inventory-table td:nth-child(4) {
-  width: 320px;
+  width: 370px;
 }
 
 .inventory-table th:nth-child(5),
@@ -1650,13 +1651,19 @@ th input[type="checkbox"] {
 .inventory-table th:nth-child(8),
 .inventory-table td:nth-child(8),
 .inventory-table th:nth-child(9),
-.inventory-table td:nth-child(9) {
+.inventory-table td:nth-child(9),
+.inventory-table th:nth-child(10),
+.inventory-table td:nth-child(10) {
   width: 78px;
 }
 
-.inventory-table th:nth-child(10),
-.inventory-table td:nth-child(10) {
-  width: 132px;
+.inventory-table th:nth-child(11),
+.inventory-table td:nth-child(11) {
+  width: 112px;
+}
+
+.inventory-table td.needed-cell {
+  overflow: visible;
 }
 
 .inventory-table .part-name-input {
@@ -1666,7 +1673,41 @@ th input[type="checkbox"] {
 
 .inventory-table .row-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+
+.inventory-table tr.dirty .autosave-state,
+.inventory-table tr.saving .autosave-state {
+  color: var(--blue);
+}
+
+.inventory-table tr.saved .autosave-state {
+  color: var(--green);
+}
+
+.inventory-table tr.error .autosave-state {
+  color: #ef4444;
+}
+
+.autosave-state {
+  min-width: 58px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.readonly-number {
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--soft);
+  font-weight: 950;
 }
 
 .danger-zone {
@@ -3164,7 +3205,7 @@ body.dialog-open {
   }
 
   #inventory .inventory-table {
-    min-width: 1180px;
+    min-width: 1380px;
   }
 
   .order-form {
