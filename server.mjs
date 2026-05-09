@@ -3876,6 +3876,7 @@ function buildProcurementProjectBuckets(lines) {
 
 function dashboardSnapshot(user = null) {
   ensureIndividualFabricationJobs();
+  syncCatalogReservedQuantities();
   const inventory = inventorySnapshot();
   const customParts = inventory.parts.filter((part) => part.sourceType === "custom");
   const cotsParts = inventory.parts.filter((part) => {
@@ -3922,13 +3923,14 @@ function dashboardSnapshot(user = null) {
 }
 
 function robotSnapshot() {
+  const inventoryIndex = buildRequirementInventoryIndex();
   return store.robots.map((robot) => {
     const requirements = store.requirements.filter((requirement) => requirement.robotId === robot.id);
     const customRequirements = requirements.filter((requirement) => requirement.sourceType === "custom");
     const cotsRequirements = requirements.filter((requirement) => requirement.sourceType === "cots");
-    const procurementProgress = percentComplete(cotsRequirements, (requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1));
-    const fabricationProgress = percentComplete(customRequirements, (requirement) => ["completed", "received", "installed"].includes(requirement.status));
-    const receiveInstallProgress = percentComplete(requirements, (requirement) => Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1));
+    const procurementProgress = percentComplete(cotsRequirements, isRequirementReservedComplete);
+    const fabricationProgress = percentComplete(customRequirements, isRequirementReservedComplete);
+    const receiveInstallProgress = percentComplete(requirements, isRequirementReservedComplete);
     const readiness = weightedReadiness({ requirements, customRequirements, cotsRequirements, procurementProgress, fabricationProgress, receiveInstallProgress });
     const quantityNeeded = totalRequirementQuantity(requirements, "quantityNeeded");
     const quantityReady = totalReadyQuantity(requirements);
@@ -3942,17 +3944,17 @@ function robotSnapshot() {
         quantityReady,
         custom: customRequirements.length,
         cots: cotsRequirements.length,
-        missing: requirements.filter((requirement) => Number(requirement.quantityReceived || 0) < Number(requirement.quantityNeeded || 1)).length,
+        missing: requirements.filter((requirement) => !isRequirementReservedComplete(requirement)).length,
         inFabrication: customRequirements.filter((requirement) => !["completed", "received", "installed"].includes(requirement.status)).length,
         onOrder: cotsRequirements.filter((requirement) => ["ordered", "partially_received", "backordered"].includes(requirement.status)).length,
-        ready: requirements.filter((requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1)).length
+        ready: requirements.filter(isRequirementReservedComplete).length
       },
       progress: {
         procurement: procurementProgress,
         fabrication: fabricationProgress,
         receivedInstalled: receiveInstallProgress
       },
-      requirements: requirements.map(publicRequirement),
+      requirements: requirements.map((requirement) => publicRequirement(requirement, inventoryIndex)),
       subsystems: robot.subsystems.map((subsystem) => subsystemSnapshot(robot, subsystem, requirements))
     };
   });
@@ -3962,9 +3964,9 @@ function subsystemSnapshot(robot, subsystem, robotRequirements) {
   const requirements = robotRequirements.filter((requirement) => requirement.subsystemId === subsystem.id || requirement.subsystem === subsystem.name);
   const customRequirements = requirements.filter((requirement) => requirement.sourceType === "custom");
   const cotsRequirements = requirements.filter((requirement) => requirement.sourceType === "cots");
-  const procurementProgress = percentComplete(cotsRequirements, (requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1));
-  const fabricationProgress = percentComplete(customRequirements, (requirement) => ["received", "installed", "completed"].includes(requirement.status));
-  const receiveInstallProgress = percentComplete(requirements, (requirement) => Number(requirement.quantityInstalled || 0) >= Number(requirement.quantityNeeded || 1));
+  const procurementProgress = percentComplete(cotsRequirements, isRequirementReservedComplete);
+  const fabricationProgress = percentComplete(customRequirements, isRequirementReservedComplete);
+  const receiveInstallProgress = percentComplete(requirements, isRequirementReservedComplete);
   const readiness = weightedReadiness({ requirements, customRequirements, cotsRequirements, procurementProgress, fabricationProgress, receiveInstallProgress });
   const quantityNeeded = totalRequirementQuantity(requirements, "quantityNeeded");
   const quantityReady = totalReadyQuantity(requirements);
@@ -3989,7 +3991,7 @@ function subsystemSnapshot(robot, subsystem, robotRequirements) {
       custom: customRequirements.length,
       cots: cotsRequirements.length,
       fabricationJobs: jobs.length,
-      ready: requirements.filter((requirement) => Number(requirement.quantityReceived || 0) >= Number(requirement.quantityNeeded || 1)).length
+      ready: requirements.filter(isRequirementReservedComplete).length
     }
   };
 }
@@ -4023,9 +4025,16 @@ function totalRequirementQuantity(requirements, field) {
 function totalReadyQuantity(requirements) {
   return requirements.reduce((sum, requirement) => {
     const needed = Number(requirement.quantityNeeded || 1);
-    const received = Number(requirement.quantityReceived || 0);
-    return sum + Math.min(needed, received);
+    return sum + Math.min(needed, requirementReservedQuantity(requirement));
   }, 0);
+}
+
+function requirementReservedQuantity(requirement) {
+  return Number(requirement.quantityReserved ?? requirement.reserved ?? 0);
+}
+
+function isRequirementReservedComplete(requirement) {
+  return requirementReservedQuantity(requirement) >= Number(requirement.quantityNeeded || 1);
 }
 
 function robotSourceSnapshot() {
@@ -4043,11 +4052,15 @@ function robotSourceSnapshot() {
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-function publicRequirement(requirement) {
+function publicRequirement(requirement, inventoryIndex = buildRequirementInventoryIndex()) {
+  const inventory = inventoryIndex.byRequirementId.get(requirement.id) || {};
+  const needed = Number(requirement.quantityNeeded || 1);
+  const reserved = requirementReservedQuantity(requirement);
   return {
     id: requirement.id,
     robotId: requirement.robotId,
     inventoryRecordId: requirement.inventoryRecordId,
+    catalogPartId: inventory.catalogId || requirement.catalogPartId || "",
     name: requirement.name,
     subsystemId: requirement.subsystemId || "",
     subsystem: requirement.subsystem || "",
@@ -4055,12 +4068,81 @@ function publicRequirement(requirement) {
     sourceDocument: requirement.sourceDocument,
     vendor: requirement.vendor,
     vendorSku: requirement.vendorSku,
+    partNumber: requirement.partNumber || inventory.partNumber || "",
     material: requirement.material,
-    quantityNeeded: Number(requirement.quantityNeeded || 1),
+    quantityNeeded: needed,
+    quantityReserved: Math.min(needed, reserved),
     quantityReceived: Number(requirement.quantityReceived || 0),
     quantityInstalled: Number(requirement.quantityInstalled || 0),
+    onHand: Number(inventory.onHand || 0),
+    available: Math.max(0, Number(inventory.available || 0)),
+    defaultLocation: inventory.defaultLocation || "",
     status: requirement.status || "needed"
   };
+}
+
+function buildRequirementInventoryIndex() {
+  const byRequirementId = new Map();
+  const reservedByCatalogId = new Map();
+  for (const requirement of store.requirements || []) {
+    const resolved = resolveRequirementInventory(requirement);
+    byRequirementId.set(requirement.id, resolved);
+    if (resolved.catalogId) {
+      reservedByCatalogId.set(resolved.catalogId, (reservedByCatalogId.get(resolved.catalogId) || 0) + requirementReservedQuantity(requirement));
+    }
+  }
+  for (const [id, resolved] of byRequirementId.entries()) {
+    const reservedTotal = resolved.catalogId ? Number(reservedByCatalogId.get(resolved.catalogId) || 0) : 0;
+    byRequirementId.set(id, {
+      ...resolved,
+      reservedTotal,
+      available: Math.max(0, Number(resolved.onHand || 0) - reservedTotal)
+    });
+  }
+  return { byRequirementId, reservedByCatalogId };
+}
+
+function resolveRequirementInventory(requirement) {
+  const record = store.inventoryRecords.find((item) => item.id === requirement.inventoryRecordId);
+  const partKey = requirement.partKey || requirementPartKey(requirement);
+  const part = record?.parts?.find((item) => inventoryItemPartKey(item) === partKey) ||
+    record?.parts?.find((item) => item.name === requirement.name) ||
+    null;
+  const catalog = part
+    ? findCatalogPartForInventoryPart(part, record.sourceType)
+    : store.catalogParts.find((item) => item.id === requirement.catalogPartId);
+  return {
+    record,
+    part,
+    catalog,
+    partKey,
+    catalogId: catalog?.id || requirement.catalogPartId || "",
+    onHand: Number(catalog?.onHand ?? part?.onHand ?? 0),
+    reserved: requirementReservedQuantity(requirement),
+    available: 0,
+    partNumber: catalog?.partNumber || part?.partNumber || part?.vendorSku || requirement.partNumber || requirement.vendorSku || "",
+    defaultLocation: catalog?.defaultLocation || part?.defaultLocation || ""
+  };
+}
+
+function requirementPartKey(requirement) {
+  if (requirement.partKey) return String(requirement.partKey);
+  const prefix = `${requirement.robotId}:${requirement.subsystemId}:${requirement.inventoryRecordId}:`;
+  return String(requirement.key || "").startsWith(prefix) ? String(requirement.key).slice(prefix.length) : "";
+}
+
+function syncCatalogReservedQuantities() {
+  for (const catalog of store.catalogParts || []) {
+    catalog.reserved = 0;
+    catalog.available = Math.max(0, Number(catalog.onHand || 0));
+  }
+  const index = buildRequirementInventoryIndex();
+  for (const [catalogId, reserved] of index.reservedByCatalogId.entries()) {
+    const catalog = store.catalogParts.find((item) => item.id === catalogId);
+    if (!catalog) continue;
+    catalog.reserved = Number(reserved || 0);
+    catalog.available = Math.max(0, Number(catalog.onHand || 0) - Number(reserved || 0));
+  }
 }
 
 function settingsSnapshot() {
@@ -4892,12 +4974,16 @@ async function syncRobotRequirementsFromRecord(robotId, record, selectedParts = 
     if (selectedKeys.size && !selectedKeys.has(partKey)) continue;
     const key = `${robotId}:${subassembly.id}:${record.id}:${partKey}`;
     const quantityNeeded = Math.max(1, Number(part.quantityNeeded || part.quantity || 1));
+    const catalog = findCatalogPartForInventoryPart(part, sourceType);
     const existing = store.requirements.find((requirement) => requirement.key === key);
     if (existing) {
       existing.name = part.name;
       existing.subsystemId = subassembly.id;
       existing.subsystem = subassembly.name;
+      existing.partKey = partKey;
+      existing.catalogPartId = catalog?.id || existing.catalogPartId || "";
       existing.quantityNeeded = quantityNeeded;
+      existing.quantityReserved = Math.min(quantityNeeded, requirementReservedQuantity(existing));
       existing.updatedAt = now;
       continue;
     }
@@ -4908,6 +4994,8 @@ async function syncRobotRequirementsFromRecord(robotId, record, selectedParts = 
       subsystemId: subassembly.id,
       subsystem: subassembly.name,
       inventoryRecordId: record.id,
+      partKey,
+      catalogPartId: catalog?.id || "",
       sourceType,
       sourceDocument: part.sourceDocument || record.source?.sourceTag || record.source?.documentName || shortDocumentId(record.source?.documentId),
       name: part.name,
@@ -4916,6 +5004,7 @@ async function syncRobotRequirementsFromRecord(robotId, record, selectedParts = 
       material: part.material || "",
       partNumber: part.partNumber || "",
       quantityNeeded,
+      quantityReserved: 0,
       quantityMade: 0,
       quantityReceived: 0,
       quantityInstalled: 0,
@@ -4938,16 +5027,37 @@ async function updateRobotRequirement(req, res, session, actor, ids) {
   if (!requirement) throw httpError(404, "Requirement not found");
   const body = await readJson(req);
   const quantityNeeded = Math.max(1, Number(requirement.quantityNeeded || 1));
+  if (body.reserveDelta !== undefined || body.reserved !== undefined || body.reserveToNeeded !== undefined) {
+    const currentReserved = requirementReservedQuantity(requirement);
+    const index = buildRequirementInventoryIndex();
+    const stats = index.byRequirementId.get(requirement.id) || {};
+    const totalReserved = Number(index.reservedByCatalogId.get(stats.catalogId) || 0);
+    const otherReserved = Math.max(0, totalReserved - currentReserved);
+    const maxReserved = Math.min(quantityNeeded, Math.max(0, Number(stats.onHand || 0) - otherReserved));
+    const requested = body.reserveToNeeded
+      ? maxReserved
+      : body.reserveDelta !== undefined
+        ? currentReserved + Number(body.reserveDelta || 0)
+        : Number(body.reserved ?? currentReserved);
+    requirement.quantityReserved = boundedInteger(requested, currentReserved, 0, maxReserved);
+  }
   if (body.received !== undefined) requirement.quantityReceived = body.received ? quantityNeeded : 0;
   if (body.installed !== undefined) {
     requirement.quantityInstalled = body.installed ? quantityNeeded : 0;
     if (body.installed) requirement.quantityReceived = quantityNeeded;
   }
-  requirement.status = requirement.quantityInstalled >= quantityNeeded ? "installed" : requirement.quantityReceived >= quantityNeeded ? "received" : "needed";
+  requirement.status = isRequirementReservedComplete(requirement)
+    ? "reserved"
+    : requirement.quantityInstalled >= quantityNeeded
+      ? "installed"
+      : requirement.quantityReceived >= quantityNeeded
+        ? "received"
+        : "needed";
   requirement.updatedAt = new Date().toISOString();
+  syncCatalogReservedQuantities();
   audit("robot.requirement_updated", `Updated ${requirement.name} on ${robot.name} to ${requirement.status}`, actor.email);
   await persistStore();
-  return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
+  return json(res, 200, inventoryMutationSnapshot());
 }
 
 function robotRequirementPath(pathname) {

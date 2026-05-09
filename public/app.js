@@ -1752,9 +1752,9 @@ function renderRobots(robots) {
       </div>
       <div class="progress"><span style="width:${Math.max(0, Math.min(100, Number(robot.readiness)))}%"></span></div>
       <dl class="mini-stats">
-        <div><dt>Procurement</dt><dd>${Number(robot.progress.procurement)}%</dd></div>
-        <div><dt>Fabrication</dt><dd>${Number(robot.progress.fabrication)}%</dd></div>
-        <div><dt>Install</dt><dd>${Number(robot.progress.receivedInstalled)}%</dd></div>
+        <div><dt>COTS</dt><dd>${Number(robot.progress.procurement)}%</dd></div>
+        <div><dt>Custom</dt><dd>${Number(robot.progress.fabrication)}%</dd></div>
+        <div><dt>Reserved</dt><dd>${Number(robot.progress.receivedInstalled)}%</dd></div>
       </dl>
       <div class="subsystem-list">
         ${robotSubassemblies(robot).slice(0, 4).map((subsystem) => `
@@ -1779,17 +1779,10 @@ function renderRobotWorkspace(robot) {
   ].join("");
   const requirements = robot.requirements || [];
   const subassemblies = robotSubassemblies(robot);
-  const requirementRows = requirements.map((requirement) => {
-    return `
-      <div class="requirement-row compact" data-requirement-id="${escapeAttr(requirement.id)}">
-        <div>
-          <strong>${escapeHtml(requirement.name)}</strong>
-          <span>${escapeHtml(requirement.sourceDocument || "Onshape")}</span>
-        </div>
-        <strong>qty ${Number(requirement.quantityNeeded || 1)}</strong>
-      </div>
-    `;
-  }).join("");
+  if (!selectedSubassemblyId || !subassemblies.some((subassembly) => subassembly.id === selectedSubassemblyId)) {
+    selectedSubassemblyId = subassemblies[0]?.id || "";
+  }
+  const selectedSubassembly = subassemblies.find((subassembly) => subassembly.id === selectedSubassemblyId) || null;
   els.robotRequirementList.innerHTML = `
     <div class="robot-subassemblies">
       <h4>Sub-assemblies</h4>
@@ -1798,8 +1791,7 @@ function renderRobotWorkspace(robot) {
       </div>
     </div>
     <div class="robot-requirements">
-      <h4>Parts</h4>
-      ${requirementRows || `<p class="empty">No requirements yet. Import from Onshape or select a synced Assembly BOM source above.</p>`}
+      ${renderSubassemblyChecklist(robot, selectedSubassembly, requirements)}
     </div>
   `;
 }
@@ -1813,7 +1805,7 @@ function renderSubassemblyCard(robot, subassembly) {
   const procurement = subassemblyProcurementSummary(robot.id, subassembly);
   const orderedLabel = `${Number(procurement.ordered || 0)}/${Number(procurement.needed || 0)}`;
   return `
-    <article class="subassembly-card" data-robot-id="${escapeAttr(robot.id)}" data-subassembly-id="${escapeAttr(subassembly.id)}" tabindex="0">
+    <article class="subassembly-card ${subassembly.id === selectedSubassemblyId ? "selected" : ""}" data-robot-id="${escapeAttr(robot.id)}" data-subassembly-id="${escapeAttr(subassembly.id)}" tabindex="0">
       <div class="card-head">
         <div>
           <h3>${escapeHtml(subassembly.name)}</h3>
@@ -1833,8 +1825,75 @@ function renderSubassemblyCard(robot, subassembly) {
         </div>
       </div>
       <div class="subassembly-actions">
-        <button class="ghost small" type="button" data-action="open-subassembly">Open workspace</button>
+        <button class="ghost small" type="button" data-action="open-subassembly">Open checklist</button>
+        <button class="ghost small" type="button" data-action="open-subassembly-fabrication">Manufacturing</button>
         <button class="ghost small danger" type="button" data-action="delete-subassembly" data-robot-id="${escapeAttr(robot.id)}" data-subassembly-id="${escapeAttr(subassembly.id)}">Remove</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderSubassemblyChecklist(robot, subassembly, requirements = []) {
+  if (!subassembly) {
+    return `
+      <section class="subsystem-checklist">
+        <header><h4>Subsystem checklist</h4></header>
+        <p class="empty">Select or import a sub-assembly to see its COTS and custom parts.</p>
+      </section>
+    `;
+  }
+  const rows = requirements.filter((requirement) => requirement.subsystemId === subassembly.id || requirement.subsystem === subassembly.name);
+  const needed = rows.reduce((sum, row) => sum + Number(row.quantityNeeded || 0), 0);
+  const reserved = rows.reduce((sum, row) => sum + Number(row.quantityReserved || 0), 0);
+  const missing = Math.max(0, needed - reserved);
+  const percent = needed ? Math.round((reserved / needed) * 100) : 0;
+  return `
+    <section class="subsystem-checklist">
+      <header>
+        <div>
+          <h4>${escapeHtml(subassembly.name)} checklist</h4>
+          <p>${Number(rows.length)} line${rows.length === 1 ? "" : "s"} · ${Number(needed)} needed · ${Number(reserved)} reserved · ${Number(missing)} missing</p>
+        </div>
+        <strong>${Number(reserved)}/${Number(needed)}</strong>
+      </header>
+      <div class="progress compact"><span style="width:${Math.max(0, Math.min(100, percent))}%"></span></div>
+      <div class="subsystem-checklist-head" aria-hidden="true">
+        <span>Part</span>
+        <span>Needed</span>
+        <span>On hand</span>
+        <span>Reserved</span>
+        <span>Available</span>
+        <span>Actions</span>
+      </div>
+      <div class="subsystem-checklist-rows">
+        ${rows.length ? rows.map((row) => renderSubsystemChecklistRow(robot, row)).join("") : `<p class="empty">No requirements yet. Import from Onshape or select a synced Assembly BOM source above.</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderSubsystemChecklistRow(robot, requirement) {
+  const needed = Number(requirement.quantityNeeded || 0);
+  const reserved = Number(requirement.quantityReserved || 0);
+  const onHand = Number(requirement.onHand || 0);
+  const available = Number(requirement.available || 0);
+  const canReserveOne = reserved < needed && available > 0;
+  const partNumber = requirement.partNumber || requirement.vendorSku || "";
+  return `
+    <article class="subsystem-check-row ${reserved >= needed && needed ? "complete" : ""}" data-robot-id="${escapeAttr(robot.id)}" data-requirement-id="${escapeAttr(requirement.id)}">
+      <div class="check-part">
+        <strong>${escapeHtml(requirement.name || "Part")}</strong>
+        <span>${escapeHtml(requirement.sourceType === "custom" ? "Custom" : "COTS")}${partNumber ? ` · ${escapeHtml(partNumber)}` : ""}${requirement.material ? ` · ${escapeHtml(requirement.material)}` : ""}</span>
+      </div>
+      <b>${Number(needed)}</b>
+      <b>${Number(onHand)}</b>
+      <b>${Number(reserved)}</b>
+      <b>${Number(available)}</b>
+      <div class="check-actions">
+        <button class="ghost micro" type="button" data-action="reserve-requirement" data-delta="-1" ${reserved <= 0 ? "disabled" : ""}>-</button>
+        <button class="ghost small" type="button" data-action="reserve-requirement" data-mode="needed" ${reserved >= needed || available <= 0 ? "disabled" : ""}>Reserve needed</button>
+        <button class="ghost micro" type="button" data-action="reserve-requirement" data-delta="1" ${!canReserveOne ? "disabled" : ""}>+</button>
+        <button class="ghost small danger" type="button" data-action="reserve-requirement" data-mode="clear" ${reserved <= 0 ? "disabled" : ""}>Clear</button>
       </div>
     </article>
   `;
@@ -1842,8 +1901,8 @@ function renderSubassemblyCard(robot, subassembly) {
 
 function readinessCounts(item) {
   const counts = item?.counts || {};
-  const needed = Number(counts.requirements ?? item?.partsNeeded ?? counts.quantityNeeded ?? item?.quantityNeeded ?? 0);
-  const ready = Number(counts.ready ?? item?.ready ?? counts.quantityReady ?? item?.quantityReady ?? 0);
+  const needed = Number(counts.quantityNeeded ?? item?.quantityNeeded ?? counts.requirements ?? item?.partsNeeded ?? 0);
+  const ready = Number(counts.quantityReady ?? item?.quantityReady ?? counts.ready ?? item?.ready ?? 0);
   return {
     needed,
     ready,
@@ -1852,6 +1911,13 @@ function readinessCounts(item) {
 }
 
 function onSubassemblyOpen(event) {
+  const reserveButton = event.target.closest("button[data-action='reserve-requirement']");
+  if (reserveButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    updateRequirementReservation(reserveButton);
+    return;
+  }
   const deleteButton = event.target.closest("button[data-action='delete-subassembly']");
   if (deleteButton) {
     event.preventDefault();
@@ -1859,12 +1925,46 @@ function onSubassemblyOpen(event) {
     deleteSubassembly(deleteButton.dataset.robotId, deleteButton.dataset.subassemblyId);
     return;
   }
+  const fabricationButton = event.target.closest("button[data-action='open-subassembly-fabrication']");
   const card = event.target.closest("[data-subassembly-id]");
   if (!card) return;
   selectedRobotId = card.dataset.robotId || selectedRobotId;
   selectedSubassemblyId = card.dataset.subassemblyId || "";
-  renderFabrication(dashboardState?.fabrication || { jobs: [] });
-  location.hash = "#fabrication";
+  if (fabricationButton) {
+    renderFabrication(dashboardState?.fabrication || { jobs: [] });
+    location.hash = "#fabrication";
+    return;
+  }
+  renderRobots(dashboardState?.robots || []);
+  if (currentPageId() !== "robots") location.hash = "#robots";
+}
+
+async function updateRequirementReservation(button) {
+  const row = button.closest("[data-requirement-id]");
+  const robotId = row?.dataset.robotId || selectedRobotId;
+  const requirementId = row?.dataset.requirementId || "";
+  if (!row || !robotId || !requirementId) return;
+  const body = button.dataset.mode === "needed"
+    ? { reserveToNeeded: true }
+    : button.dataset.mode === "clear"
+      ? { reserved: 0 }
+      : { reserveDelta: Number(button.dataset.delta || 0) };
+  row.classList.add("pending");
+  row.querySelectorAll("button").forEach((control) => {
+    control.disabled = true;
+  });
+  try {
+    const result = await api(`/api/robots/${encodeURIComponent(robotId)}/requirements/${encodeURIComponent(requirementId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    });
+    applyInventoryMutation(result);
+    setMessage("Subsystem reservation updated.", "ok");
+  } catch (error) {
+    row.classList.remove("pending");
+    setMessage(error.message, "error");
+    await loadDashboard();
+  }
 }
 
 async function deleteSubassembly(robotId, subassemblyId) {
