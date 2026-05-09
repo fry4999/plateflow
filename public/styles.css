@@ -1184,6 +1184,16 @@ select {
   transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
 }
 
+input[type="checkbox"] {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  accent-color: var(--blue);
+}
+
 [data-theme="dark"] input,
 [data-theme="dark"] textarea,
 [data-theme="dark"] select {
@@ -1363,10 +1373,16 @@ td select {
   min-height: 36px;
 }
 
-td input {
+td input:not([type="checkbox"]) {
   width: 100%;
   min-width: 86px;
   padding: 8px 10px;
+}
+
+td input[type="checkbox"],
+th input[type="checkbox"] {
+  display: block;
+  margin: 0 auto;
 }
 
 .inventory-table th,
@@ -2728,17 +2744,67 @@ body.dialog-open {
 }
 
 .embedded #parts .responsive-table {
-  overflow-x: auto;
+  overflow-x: hidden;
 }
 
 .embedded #parts table {
-  min-width: 620px;
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
   font-size: 12px;
 }
 
 .embedded #parts th,
 .embedded #parts td {
-  padding: 8px;
+  padding: 8px 7px;
+  vertical-align: middle;
+}
+
+.embedded #parts th:first-child,
+.embedded #parts td:first-child {
+  width: 38px;
+  padding-right: 4px;
+  text-align: center;
+}
+
+.embedded #parts th:nth-child(3),
+.embedded #parts td:nth-child(3) {
+  width: auto;
+  min-width: 0;
+}
+
+.embedded #parts th:nth-child(6),
+.embedded #parts td:nth-child(6) {
+  width: 64px;
+}
+
+.embedded #parts th:nth-child(8),
+.embedded #parts td:nth-child(8) {
+  width: 84px;
+}
+
+.embedded #parts input[type="checkbox"] {
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+}
+
+.embedded #parts .part-name {
+  display: block;
+  max-width: 100%;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.embedded #parts td:nth-child(3) small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.1;
 }
 
 .embedded #parts th:nth-child(2),
