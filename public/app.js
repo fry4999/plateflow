@@ -901,19 +901,55 @@ function generateClientPartNumber(part) {
 }
 
 function clientPartNumberContext(part) {
+  const settings = dashboardState?.settings?.partNumber || defaultPartNumberSettings();
   const robot = (dashboardState?.robots || []).find((item) => item.id === (els.configRobot?.value || selectedRobotId));
   const name = subassemblyNameFromSource();
   const existing = robotSubassemblies(robot).find((item) => (
     item.sourceDocumentId && source?.documentId && item.sourceDocumentId === source.documentId
   )) || robotSubassemblies(robot).find((item) => item.name === name);
-  const block = Number(existing?.numberBlock || (robotSubassemblies(robot).length + 1) * 10 || 10);
+  const block = clientSubassemblyNumberBlock(robot, existing);
   const configurable = eligibleImportParts();
   const partIndex = Math.max(0, configurable.findIndex((item) => (item.id || item.name) === (part?.id || part?.name)));
+  const nextSequence = maxClientCustomSequence(settings, block, existing) + 1;
   return {
     year: shortSeason(robot?.season || new Date().getFullYear()),
     acronym: existing?.acronym || subassemblyAcronym(name),
-    number: String(block * 100 + partIndex + 1).padStart(4, "0")
+    number: String(block * 100 + nextSequence + partIndex).padStart(4, "0").slice(-4)
   };
+}
+
+function clientSubassemblyNumberBlock(robot, subassembly) {
+  const current = Number(subassembly?.numberBlock || 0);
+  if (Number.isFinite(current) && current > 0) return current;
+  const subassemblies = robotSubassemblies(robot);
+  const used = new Set(subassemblies
+    .filter((item) => item !== subassembly)
+    .map((item) => Number(item.numberBlock))
+    .filter((value) => Number.isFinite(value) && value > 0));
+  for (let block = 10; block <= 90; block += 10) {
+    if (!used.has(block)) return block;
+  }
+  return Math.min(99, Math.max(10, ...used) + 1);
+}
+
+function maxClientCustomSequence(settings, block, subassembly) {
+  let max = 0;
+  const candidates = [
+    ...(dashboardState?.inventory?.parts || []).map((part) => part.partNumber || part.vendorSku || ""),
+    ...(dashboardState?.fabrication?.jobs || []).flatMap((job) => (job.lines || []).map((line) => line.partNumber || "")),
+    ...(dashboardState?.robots || []).flatMap((robot) => (robot.requirements || []).filter((requirement) => {
+      if (!subassembly) return true;
+      return requirement.subsystemId === subassembly.id || requirement.subsystem === subassembly.name;
+    }).map((requirement) => requirement.partNumber || ""))
+  ];
+  for (const value of candidates) {
+    const parsed = parseConfiguredPartNumber(value, settings);
+    if (!parsed?.number) continue;
+    if (parsed.kind && parsed.kind !== "P") continue;
+    if (Math.floor(parsed.number / 100) !== Number(block)) continue;
+    max = Math.max(max, parsed.number % 100);
+  }
+  return max;
 }
 
 function shortSeason(value) {
@@ -941,6 +977,66 @@ function subassemblyAcronym(value) {
 function partNumberCode(value, length) {
   const normalized = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
   return (normalized || "X").slice(0, length).padEnd(length, "X");
+}
+
+function parseConfiguredPartNumber(value, settings = defaultPartNumberSettings()) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const fromTemplate = parsePartNumberWithTemplate(text, settings);
+  if (fromTemplate) return fromTemplate;
+  const fallback = text.match(/^[^-]+-(\d{2})-([AP])-(\d{4})-([A-Z0-9]{2,})$/i);
+  if (!fallback) return null;
+  return {
+    year: fallback[1],
+    kind: fallback[2].toUpperCase(),
+    number: Number(fallback[3]),
+    subsystem: fallback[4].toUpperCase()
+  };
+}
+
+function parsePartNumberWithTemplate(value, settings = defaultPartNumberSettings()) {
+  const template = String(settings.template || defaultPartNumberSettings().template);
+  const tokenPattern = /\{(prefix|year|kind|number|source|subsystem|part)\}/g;
+  let lastIndex = 0;
+  let regex = "^";
+  const seen = new Set();
+  for (const match of template.matchAll(tokenPattern)) {
+    regex += escapeRegExp(template.slice(lastIndex, match.index));
+    const token = match[1];
+    regex += seen.has(token) ? tokenPatternSource(token, false) : tokenPatternSource(token, true);
+    seen.add(token);
+    lastIndex = match.index + match[0].length;
+  }
+  regex += escapeRegExp(template.slice(lastIndex)) + "$";
+  const parsed = String(value || "").trim().match(new RegExp(regex, "i"));
+  if (!parsed) return null;
+  const groups = parsed.groups || {};
+  const number = Number(groups.number || 0);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return {
+    year: groups.year || "",
+    kind: String(groups.kind || "").toUpperCase(),
+    number,
+    subsystem: String(groups.subsystem || "").toUpperCase()
+  };
+}
+
+function tokenPatternSource(token, capture) {
+  const patterns = {
+    prefix: "[A-Z0-9_.-]+",
+    year: "\\d{2}",
+    kind: "[AP]",
+    number: "\\d{4}",
+    source: "[A-Z0-9]+",
+    subsystem: "[A-Z0-9]{1,12}",
+    part: "[A-Z0-9]+"
+  };
+  const pattern = patterns[token] || "[A-Z0-9]+";
+  return capture ? `(?<${token}>${pattern})` : `(?:${pattern})`;
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function defaultPartNumberSettings() {

@@ -1460,6 +1460,7 @@ function normalizeConfiguredParts(value) {
       category: String(item.category || autoRule?.category || "").trim().slice(0, 80),
       fabricationIntent: String(item.fabricationIntent || autoRule?.fabricationIntent || "").trim().slice(0, 40),
       partNumber,
+      partNumberLocked: Boolean(partNumber),
       quantity
     };
   });
@@ -1476,9 +1477,11 @@ function applyConfiguredParts(parts, configuredParts, input) {
     .filter((part) => byKey.has(part.id) || byKey.has(part.name))
     .map((part, index) => {
       const config = byKey.get(part.id) || byKey.get(part.name);
+      const configuredPartNumber = String(config.partNumber || "").trim();
       return applyAutoRouting({
         ...part,
-        partNumber: part.partNumber || config.partNumber || "",
+        partNumber: configuredPartNumber || part.partNumber || "",
+        partNumberLocked: Boolean(configuredPartNumber),
         robotId: config.robotId || input.robotId || "",
         subsystemId: input.subassemblyId || "",
         subsystem: input.subassemblyName || config.subsystem || input.documentName || input.sourceTag,
@@ -1502,7 +1505,8 @@ function withGeneratedCustomPartNumbers(parts, input) {
 }
 
 function ensureCustomPartNumber(part, input = {}, index = 0, context = customPartNumberContext(input)) {
-  if (String(part.partNumber || "").trim()) return part;
+  const currentPartNumber = String(part.partNumber || "").trim();
+  if (currentPartNumber && shouldKeepCustomPartNumber(currentPartNumber, part)) return { ...part, partNumber: currentPartNumber };
   const existing = existingCustomPartNumber(input, part);
   if (existing) return { ...part, partNumber: existing };
   return {
@@ -1562,7 +1566,7 @@ function maxCustomSequenceForSubassembly(input = {}, block = 10) {
       if (input.subassemblyId && part.subsystemId && part.subsystemId !== input.subassemblyId) continue;
       if (!input.subassemblyId && input.subassemblyName && part.subassemblyName && part.subassemblyName !== input.subassemblyName) continue;
       const parsed = parsePlatformPartNumber(part.partNumber);
-      if (!parsed || parsed.kind !== "P") continue;
+      if (!parsed || (parsed.kind && parsed.kind !== "P")) continue;
       if (Math.floor(parsed.number / 100) !== Number(block)) continue;
       max = Math.max(max, parsed.number % 100);
     }
@@ -1583,7 +1587,7 @@ function existingCustomPartNumber(input = {}, part = {}) {
         existingSource.workspaceId === (source.workspaceId || input.workspaceId) &&
         existingSource.elementId === (source.elementId || input.elementId) &&
         String(existingSource.partId || existing.id || "") === sourcePartId &&
-        String(existing.partNumber || "").trim()
+        shouldKeepCustomPartNumber(existing.partNumber, existing)
       ) {
         return String(existing.partNumber).trim();
       }
@@ -1610,6 +1614,14 @@ function formatPartNumber(settings, tokens) {
     .replace(/^-+|-+$/g, "");
 }
 
+function shouldKeepCustomPartNumber(value, part = {}) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (part.partNumberLocked) return true;
+  if (parsePlatformPartNumber(text)) return true;
+  return false;
+}
+
 function formatPlatformPartNumber(tokens) {
   const settings = settingsSnapshot().partNumber;
   return formatPartNumber(settings, {
@@ -1619,7 +1631,11 @@ function formatPlatformPartNumber(tokens) {
 }
 
 function parsePlatformPartNumber(value) {
-  const match = String(value || "").trim().match(/^[^-]+-(\d{2})-([AP])-(\d{4})-([A-Z0-9]{2,})$/i);
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const configured = parsePartNumberWithTemplate(text, settingsSnapshot().partNumber);
+  if (configured) return configured;
+  const match = text.match(/^[^-]+-(\d{2})-([AP])-(\d{4})-([A-Z0-9]{2,})$/i);
   if (!match) return null;
   return {
     year: match[1],
@@ -1627,6 +1643,51 @@ function parsePlatformPartNumber(value) {
     number: Number(match[3]),
     subsystem: match[4].toUpperCase()
   };
+}
+
+function parsePartNumberWithTemplate(value, settings) {
+  const template = String(settings?.template || defaultSettings().partNumber.template);
+  const tokenPattern = /\{(prefix|year|kind|number|source|subsystem|part)\}/g;
+  let lastIndex = 0;
+  let regex = "^";
+  const seen = new Set();
+  for (const match of template.matchAll(tokenPattern)) {
+    regex += escapeRegExp(template.slice(lastIndex, match.index));
+    const token = match[1];
+    regex += seen.has(token) ? tokenPatternSource(token, false) : tokenPatternSource(token, true);
+    seen.add(token);
+    lastIndex = match.index + match[0].length;
+  }
+  regex += escapeRegExp(template.slice(lastIndex)) + "$";
+  const match = String(value || "").trim().match(new RegExp(regex, "i"));
+  if (!match) return null;
+  const groups = match.groups || {};
+  const number = Number(groups.number || 0);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return {
+    year: groups.year || "",
+    kind: String(groups.kind || "").toUpperCase(),
+    number,
+    subsystem: String(groups.subsystem || "").toUpperCase()
+  };
+}
+
+function tokenPatternSource(token, capture) {
+  const patterns = {
+    prefix: "[A-Z0-9_.-]+",
+    year: "\\d{2}",
+    kind: "[AP]",
+    number: "\\d{4}",
+    source: "[A-Z0-9]+",
+    subsystem: "[A-Z0-9]{1,12}",
+    part: "[A-Z0-9]+"
+  };
+  const pattern = patterns[token] || "[A-Z0-9]+";
+  return capture ? `(?<${token}>${pattern})` : `(?:${pattern})`;
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function stockCategory(stock) {
