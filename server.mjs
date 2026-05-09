@@ -69,6 +69,8 @@ const procurementVendorAdapters = [
   { vendor: "V-Belt Guys", type: "vbelts", baseUrl: "https://www.vbeltguys.com" }
 ];
 
+const shaftStockCutAllowanceInches = 0.125;
+
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -419,6 +421,7 @@ async function refreshStore() {
   if (mergeDuplicateInventoryRecords()) changed = true;
   if (removeLikelyPurchasedFromCustomPipeline()) changed = true;
   if (promoteShaftCutProcurementRowsToStockRollups()) changed = true;
+  if (dedupeShaftStockRollupProcurementLines()) changed = true;
   if (removeKnownCustomFromProcurementPipeline()) changed = true;
   if (normalizeShaftStockRollups()) changed = true;
   if (backfillShaftCutManufacturingMetadata()) changed = true;
@@ -557,17 +560,7 @@ function normalizeShaftStockRollups() {
     const sourceRows = Array.isArray(item.shaftSourceRows) ? item.shaftSourceRows : [];
     if (!sourceRows.length) return false;
     const stockLengthInches = Number(item.stockLengthInches || 36) || 36;
-    let totalInches = 0;
-    const normalizedRows = [];
-    for (const row of sourceRows) {
-      const parsedLength = extractShaftLengthInchesFromText(row?.name || "");
-      const fallbackLength = Number(row?.lengthInches || 0);
-      const lengthInches = parsedLength || (fallbackLength > 0 && fallbackLength <= 144 ? fallbackLength : 0);
-      if (!Number.isFinite(lengthInches) || lengthInches <= 0) continue;
-      const quantity = Math.max(1, Number(row?.quantity || 1));
-      totalInches += lengthInches * quantity;
-      normalizedRows.push({ ...row, quantity, lengthInches: Number(lengthInches.toFixed(3)) });
-    }
+    const { rows: normalizedRows, totalInches } = normalizeShaftSourceRows(sourceRows);
     if (!totalInches) return false;
     const plannedLengthInches = shaftStockPlannedLengthInches(totalInches, normalizedRows);
     const quantityNeeded = Math.max(1, Math.ceil(plannedLengthInches / stockLengthInches));
@@ -632,6 +625,57 @@ function normalizeShaftStockRollups() {
   }
   if (changed) audit("procurement.shaft_rollups_normalized", "Normalized shaft stock rollup quantities from parsed cut lengths", "system");
   return changed;
+}
+
+function dedupeShaftStockRollupProcurementLines() {
+  let changed = false;
+  const seen = new Map();
+  for (const order of store.procurementOrders || []) {
+    if (!Array.isArray(order.lines)) continue;
+    const keep = [];
+    for (const line of order.lines) {
+      if (!line?.shaftStockRollup) {
+        keep.push(line);
+        continue;
+      }
+      const key = shaftStockRollupIdentity(line);
+      const existing = key ? seen.get(key) : null;
+      if (!existing) {
+        if (key) seen.set(key, { order, line });
+        keep.push(line);
+        continue;
+      }
+      const merged = normalizeShaftSourceRows([
+        ...(existing.line.shaftSourceRows || []),
+        ...(line.shaftSourceRows || [])
+      ]);
+      existing.line.shaftSourceRows = merged.rows;
+      existing.line.totalShaftLengthInches = Number(merged.totalInches.toFixed(3));
+      changed = true;
+    }
+    if (keep.length !== order.lines.length) {
+      order.lines = keep;
+      order.vendorGroups = groupCotsParts(order.lines);
+      order.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) {
+    store.procurementOrders = store.procurementOrders.filter((order) => Array.isArray(order.lines) && order.lines.length);
+    audit("procurement.shaft_rollups_deduped", "Deduplicated repeated shaft stock rollup lines", "system");
+  }
+  return changed;
+}
+
+function shaftStockRollupIdentity(line = {}) {
+  return [
+    line.source?.bomRowKey,
+    line.robotId,
+    line.subsystemId,
+    line.source?.documentId,
+    line.source?.elementId || line.source?.assemblyElementId,
+    line.vendorSku || line.partNumber || line.name
+  ].filter(Boolean).map(normalizeKey).join(":");
 }
 
 function promoteShaftCutProcurementRowsToStockRollups() {
@@ -4528,6 +4572,7 @@ function aggregateShaftStockProcurementRows(rows, input) {
   const groups = new Map();
   for (const row of rows) {
     if (row.sourceType !== "custom") continue;
+    if (!isShaftCutPart(row)) continue;
     const profile = shaftStockProfile(row);
     if (!profile) continue;
     const lengthInches = extractShaftLengthInches(row);
@@ -4546,7 +4591,7 @@ function aggregateShaftStockProcurementRows(rows, input) {
     const group = groups.get(key);
     group.totalInches += totalInches;
     group.cutCount += quantity;
-    group.sourceRows.push({ name: row.name, quantity, lengthInches });
+    group.sourceRows.push({ sourceKey: shaftSourceRowKey(row, lengthInches), name: row.name, quantity, lengthInches });
   }
 
   return [...groups.values()].map((group, index) => {
@@ -4556,11 +4601,14 @@ function aggregateShaftStockProcurementRows(rows, input) {
 
 function buildShaftStockRollupPart(group, input, index = 0) {
   const stockLengthInches = group.stockLengthInches || 36;
-  const plannedLengthInches = shaftStockPlannedLengthInches(Number(group.totalInches || 0), group.sourceRows);
+  const normalizedSources = normalizeShaftSourceRows(group.sourceRows || []);
+  const sourceRows = normalizedSources.rows.length ? normalizedSources.rows : group.sourceRows || [];
+  const totalInches = normalizedSources.totalInches || Number(group.totalInches || 0);
+  const plannedLengthInches = shaftStockPlannedLengthInches(totalInches, sourceRows);
   const sticks = Math.max(1, Math.ceil(plannedLengthInches / stockLengthInches));
   const vendorSku = shaftStockSku(group);
   const name = shaftStockDisplayName(group);
-  const description = `${formatInches(group.totalInches)} of cut shaft required; ${formatInches(plannedLengthInches)} planned with trim allowance from ${stockLengthInches} in stock.`;
+  const description = `${formatInches(totalInches)} of cut shaft required; ${formatInches(plannedLengthInches)} planned with ${formatInches(shaftStockCutAllowanceInches)} cut allowance from ${stockLengthInches} in stock.`;
   const bomRowKey = `shaft-stock:${normalizeKey([
     input.documentId,
     input.elementId,
@@ -4584,11 +4632,11 @@ function buildShaftStockRollupPart(group, input, index = 0) {
     thickness: "",
     quantity: sticks,
     quantityNeeded: sticks,
-    totalShaftLengthInches: Number(Number(group.totalInches || 0).toFixed(3)),
+    totalShaftLengthInches: Number(Number(totalInches || 0).toFixed(3)),
     plannedShaftStockLengthInches: Number(plannedLengthInches.toFixed(3)),
     stockLengthInches,
     shaftStockRollup: true,
-    shaftSourceRows: group.sourceRows || [],
+    shaftSourceRows: sourceRows,
     status: "needed",
     procurementStatus: "sourcing",
     vendorUrl: vendorLink("WCP", vendorSku, name),
@@ -4612,8 +4660,37 @@ function buildShaftStockRollupPart(group, input, index = 0) {
 
 function shaftStockPlannedLengthInches(totalInches, sourceRows = []) {
   const cutCount = sourceRows.reduce((sum, row) => sum + Math.max(1, Number(row?.quantity || 1)), 0);
-  const cutAllowanceInches = 1;
-  return Math.max(0, Number(totalInches || 0)) + cutCount * cutAllowanceInches;
+  return Math.max(0, Number(totalInches || 0)) + cutCount * shaftStockCutAllowanceInches;
+}
+
+function normalizeShaftSourceRows(sourceRows = []) {
+  const rowsByKey = new Map();
+  for (const row of sourceRows || []) {
+    const parsedLength = extractShaftLengthInchesFromText(row?.name || "");
+    const fallbackLength = Number(row?.lengthInches || 0);
+    const lengthInches = parsedLength || (fallbackLength > 0 && fallbackLength <= 144 ? fallbackLength : 0);
+    if (!Number.isFinite(lengthInches) || lengthInches <= 0) continue;
+    const quantity = Math.max(1, Math.round(Number(row?.quantity || 1)));
+    const normalizedLength = Number(lengthInches.toFixed(3));
+    const key = row?.sourceKey || shaftSourceRowKey(row, normalizedLength);
+    const next = { ...row, sourceKey: key, quantity, lengthInches: normalizedLength };
+    const existing = rowsByKey.get(key);
+    if (!existing) {
+      rowsByKey.set(key, next);
+      continue;
+    }
+    existing.quantity = Math.max(Number(existing.quantity || 1), quantity);
+    existing.lengthInches = normalizedLength;
+  }
+  const rows = [...rowsByKey.values()];
+  const totalInches = rows.reduce((sum, row) => sum + Number(row.lengthInches || 0) * Math.max(1, Number(row.quantity || 1)), 0);
+  return { rows, totalInches };
+}
+
+function shaftSourceRowKey(row = {}, lengthInches = 0) {
+  const explicit = row.sourceKey || row.source?.bomRowKey || row.source?.partId || row.id || row.partId || "";
+  if (explicit) return String(explicit);
+  return `${normalizeKey(row.name)}:${Number(Number(lengthInches || row.lengthInches || 0).toFixed(3))}`;
 }
 
 function shaftStockProfile(part) {
