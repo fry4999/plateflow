@@ -3342,20 +3342,92 @@ function onRobotSelect(event) {
 async function onRobotCreate(event) {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(els.robotForm).entries());
+  if (!String(body.name || "").trim()) {
+    setMessage("Project name is required.", "error");
+    return;
+  }
+  const submitButton = event.submitter || els.robotForm.querySelector("button[type='submit']");
+  const previousRobots = dashboardState?.robots || [];
+  const previousSources = dashboardState?.robotSources || [];
+  const optimisticRobot = optimisticProjectFromForm(body);
+  if (submitButton) submitButton.disabled = true;
+  dashboardState = {
+    ...(dashboardState || {}),
+    robots: [optimisticRobot, ...previousRobots],
+    robotSources: previousSources
+  };
+  selectedRobotId = optimisticRobot.id;
+  selectedSubassemblyId = "";
+  els.robotForm.reset();
+  location.hash = "#robots";
+  renderDashboardChrome(dashboardState);
+  renderRobots(dashboardState.robots);
+  setMessage("Project added.", "ok");
   try {
     const result = await api("/api/robots", {
       method: "POST",
       body: JSON.stringify(body)
     });
-    dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
-    selectedRobotId = result.robots[0]?.id || "";
-    els.robotForm.reset();
-    await loadDashboard();
-    location.hash = "#robots";
-    setMessage("Project added.", "ok");
+    const confirmedRobot = result.robot;
+    if (confirmedRobot) {
+      dashboardState = {
+        ...(dashboardState || {}),
+        robots: [confirmedRobot, ...(dashboardState?.robots || []).filter((robot) => robot.id !== optimisticRobot.id && robot.id !== confirmedRobot.id)],
+        robotSources: result.robotSources || dashboardState?.robotSources || []
+      };
+      selectedRobotId = confirmedRobot.id;
+    } else if (result.robots) {
+      dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources || dashboardState?.robotSources || [] };
+      selectedRobotId = result.robots[0]?.id || "";
+    }
+    renderDashboardChrome(dashboardState);
+    renderRobots(dashboardState.robots || []);
   } catch (error) {
+    dashboardState = {
+      ...(dashboardState || {}),
+      robots: previousRobots,
+      robotSources: previousSources
+    };
+    selectedRobotId = previousRobots[0]?.id || "";
+    renderDashboardChrome(dashboardState);
+    renderRobots(dashboardState.robots || []);
     setMessage(error.message, "error");
+  } finally {
+    if (submitButton) submitButton.disabled = false;
   }
+}
+
+function optimisticProjectFromForm(body) {
+  const targetType = String(body.targetType || body.type || "robot").trim() === "project" ? "project" : "robot";
+  const season = String(body.season || new Date().getFullYear()).replace(/[^0-9]/g, "").slice(0, 4) || String(new Date().getFullYear());
+  const name = String(body.name || "").trim().slice(0, 80);
+  return {
+    id: `optimistic-${targetType}-${Date.now()}`,
+    season,
+    name,
+    targetType,
+    status: "active",
+    readiness: 0,
+    counts: {
+      requirements: 0,
+      quantityNeeded: 0,
+      quantityReady: 0,
+      custom: 0,
+      cots: 0,
+      missing: 0,
+      inFabrication: 0,
+      onOrder: 0,
+      ready: 0
+    },
+    progress: {
+      procurement: 0,
+      fabrication: 0,
+      receivedInstalled: 0
+    },
+    requirements: [],
+    subsystems: [],
+    optimistic: true
+  };
 }
 
 async function onRobotDelete() {

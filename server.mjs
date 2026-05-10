@@ -4083,6 +4083,50 @@ function robotSnapshot() {
   });
 }
 
+function emptyRobotSnapshot(robot) {
+  return {
+    ...robot,
+    targetType: robot.targetType || "robot",
+    readiness: 0,
+    counts: {
+      requirements: 0,
+      quantityNeeded: 0,
+      quantityReady: 0,
+      custom: 0,
+      cots: 0,
+      missing: 0,
+      inFabrication: 0,
+      onOrder: 0,
+      ready: 0
+    },
+    progress: {
+      procurement: 0,
+      fabrication: 0,
+      receivedInstalled: 0
+    },
+    requirements: [],
+    subsystems: (robot.subsystems || []).map((subsystem) => ({
+      ...subsystem,
+      readiness: 0,
+      partsNeeded: 0,
+      quantityNeeded: 0,
+      quantityReady: 0,
+      procurementProgress: 0,
+      fabricationProgress: 0,
+      receivedInstalledProgress: 0,
+      counts: {
+        requirements: 0,
+        quantityNeeded: 0,
+        quantityReady: 0,
+        custom: 0,
+        cots: 0,
+        fabricationJobs: 0,
+        ready: 0
+      }
+    }))
+  };
+}
+
 function subsystemSnapshot(robot, subsystem, robotRequirements) {
   const requirements = robotRequirements.filter((requirement) => requirement.subsystemId === subsystem.id || requirement.subsystem === subsystem.name);
   const customRequirements = requirements.filter((requirement) => requirement.sourceType === "custom");
@@ -5060,7 +5104,7 @@ async function createRobot(req, res, session, actor) {
   store.robots.unshift(robot);
   audit("target.created", `Created ${targetType} ${robot.name}`, actor.email);
   await persistStore();
-  return json(res, 201, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
+  return json(res, 201, { robot: emptyRobotSnapshot(robot), robotSources: robotSourceSnapshot() });
 }
 
 async function deleteRobot(req, res, session, actor, robotId) {
