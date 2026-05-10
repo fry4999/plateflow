@@ -75,7 +75,10 @@
       </section>
 
       <div id="appShell" class="app-shell hidden">
-        <p id="message" class="message global-message" role="status" aria-live="polite">Ready when your CAD is.</p>
+        <div id="message" class="message global-message" role="status" aria-live="polite">
+          <span id="messageText">Ready when your CAD is.</span>
+          <button id="messageDismiss" class="message-dismiss" type="button" aria-label="Dismiss notification">x</button>
+        </div>
         <div id="importConfirmation" class="import-confirmation hidden" role="status" aria-live="polite"></div>
         <section id="dashboard" class="dashboard app-page active-page" data-page>
           <p id="dashboardGreeting" class="dashboard-greeting">Hello</p>

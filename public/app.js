@@ -128,6 +128,8 @@ const els = {
   summaryQty: document.querySelector("#summaryQty"),
   summaryMaterials: document.querySelector("#summaryMaterials"),
   message: document.querySelector("#message"),
+  messageText: document.querySelector("#messageText"),
+  messageDismiss: document.querySelector("#messageDismiss"),
   importConfirmation: document.querySelector("#importConfirmation"),
   dialogBackdrop: document.querySelector("#dialogBackdrop"),
   dialogKicker: document.querySelector("#dialogKicker"),
@@ -268,6 +270,7 @@ function bindEvents() {
   if (els.orderForm) els.orderForm.addEventListener("submit", onOrder);
   if (els.rawMaterialForm) els.rawMaterialForm.addEventListener("submit", onRawMaterialAdd);
   if (els.inventoryForm) els.inventoryForm.addEventListener("submit", onInventoryAdd);
+  if (els.messageDismiss) els.messageDismiss.addEventListener("click", dismissMessage);
   if (els.settingsForm) {
     els.settingsForm.addEventListener("submit", onSettingsSave);
     els.settingsForm.addEventListener("click", onSettingsBuilderClick);
@@ -4202,17 +4205,29 @@ function setMessage(text, type = "") {
     clearTimeout(messageTimer);
     messageTimer = null;
   }
-  els.message.textContent = text;
-  els.message.className = `message ${type}`;
+  if (!els.message || !els.messageText) return;
+  const cleanText = String(text || "");
+  els.messageText.textContent = cleanText;
+  els.message.className = `message global-message${type ? ` ${type}` : ""}`;
+  els.message.classList.toggle("hidden", !cleanText);
   if (type === "ok") {
     messageTimer = setTimeout(() => {
       els.message.classList.add("fade-out");
       messageTimer = setTimeout(() => {
-        els.message.textContent = "";
-        els.message.className = "message";
-        messageTimer = null;
+        dismissMessage();
       }, 850);
     }, 2000);
+  }
+}
+
+function dismissMessage() {
+  if (messageTimer) {
+    clearTimeout(messageTimer);
+    messageTimer = null;
+  }
+  if (els.messageText) els.messageText.textContent = "";
+  if (els.message) {
+    els.message.className = "message global-message hidden";
   }
 }
 

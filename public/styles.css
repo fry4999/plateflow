@@ -1917,20 +1917,47 @@ th input[type="checkbox"] {
 }
 
 .message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin: 18px 0 0;
-  padding: 12px;
+  padding: 12px 14px;
   border-radius: 8px;
   background: var(--soft);
   opacity: 1;
   transition: opacity .8s ease;
 }
 
-.message:empty {
+.message:empty,
+.message.hidden {
   display: none;
 }
 
 .message.fade-out {
   opacity: 0;
+}
+
+.message-dismiss {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: inherit;
+  background: transparent;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  opacity: .72;
+  cursor: pointer;
+}
+
+.message-dismiss:hover,
+.message-dismiss:focus-visible {
+  opacity: 1;
 }
 
 .global-message {
