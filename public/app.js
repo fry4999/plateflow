@@ -3437,6 +3437,7 @@ async function onRobotDelete() {
   if (!selectedRobotId) return;
   const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
   if (!robot) return;
+  const robotId = selectedRobotId;
   const confirmed = await confirmAction({
     title: "Remove project?",
     body: `Remove ${robot.name} and its requirements from PlateFlow? Inventory stays in the global catalog.`,
@@ -3444,13 +3445,41 @@ async function onRobotDelete() {
     danger: true
   });
   if (!confirmed) return;
+  const previousDashboard = dashboardState;
+  const previousRobotId = selectedRobotId;
+  const previousSubassemblyId = selectedSubassemblyId;
+  const remainingRobots = (dashboardState?.robots || []).filter((item) => item.id !== robotId);
+  dashboardState = {
+    ...(dashboardState || {}),
+    robots: remainingRobots
+  };
+  selectedRobotId = remainingRobots[0]?.id || "";
+  selectedSubassemblyId = robotSubassemblies(remainingRobots.find((item) => item.id === selectedRobotId))[0]?.id || "";
+  renderDashboardChrome(dashboardState);
+  renderRobots(remainingRobots);
+  renderOverview(dashboardState);
+  renderFabrication(dashboardState?.fabrication || { jobs: [] });
+  setMessage("Project removed.", "ok");
   try {
-    const result = await api(`/api/robots/${encodeURIComponent(selectedRobotId)}`, { method: "DELETE" });
-    dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources };
-    selectedRobotId = result.robots[0]?.id || "";
-    await loadDashboard();
-    setMessage("Project removed.", "ok");
+    const result = await api(`/api/robots/${encodeURIComponent(robotId)}`, { method: "DELETE" });
+    if (result.inventory) {
+      applyInventoryMutation(result, { skipInventoryTable: currentPageId() !== "inventory" });
+    } else if (result.robots) {
+      dashboardState = { ...(dashboardState || {}), robots: result.robots, robotSources: result.robotSources || dashboardState?.robotSources || [] };
+      selectedRobotId = result.robots[0]?.id || "";
+      renderDashboardChrome(dashboardState);
+      renderRobots(result.robots);
+    }
+    renderOverview(dashboardState);
+    renderFabrication(dashboardState?.fabrication || { jobs: [] });
   } catch (error) {
+    dashboardState = previousDashboard;
+    selectedRobotId = previousRobotId;
+    selectedSubassemblyId = previousSubassemblyId;
+    renderDashboardChrome(dashboardState);
+    renderRobots(dashboardState?.robots || []);
+    renderOverview(dashboardState);
+    renderFabrication(dashboardState?.fabrication || { jobs: [] });
     setMessage(error.message, "error");
   }
 }

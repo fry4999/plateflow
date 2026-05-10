@@ -5120,7 +5120,7 @@ async function deleteRobot(req, res, session, actor, robotId) {
   store.requirements = store.requirements.filter((requirement) => requirement.robotId !== robotId);
   audit("target.deleted", `Deleted ${robot.targetType || "target"} ${robot.name}`, actor.email);
   await persistStore();
-  return json(res, 200, { robots: robotSnapshot(), robotSources: robotSourceSnapshot() });
+  return json(res, 200, { ...inventoryMutationSnapshot(), deletedRobotId: robotId });
 }
 
 async function deleteRobotSubassembly(req, res, session, actor, ids) {
