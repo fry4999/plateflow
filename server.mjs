@@ -5104,7 +5104,12 @@ async function createRobot(req, res, session, actor) {
   store.robots.unshift(robot);
   audit("target.created", `Created ${targetType} ${robot.name}`, actor.email);
   await persistStore();
-  return json(res, 201, { robot: emptyRobotSnapshot(robot), robotSources: robotSourceSnapshot() });
+  const createdRobot = emptyRobotSnapshot(robot);
+  return json(res, 201, {
+    robot: createdRobot,
+    robots: [createdRobot],
+    robotSources: robotSourceSnapshot()
+  });
 }
 
 async function deleteRobot(req, res, session, actor, robotId) {
