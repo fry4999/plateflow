@@ -437,6 +437,7 @@ async function refreshStore() {
   if (removeKnownCustomFromProcurementPipeline()) changed = true;
   if (normalizeShaftStockRollups()) changed = true;
   if (backfillShaftCutManufacturingMetadata()) changed = true;
+  if (pruneInactiveFabricationJobs()) changed = true;
   if (normalizeDerivedProcurementVendors()) changed = true;
   if (changed) await persistStore();
 }
@@ -2377,6 +2378,7 @@ function fabricationStatusByCatalogPart(batchId) {
 
 function inventorySnapshot() {
   ensureIndividualFabricationJobs();
+  const fabricationJobs = activeFabricationJobs();
   const records = [...store.inventoryRecords].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const parts = records.flatMap((record) => record.parts.map((part) => {
     const catalog = findCatalogPartForInventoryPart(part, record.sourceType) || {};
@@ -2418,7 +2420,7 @@ function inventorySnapshot() {
       raw: store.rawMaterials.length,
       materials: new Set(parts.map((part) => part.material || "Unassigned")).size,
       procurement: parts.filter((part) => part.sourceType === "cots").length,
-      fabrication: store.fabricationJobs.filter((job) => job.status !== "canceled").length,
+      fabrication: fabricationJobs.length,
       lowStock: store.rawMaterials.filter((stock) => Number(stock.remainingQuantity || 0) <= 1).length
     },
     documents: [...new Set(parts.map((part) => part.sourceDocument || "Unassigned"))].sort()
@@ -2708,6 +2710,69 @@ function canonicalFabricationStatus(status) {
   if (status === "in_progress") return "in_progress";
   if (["completed", "received", "installed"].includes(status)) return "completed";
   return "todo";
+}
+
+function activeFabricationJobs() {
+  ensureIndividualFabricationJobs();
+  return (store.fabricationJobs || []).filter(isActiveFabricationJob);
+}
+
+function pruneInactiveFabricationJobs() {
+  ensureIndividualFabricationJobs();
+  const before = (store.fabricationJobs || []).length;
+  const next = (store.fabricationJobs || []).filter(isActiveFabricationJob);
+  if (next.length === before) return false;
+  store.fabricationJobs = next;
+  audit("fabrication.orphan_cleanup", `Removed ${before - next.length} orphan fabrication card${before - next.length === 1 ? "" : "s"}`, "system");
+  return true;
+}
+
+function isActiveFabricationJob(job) {
+  if (!job || job.status === "canceled") return false;
+  const lines = Array.isArray(job.lines) ? job.lines : [];
+  if (!lines.length) return false;
+
+  const robotId = fabricationJobRobotId(job);
+  if (robotId) {
+    const robot = store.robots.find((item) => item.id === robotId);
+    if (!robot) return false;
+    const subsystemId = fabricationJobSubassemblyId(job);
+    const subassemblyName = fabricationJobSubassemblyName(job);
+    const subsystems = Array.isArray(robot.subsystems) ? robot.subsystems : [];
+    if (subsystemId && !subsystems.some((item) => item.id === subsystemId)) return false;
+    if (!subsystemId && subassemblyName && subsystems.length && !subsystems.some((item) => item.name === subassemblyName)) return false;
+    return true;
+  }
+
+  return fabricationJobHasLiveCustomInventory(job);
+}
+
+function fabricationJobRobotId(job) {
+  const line = Array.isArray(job?.lines) ? job.lines.find((item) => item?.robotId) : null;
+  return String(job?.robotId || line?.robotId || "").trim();
+}
+
+function fabricationJobSubassemblyId(job) {
+  const line = Array.isArray(job?.lines) ? job.lines.find((item) => item?.subsystemId) : null;
+  return String(job?.subsystemId || line?.subsystemId || "").trim();
+}
+
+function fabricationJobSubassemblyName(job) {
+  const line = Array.isArray(job?.lines) ? job.lines.find((item) => item?.subassemblyName || item?.subsystem) : null;
+  return String(job?.subassemblyName || line?.subassemblyName || line?.subsystem || "").trim();
+}
+
+function fabricationJobHasLiveCustomInventory(job) {
+  const lines = Array.isArray(job?.lines) ? job.lines : [];
+  const catalogIds = new Set(lines.map((line) => line?.catalogPartId).filter(Boolean));
+  const names = new Set(lines.map((line) => normalizeKey(line?.name)).filter((name) => name && name !== "unknown"));
+  return (store.inventoryRecords || []).some((record) => (
+    record.sourceType === "custom" &&
+    (record.parts || []).some((part) => {
+      const catalog = findCatalogPartForInventoryPart(part, "custom");
+      return (catalog?.id && catalogIds.has(catalog.id)) || names.has(normalizeKey(part.name));
+    })
+  ));
 }
 
 function groupCotsParts(parts) {
@@ -4001,6 +4066,7 @@ function dashboardSnapshot(user = null) {
   ensureIndividualFabricationJobs();
   syncCatalogReservedQuantities();
   const inventory = inventorySnapshot();
+  const fabricationJobs = activeFabricationJobs();
   const customParts = inventory.parts.filter((part) => part.sourceType === "custom");
   const cotsParts = inventory.parts.filter((part) => {
     if (part.sourceType !== "cots") return false;
@@ -4020,7 +4086,7 @@ function dashboardSnapshot(user = null) {
           return lineSum + Number(line.quantityOrdered || line.quantity || 0);
         }, 0);
       }, 0),
-      partsInFabrication: store.fabricationJobs.filter((job) => job.status !== "canceled").length,
+      partsInFabrication: fabricationJobs.length,
       partsReceivedToday: 0,
       lowStockAlerts: inventory.totals.lowStock,
       activeRobots: robots.length,
@@ -4030,7 +4096,7 @@ function dashboardSnapshot(user = null) {
     inventory,
     robots,
     fabrication: {
-      jobs: store.fabricationJobs.filter((job) => job.status !== "canceled").slice(0, 200),
+      jobs: fabricationJobs.slice(0, 200),
       items: customParts
     },
     procurement: procurementSnapshot(cotsParts),
@@ -4137,8 +4203,7 @@ function subsystemSnapshot(robot, subsystem, robotRequirements) {
   const readiness = weightedReadiness({ requirements, customRequirements, cotsRequirements, procurementProgress, fabricationProgress, receiveInstallProgress });
   const quantityNeeded = totalRequirementQuantity(requirements, "quantityNeeded");
   const quantityReady = totalReadyQuantity(requirements);
-  const jobs = store.fabricationJobs.filter((job) => {
-    if (job.status === "canceled") return false;
+  const jobs = activeFabricationJobs().filter((job) => {
     const line = Array.isArray(job.lines) ? job.lines[0] : {};
     return (job.robotId === robot.id || line.robotId === robot.id) && (job.subsystemId === subsystem.id || line.subsystemId === subsystem.id || line.subsystem === subsystem.name);
   });
@@ -5117,8 +5182,10 @@ async function deleteRobot(req, res, session, actor, robotId) {
   const index = store.robots.findIndex((robot) => robot.id === robotId);
   if (index === -1) throw httpError(404, "Target not found");
   const [robot] = store.robots.splice(index, 1);
+  const beforeJobs = store.fabricationJobs.length;
   store.requirements = store.requirements.filter((requirement) => requirement.robotId !== robotId);
-  audit("target.deleted", `Deleted ${robot.targetType || "target"} ${robot.name}`, actor.email);
+  store.fabricationJobs = store.fabricationJobs.filter((job) => fabricationJobRobotId(job) !== robotId);
+  audit("target.deleted", `Deleted ${robot.targetType || "target"} ${robot.name}; removed ${beforeJobs - store.fabricationJobs.length} fabrication card${beforeJobs - store.fabricationJobs.length === 1 ? "" : "s"}`, actor.email);
   await persistStore();
   return json(res, 200, { ...inventoryMutationSnapshot(), deletedRobotId: robotId });
 }
