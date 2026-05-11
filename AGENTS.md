@@ -108,3 +108,67 @@ If `/api/session` reports file storage while `DATABASE_URL` is configured, fix t
 - Run the syntax checks above before committing.
 - Commit and push when a user asks for implementation unless they explicitly say not to.
 
+## First 10 Minutes In A New PlateFlow Chat
+
+Use this checklist before making changes:
+
+1. Run `git status --short` and protect any existing user edits.
+2. Read this file, `README.md`, and `docs/project-brief.md`.
+3. Skim the current code areas you will touch. Most product behavior is in `server.mjs`, `public/app.js`, and `public/styles.css`.
+4. Check whether the user is talking about the browser dashboard or the embedded Onshape panel. They are intentionally different surfaces.
+5. Preserve the core ingestion split:
+   - Part Studio means custom/manufacturing.
+   - Assembly BOM means COTS/procurement.
+6. Keep optimistic UI patterns if a user complains that something feels slow.
+7. Do not add Onshape API calls casually. API allocation is a real team constraint.
+8. If touching auth, roles, or storage, verify `/api/session` behavior and make sure Postgres is still being used in production.
+9. If touching procurement, keep vendor data real or clearly marked as review. Do not invent prices or links.
+10. After implementation, run `node --check server.mjs`, `node --check public/app.js`, and `git diff --check`.
+
+## Repository Map
+
+- `server.mjs`: single Node HTTP server, API router, auth, sessions, CSRF, storage adapters, Onshape API proxy, procurement matching, manufacturing, project logic.
+- `public/index.html`: static shell.
+- `public/app.js`: browser dashboard and embedded Onshape panel rendering/state/actions.
+- `public/styles.css`: all visual styling, responsive behavior, embedded panel fixes, dark/light modes.
+- `public/plateflow-logo.png`: current app logo asset.
+- `public/plateflow-embed-card.png`: current social/embed preview image asset.
+- `docs/project-brief.md`: detailed product and engineering handoff. Update it when product architecture or workflow changes.
+- `docs/railway-deploy.md`: Railway deployment notes.
+- `docs/onshape-app-store-checklist.md`: Onshape developer/app store setup notes.
+- `.env.example` and `.env.production.example`: expected local/production environment variable examples.
+
+## Current API Route Groups
+
+The server is a hand-rolled router. Route names matter because frontend calls use these literal paths.
+
+- Session/auth: `/api/session`, `/api/events`, `/auth/plateflow/register`, `/auth/plateflow/login`, `/auth/plateflow/logout`, `/auth/onshape`, `/auth/onshape/callback`, `/auth/logout`.
+- Dashboard/inventory: `/api/dashboard`, `/api/inventory`, `/api/inventory/items`, `/api/inventory/items/bulk-delete`, `/api/inventory/items/:itemKey`.
+- Projects: `/api/robots`, `/api/robots/:robotId`, `/api/robots/:robotId/requirements`, `/api/robots/:robotId/requirements/:requirementId`, `/api/robots/:robotId/subassemblies/:subassemblyId`.
+- Manufacturing: `/api/fabrication/jobs/:jobId`.
+- Procurement: `/api/procurement/refresh`, `/api/procurement/lines`, `/api/procurement/lines/transfer-manufacturing`, `/api/procurement/orders/:orderId`.
+- Onshape: `/api/onshape/import`, `/api/onshape/import-cots`, `/api/onshape/export-step`, `/api/downloads/:id`.
+- Admin/settings: `/api/settings`, `/api/admin/users`, `/api/admin/invites`, `/api/admin/clear-catalog`, `/api/admin/remove-placeholder-cots`, `/api/audit-log`.
+
+## Current Frontend Render Anchors
+
+When looking for UI behavior, these functions are common starting points in `public/app.js`:
+
+- App bootstrap/session: `init`, `refreshSession`, `renderAuth`, `renderAppAccess`, `api`.
+- Onshape panel: `onImport`, `renderParts`, `renderCustomConfigurator`, `submitCurrentParts`, `submitConfiguredParts`, `submitCotsParts`.
+- Dashboard shell: `loadDashboard`, `renderDashboardChrome`, `renderActiveDashboardPage`.
+- Overview: `renderOverview`.
+- Inventory: `renderInventory`, `renderInventoryTable`, `onInventoryAction`, `saveInventoryRow`, `onInventoryBulkDelete`.
+- Projects/checklists: `renderRobots`, `renderRobotWorkspace`, `renderSubassemblyCard`, `renderSubassemblyChecklist`, `updateRequirementReservation`.
+- Manufacturing: `renderFabrication`, `renderFabricationCard`, `onFabricationJobChange`, `flushFabricationStatusSync`.
+- Procurement: `renderProcurement`, `renderVendorBucket`, `renderProcurementLine`, `onProcurementLineAction`, `updateProcurementLineQuantity`, `deleteProcurementLines`, `transferProcurementToManufacturing`.
+- Settings/admin: `renderSettings`, `onSettingsSave`, `renderAdminUsers`, `onAdminUserAction`.
+
+## High-Risk Product Traps
+
+- Do not show custom parts as normal procurement unless the user is intentionally moving a bad line. Custom parts belong in manufacturing.
+- Shaft stock is special. Individual shaft cut lengths can be manufacturing tasks, but procurement should roll stock into 36 inch WCP shaft lengths when possible.
+- McMaster pack quantities are not the same as needed quantities. A needed quantity of 18 from a pack of 50 usually means one pack order.
+- The embedded Onshape panel is narrow. Any dashboard navigation, wide table, or horizontal scrolling in that panel is a bug.
+- The login/home transition should not flash the login card for an already authenticated user.
+- Settings and Admin are admin-only. Students should be able to do normal build work but not global configuration or user management.
