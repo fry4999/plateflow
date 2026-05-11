@@ -52,6 +52,8 @@ For Railway hosting, use [docs/railway-deploy.md](docs/railway-deploy.md).
 
 For storage and hosting tradeoffs, use [docs/storage-hosting.md](docs/storage-hosting.md).
 
+For future Project chats and agent handoffs, read [AGENTS.md](AGENTS.md) and [docs/project-brief.md](docs/project-brief.md).
+
 ## Security Model
 
 - HTTP-only, SameSite session cookies.
