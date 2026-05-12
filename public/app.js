@@ -7,6 +7,7 @@ let inviteToken = "";
 let dashboardState = null;
 let selectedRobotId = "";
 let selectedSubassemblyId = "";
+let selectedFabricationProcess = "";
 let messageTimer = null;
 let importConfirmationTimer = null;
 let dialogResolver = null;
@@ -2201,13 +2202,19 @@ function selectedSubassemblyContext() {
 function renderFabrication(fabrication) {
   if (!els.fabricationJobs) return;
   const { robot, subassembly } = selectedSubassemblyContext();
-  renderFabricationSwitcher(robot, subassembly);
-  const jobs = filterFabricationJobs(fabrication?.jobs || [], robot, subassembly);
+  const scopedJobs = filterFabricationJobs(fabrication?.jobs || [], robot, subassembly);
+  const processOptions = fabricationProcessFilterOptions(scopedJobs);
+  if (selectedFabricationProcess && !processOptions.includes(selectedFabricationProcess)) selectedFabricationProcess = "";
+  const jobs = selectedFabricationProcess
+    ? scopedJobs.filter((job) => fabricationJobProcess(job) === selectedFabricationProcess)
+    : scopedJobs;
+  renderFabricationSwitcher(robot, subassembly, processOptions);
   if (els.fabricationTitle) els.fabricationTitle.textContent = subassembly ? subassembly.name : "Custom part queue";
   if (els.fabQueueCount) {
+    const processText = selectedFabricationProcess ? ` · ${selectedFabricationProcess}` : "";
     els.fabQueueCount.textContent = subassembly
-      ? `${robot?.name || "Robot"} / ${subassembly.name} · ${jobs.length} custom fabrication card${jobs.length === 1 ? "" : "s"}.`
-      : `${jobs.length} custom fabrication card${jobs.length === 1 ? "" : "s"}.`;
+      ? `${robot?.name || "Robot"} / ${subassembly.name} · ${jobs.length}${jobs.length !== scopedJobs.length ? ` of ${scopedJobs.length}` : ""} custom fabrication card${jobs.length === 1 ? "" : "s"}${processText}.`
+      : `${jobs.length}${jobs.length !== scopedJobs.length ? ` of ${scopedJobs.length}` : ""} custom fabrication card${jobs.length === 1 ? "" : "s"}${processText}.`;
   }
   const columns = [
     { status: "todo", label: "To make", tone: "red" },
@@ -2234,7 +2241,7 @@ function renderFabrication(fabrication) {
   `;
 }
 
-function renderFabricationSwitcher(robot, subassembly) {
+function renderFabricationSwitcher(robot, subassembly, processOptions = []) {
   if (!els.fabricationSwitcher) return;
   const robots = dashboardState?.robots || [];
   if (!robots.length) {
@@ -2251,6 +2258,13 @@ function renderFabricationSwitcher(robot, subassembly) {
         ${robots.map((item) => `<option value="${escapeAttr(item.id)}"${item.id === robot?.id ? " selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(targetLabel(item))}</option>`).join("")}
       </select>
     </label>
+    <label>
+      <span>Process</span>
+      <select data-action="fab-process" aria-label="Filter manufacturing cards by process">
+        <option value="">All processes</option>
+        ${processOptions.map((process) => `<option value="${escapeAttr(process)}"${process === selectedFabricationProcess ? " selected" : ""}>${escapeHtml(process)}</option>`).join("")}
+      </select>
+    </label>
     <div class="fab-switcher-pills" aria-label="Sub-assembly boards">
       ${subassemblies.length ? subassemblies.map((item) => `
         <button class="ghost small ${item.id === subassembly?.id ? "active" : ""}" type="button" data-subassembly-id="${escapeAttr(item.id)}">
@@ -2263,12 +2277,18 @@ function renderFabricationSwitcher(robot, subassembly) {
 
 function onFabricationSwitcherChange(event) {
   const select = event.target.closest("select[data-action='fab-target']");
-  if (!select) return;
-  selectedRobotId = select.value;
-  const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
-  selectedSubassemblyId = robotSubassemblies(robot)[0]?.id || "";
-  renderRobots(dashboardState?.robots || []);
-  renderOverview(dashboardState);
+  if (select) {
+    selectedRobotId = select.value;
+    const robot = (dashboardState?.robots || []).find((item) => item.id === selectedRobotId);
+    selectedSubassemblyId = robotSubassemblies(robot)[0]?.id || "";
+    renderRobots(dashboardState?.robots || []);
+    renderOverview(dashboardState);
+    renderFabrication(dashboardState?.fabrication || { jobs: [] });
+    return;
+  }
+  const processSelect = event.target.closest("select[data-action='fab-process']");
+  if (!processSelect) return;
+  selectedFabricationProcess = processSelect.value;
   renderFabrication(dashboardState?.fabrication || { jobs: [] });
 }
 
@@ -2289,6 +2309,17 @@ function filterFabricationJobs(jobs, robot, subassembly) {
     const jobSubsystemId = job.subsystemId || line.subsystemId || "";
     return (!jobRobotId || jobRobotId === robot.id) && (jobSubsystemId === subassembly.id || line.subsystem === subassembly.name || job.subassemblyName === subassembly.name);
   });
+}
+
+function fabricationProcessFilterOptions(jobs) {
+  const settingsOptions = (routingSettings().machines || []).map((item) => String(item || "").trim()).filter(Boolean);
+  const jobOptions = jobs.map(fabricationJobProcess).filter(Boolean);
+  return [...new Set([...settingsOptions, ...jobOptions])].sort((a, b) => a.localeCompare(b));
+}
+
+function fabricationJobProcess(job) {
+  const line = Array.isArray(job?.lines) ? job.lines[0] || {} : {};
+  return String(line.machine || line.process || job?.machine || job?.process || "Unassigned").trim() || "Unassigned";
 }
 
 function renderFabricationCard(job) {
