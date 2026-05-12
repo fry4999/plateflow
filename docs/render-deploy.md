@@ -30,7 +30,7 @@ Option B, manual web service:
 Set these in Render:
 
 ```env
-APP_BASE_URL=https://plateflow.teknik-engineering.com
+APP_BASE_URL=https://plateflow.org
 NODE_ENV=production
 TRUST_PROXY=true
 SESSION_SECRET=<generate a long random value>
@@ -47,7 +47,7 @@ In Render:
 
 - Open the `plateflow` service
 - Go to Settings -> Custom Domains
-- Add `plateflow.teknik-engineering.com`
+- Add `plateflow.org`
 
 Render will show the DNS records to create. Usually:
 
@@ -61,18 +61,18 @@ After HTTPS works, configure Onshape with:
 
 OAuth redirect URL:
 
-`https://plateflow.teknik-engineering.com/auth/onshape/callback`
+`https://plateflow.org/auth/onshape/callback`
 
 Element right-panel action URL:
 
 ```text
-https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
+https://plateflow.org/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
 ```
 
 ## 6. Smoke Test
 
 Open:
 
-`https://plateflow.teknik-engineering.com/api/session`
+`https://plateflow.org/api/session`
 
 You should see JSON with `configured: true` after adding Onshape credentials.

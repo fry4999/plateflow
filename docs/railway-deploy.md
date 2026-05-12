@@ -26,7 +26,7 @@ PlateFlow stores sync batches, inventory, raw stock, queue state, robots, and au
 Set these on the PlateFlow web service:
 
 ```text
-APP_BASE_URL=https://plateflow.teknik-engineering.com
+APP_BASE_URL=https://plateflow.org
 NODE_ENV=production
 TRUST_PROXY=true
 
@@ -67,7 +67,7 @@ Keep Railway's serverless/app sleeping feature off for the PlateFlow web service
 2. In **Public Networking**, add:
 
    ```text
-   plateflow.teknik-engineering.com
+   plateflow.org
    ```
 
 3. Railway will give you DNS records.
@@ -80,16 +80,16 @@ In the Onshape Developer Portal, use:
 
 ```text
 OAuth URL:
-https://plateflow.teknik-engineering.com/auth/onshape
+https://plateflow.org/auth/onshape
 
 Redirect URL:
-https://plateflow.teknik-engineering.com/auth/onshape/callback
+https://plateflow.org/auth/onshape/callback
 ```
 
 For the embedded extension action URL:
 
 ```text
-https://plateflow.teknik-engineering.com/onshape?embedded=1&mode=custom&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
+https://plateflow.org/onshape?embedded=1&mode=custom&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
 ```
 
 Use `mode=assembly` for an Assembly/COTS extension action.

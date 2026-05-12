@@ -6,7 +6,7 @@ Use Cloudflare for DNS and Render for the Node server.
 
 App domain:
 
-`https://plateflow.teknik-engineering.com`
+`https://plateflow.org`
 
 Render service:
 
@@ -14,7 +14,7 @@ Render service:
 
 ## Cloudflare Records
 
-After adding `plateflow.teknik-engineering.com` as a custom domain in the Render service, Render shows your service hostname, usually like:
+After adding `plateflow.org` as a custom domain in the Render service, Render shows your service hostname, usually like:
 
 `plateflow.onrender.com`
 
@@ -42,7 +42,7 @@ After Render shows the certificates are valid, you may optionally switch the Clo
 In the Render service:
 
 - Settings -> Custom Domains
-- Add `plateflow.teknik-engineering.com`
+- Add `plateflow.org`
 - Wait for certificate status to become valid
 
 ## Onshape URLs
@@ -50,11 +50,11 @@ In the Render service:
 Use:
 
 ```text
-https://plateflow.teknik-engineering.com/auth/onshape/callback
+https://plateflow.org/auth/onshape/callback
 ```
 
 and:
 
 ```text
-https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
+https://plateflow.org/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
 ```

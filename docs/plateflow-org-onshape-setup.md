@@ -1,8 +1,8 @@
-# Teknik Engineering Onshape Setup
+# plateflow.org Onshape Setup
 
 Production domain:
 
-`https://plateflow.teknik-engineering.com`
+`https://plateflow.org`
 
 ## Required App URLs
 
@@ -10,24 +10,24 @@ Use these in the Onshape Developer Portal.
 
 OAuth/login URL:
 
-`https://plateflow.teknik-engineering.com/auth/onshape`
+`https://plateflow.org/auth/onshape`
 
 OAuth redirect URL:
 
-`https://plateflow.teknik-engineering.com/auth/onshape/callback`
+`https://plateflow.org/auth/onshape/callback`
 
 Standalone app URL:
 
-`https://plateflow.teknik-engineering.com/`
+`https://plateflow.org/`
 
 Embedded Onshape URL:
 
-`https://plateflow.teknik-engineering.com/onshape?embedded=1`
+`https://plateflow.org/onshape?embedded=1`
 
 Element right-panel action URL:
 
 ```text
-https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
+https://plateflow.org/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
 ```
 
 ## Onshape Developer Portal Steps
@@ -41,9 +41,12 @@ https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documen
 3. Enter app details:
 
    - Name: `PlateFlow`
+   - Primary format: `org.plateflow`
    - Company/Publisher: `Teknik Engineering`
-   - Website: `https://plateflow.teknik-engineering.com`
-   - Redirect URL: `https://plateflow.teknik-engineering.com/auth/onshape/callback`
+   - Website: `https://plateflow.org`
+   - Redirect URL: `https://plateflow.org/auth/onshape/callback`
+
+   If you are updating an existing Onshape app and Onshape does not let you edit the primary format, leave the existing primary format alone. The OAuth URL, redirect URL, and extension action URL are the fields that must match the new domain.
 
 4. Choose OAuth scopes/permissions with least privilege:
 
@@ -67,10 +70,10 @@ https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documen
 
 ## Server Deployment Checklist
 
-- Point DNS for `plateflow.teknik-engineering.com` to your hosting provider.
+- Point DNS for `plateflow.org` to your hosting provider.
 - Serve HTTPS with a valid TLS certificate.
 - Run the app with `NODE_ENV=production`.
-- Set `APP_BASE_URL=https://plateflow.teknik-engineering.com`.
+- Set `APP_BASE_URL=https://plateflow.org`.
 - Set a long random `SESSION_SECRET`.
 - Put the Node app behind a reverse proxy that forwards HTTPS traffic to the app port.
 - Keep the app response header `Content-Security-Policy: frame-ancestors 'self' https://*.onshape.com`.
@@ -81,14 +84,14 @@ https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documen
 
 Standalone:
 
-`https://plateflow.teknik-engineering.com/`
+`https://plateflow.org/`
 
 Embedded test:
 
 ```text
-https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId=abc123456789&workspaceOrVersionId=def123456789&elementId=ghi123456789&server=https://cad.onshape.com
+https://plateflow.org/onshape?embedded=1&documentId=abc123456789&workspaceOrVersionId=def123456789&elementId=ghi123456789&server=https://cad.onshape.com
 ```
 
 OAuth test:
 
-`https://plateflow.teknik-engineering.com/auth/onshape`
+`https://plateflow.org/auth/onshape`

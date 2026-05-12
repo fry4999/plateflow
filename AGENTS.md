@@ -21,7 +21,7 @@ It is one shared backend and two interfaces, not two unrelated apps.
 - Postgres is used when `DATABASE_URL` is configured.
 - File storage fallback exists, but production should use Postgres.
 - Railway is the current preferred deployment target.
-- Production domain has been `https://plateflow.teknik-engineering.com`.
+- Production domain is `https://plateflow.org`.
 
 Run locally:
 
@@ -78,7 +78,7 @@ git diff --check
 
 Railway should have at minimum:
 
-- `APP_BASE_URL=https://plateflow.teknik-engineering.com`
+- `APP_BASE_URL=https://plateflow.org`
 - `NODE_ENV=production`
 - `SESSION_SECRET=<long random secret>`
 - `TRUST_PROXY=true`

@@ -239,7 +239,7 @@ Important:
 Embedded extension URL pattern:
 
 ```text
-https://plateflow.teknik-engineering.com/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
+https://plateflow.org/onshape?embedded=1&documentId={$documentId}&workspaceOrVersion={$workspaceOrVersion}&workspaceOrVersionId={$workspaceOrVersionId}&elementId={$elementId}&configuration={$configuration}&server={$server}
 ```
 
 OAuth:
@@ -276,13 +276,13 @@ Custom parts without a part number should receive generated part numbers. COTS p
 Primary domain:
 
 ```text
-https://plateflow.teknik-engineering.com
+https://plateflow.org
 ```
 
 Railway is used for deployment. Required production settings include:
 
 ```text
-APP_BASE_URL=https://plateflow.teknik-engineering.com
+APP_BASE_URL=https://plateflow.org
 NODE_ENV=production
 TRUST_PROXY=true
 SESSION_SECRET=<secret>
@@ -1277,7 +1277,7 @@ Before public multi-team use:
 ### Railway Required Variables
 
 ```text
-APP_BASE_URL=https://plateflow.teknik-engineering.com
+APP_BASE_URL=https://plateflow.org
 NODE_ENV=production
 TRUST_PROXY=true
 SESSION_SECRET=<long random secret>
@@ -1307,10 +1307,10 @@ For the production app:
 
 ```text
 Name: plateflow
-Primary format: com.teknik-engineering.plateflow
+Primary format: org.plateflow
 Type: Integrated Cloud App
-OAuth URL: https://plateflow.teknik-engineering.com/auth/onshape
-Redirect URL: https://plateflow.teknik-engineering.com/auth/onshape/callback
+OAuth URL: https://plateflow.org/auth/onshape
+Redirect URL: https://plateflow.org/auth/onshape/callback
 ```
 
 For a test classroom app:

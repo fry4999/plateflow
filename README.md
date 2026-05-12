@@ -46,7 +46,7 @@ Set the app OAuth URL to `/auth/onshape`, and the redirect URL to `/auth/onshape
 
 See [docs/onshape-app-store-checklist.md](docs/onshape-app-store-checklist.md) for the launch notes.
 
-For the Teknik Engineering domain, use [docs/teknik-engineering-onshape-setup.md](docs/teknik-engineering-onshape-setup.md).
+For the plateflow.org domain, use [docs/plateflow-org-onshape-setup.md](docs/plateflow-org-onshape-setup.md).
 
 For Railway hosting, use [docs/railway-deploy.md](docs/railway-deploy.md).
 
