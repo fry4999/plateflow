@@ -32,6 +32,7 @@ const fabricationStatusSyncs = new Map();
 const els = {
   appShell: document.querySelector("#appShell"),
   loginScreen: document.querySelector("#loginScreen"),
+  loginTransition: document.querySelector("#loginTransition"),
   plateflowLoginForm: document.querySelector("#plateflowLoginForm"),
   plateflowLoginButton: document.querySelector("#plateflowLoginButton"),
   loginHelp: document.querySelector("#loginHelp"),
@@ -368,9 +369,17 @@ function renderAuth(session) {
 function renderAppAccess(session) {
   bootstrapRequired = Boolean(session.bootstrapRequired);
   const allowApp = canLoadDashboard(session);
+  const shouldFadeFromLogin = allowApp && document.body.classList.contains("locked");
   els.loginScreen?.classList.toggle("hidden", allowApp);
   els.appShell?.classList.toggle("hidden", !allowApp);
   document.body.classList.toggle("locked", !allowApp);
+  if (shouldFadeFromLogin && els.loginTransition && !embeddedMode) {
+    document.body.classList.remove("login-transitioning");
+    window.requestAnimationFrame(() => {
+      document.body.classList.add("login-transitioning");
+      window.setTimeout(() => document.body.classList.remove("login-transitioning"), 900);
+    });
+  }
   document.body.classList.toggle("bootstrap", Boolean(session.bootstrapRequired));
   document.body.classList.toggle("admin-user", session.appUser?.role === "admin");
   if (els.nameField) els.nameField.classList.toggle("hidden", !session.bootstrapRequired);
