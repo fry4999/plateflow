@@ -496,28 +496,28 @@ body.locked .login-screen {
 }
 
 .login-shooting-star {
-  --star-start-x: -28vw;
-  --star-start-y: 8vh;
+  --star-start-x: -34vw;
+  --star-start-y: -6vh;
   --star-mid-x: 42vw;
-  --star-mid-y: 36vh;
-  --star-end-x: 118vw;
-  --star-end-y: 66vh;
-  --star-angle: 22deg;
-  --star-length: 148px;
-  --star-duration: 17s;
-  --star-delay: -2.4s;
+  --star-mid-y: 34vh;
+  --star-end-x: 128vw;
+  --star-end-y: 78vh;
+  --star-angle: 24deg;
+  --star-length: 168px;
+  --star-duration: 19s;
+  --star-delay: -4s;
   position: absolute;
   left: 0;
   top: 0;
   width: var(--star-length);
   height: 1px;
   border-radius: 999px;
-  background: linear-gradient(90deg, transparent 0%, rgba(96, 165, 250, .05) 18%, rgba(147, 197, 253, .30) 62%, rgba(241, 245, 249, .82) 88%, transparent 100%);
-  filter: blur(.15px);
+  background: linear-gradient(90deg, transparent 0%, rgba(96, 165, 250, .04) 14%, rgba(147, 197, 253, .24) 58%, rgba(241, 245, 249, .76) 90%, transparent 100%);
+  filter: blur(.2px);
   opacity: 0;
-  transform: translate3d(var(--star-start-x), var(--star-start-y), 0) rotate(var(--star-angle)) scaleX(.70);
+  transform: translate3d(var(--star-start-x), var(--star-start-y), 0) rotate(var(--star-angle)) scaleX(.78);
   transform-origin: center;
-  animation: login-shooting-star var(--star-duration) cubic-bezier(.18, .58, .28, 1) infinite;
+  animation: login-shooting-star var(--star-duration) linear infinite;
   animation-delay: var(--star-delay);
   will-change: transform, opacity;
 }
@@ -536,7 +536,7 @@ body.locked .login-screen {
 }
 
 [data-theme="dark"] .login-shooting-star {
-  background: linear-gradient(90deg, transparent 0%, rgba(96, 165, 250, .05) 18%, rgba(147, 197, 253, .30) 62%, rgba(241, 245, 249, .82) 88%, transparent 100%);
+  background: linear-gradient(90deg, transparent 0%, rgba(96, 165, 250, .04) 14%, rgba(147, 197, 253, .24) 58%, rgba(241, 245, 249, .76) 90%, transparent 100%);
 }
 
 [data-theme="dark"] .login-shooting-star::after {
@@ -545,42 +545,42 @@ body.locked .login-screen {
 }
 
 .login-shooting-star-b {
-  --star-start-x: -34vw;
-  --star-start-y: 44vh;
-  --star-mid-x: 42vw;
-  --star-mid-y: 61vh;
-  --star-end-x: 114vw;
-  --star-end-y: 78vh;
-  --star-angle: 13deg;
-  --star-length: 104px;
-  --star-duration: 24s;
-  --star-delay: -11s;
+  --star-start-x: -42vw;
+  --star-start-y: 28vh;
+  --star-mid-x: 36vw;
+  --star-mid-y: 51vh;
+  --star-end-x: 124vw;
+  --star-end-y: 92vh;
+  --star-angle: 18deg;
+  --star-length: 128px;
+  --star-duration: 26s;
+  --star-delay: -14s;
 }
 
 .login-shooting-star-c {
-  --star-start-x: 12vw;
-  --star-start-y: -18vh;
-  --star-mid-x: 62vw;
-  --star-mid-y: 12vh;
-  --star-end-x: 112vw;
-  --star-end-y: 42vh;
-  --star-angle: 30deg;
-  --star-length: 86px;
-  --star-duration: 29s;
-  --star-delay: -17s;
+  --star-start-x: -16vw;
+  --star-start-y: -24vh;
+  --star-mid-x: 55vw;
+  --star-mid-y: 20vh;
+  --star-end-x: 126vw;
+  --star-end-y: 62vh;
+  --star-angle: 32deg;
+  --star-length: 112px;
+  --star-duration: 31s;
+  --star-delay: -22s;
 }
 
 .login-shooting-star-d {
-  --star-start-x: -18vw;
-  --star-start-y: 28vh;
-  --star-mid-x: 48vw;
-  --star-mid-y: 56vh;
-  --star-end-x: 116vw;
-  --star-end-y: 84vh;
-  --star-angle: 23deg;
-  --star-length: 72px;
-  --star-duration: 34s;
-  --star-delay: -25s;
+  --star-start-x: -30vw;
+  --star-start-y: 58vh;
+  --star-mid-x: 46vw;
+  --star-mid-y: 72vh;
+  --star-end-x: 122vw;
+  --star-end-y: 106vh;
+  --star-angle: 15deg;
+  --star-length: 92px;
+  --star-duration: 37s;
+  --star-delay: -30s;
 }
 
 .login-card-frame {
@@ -746,23 +746,21 @@ body.locked .login-screen {
 }
 
 @keyframes login-shooting-star {
-  0%,
-  74% {
+  0% {
     opacity: 0;
-    transform: translate3d(var(--star-start-x), var(--star-start-y), 0) rotate(var(--star-angle)) scaleX(.62);
+    transform: translate3d(var(--star-start-x), var(--star-start-y), 0) rotate(var(--star-angle)) scaleX(.70);
   }
 
-  77% {
-    opacity: .62;
-    transform: translate3d(var(--star-start-x), var(--star-start-y), 0) rotate(var(--star-angle)) scaleX(.86);
+  9% {
+    opacity: .56;
+    transform: translate3d(var(--star-start-x), var(--star-start-y), 0) rotate(var(--star-angle)) scaleX(.92);
   }
 
-  84% {
-    opacity: .44;
-    transform: translate3d(var(--star-mid-x), var(--star-mid-y), 0) rotate(var(--star-angle)) scaleX(1);
+  91% {
+    opacity: .38;
+    transform: translate3d(var(--star-end-x), var(--star-end-y), 0) rotate(var(--star-angle)) scaleX(.90);
   }
 
-  91%,
   100% {
     opacity: 0;
     transform: translate3d(var(--star-end-x), var(--star-end-y), 0) rotate(var(--star-angle)) scaleX(.78);
