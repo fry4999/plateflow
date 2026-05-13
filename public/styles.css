@@ -584,9 +584,9 @@ body.locked .login-screen {
 }
 
 .login-card-frame {
-  --login-aura-speed: 13.5s;
-  --login-aura-opacity: .70;
-  --login-aura-blur: 18px;
+  --login-aura-speed: 18s;
+  --login-aura-opacity: .62;
+  --login-aura-blur: 22px;
   position: relative;
   z-index: 1;
   width: min(420px, calc(100vw - 64px));
@@ -597,8 +597,8 @@ body.locked .login-screen {
   left: -58px;
   top: -42px;
   z-index: 0;
-  width: 218px;
-  height: 136px;
+  width: 236px;
+  height: 150px;
   border-radius: 999px;
   pointer-events: none;
   background:
@@ -608,7 +608,7 @@ body.locked .login-screen {
   filter: blur(var(--login-aura-blur));
   opacity: var(--login-aura-opacity);
   transform: scale(.92);
-  animation: login-cloud-orbit var(--login-aura-speed) linear infinite;
+  animation: login-cloud-orbit var(--login-aura-speed) cubic-bezier(.42, 0, .18, 1) infinite;
   will-change: left, top, transform, opacity;
 }
 
@@ -767,80 +767,108 @@ body.locked .login-screen {
 
 @keyframes login-cloud-orbit {
   0% {
-    left: -86px;
+    left: -96px;
     top: -62px;
-    opacity: .42;
-    transform: scale(.92);
+    opacity: .38;
+    transform: scale(.90);
   }
 
-  9% {
-    left: 24%;
-    top: -76px;
+  6% {
+    left: -54px;
+    top: -78px;
+    opacity: .50;
+    transform: scale(.96);
+  }
+
+  14% {
+    left: 18%;
+    top: -84px;
+    opacity: .58;
+    transform: scale(1.01);
+  }
+
+  22% {
+    left: 58%;
+    top: -82px;
     opacity: var(--login-aura-opacity);
-    transform: scale(1.03);
-  }
-
-  20% {
-    left: calc(100% - 132px);
-    top: -72px;
-    opacity: .62;
     transform: scale(.98);
   }
 
   29% {
-    left: calc(100% - 62px);
-    top: 18%;
-    opacity: var(--login-aura-opacity);
-    transform: scale(1.04);
-  }
-
-  40% {
-    left: calc(100% - 70px);
-    top: 55%;
-    opacity: var(--login-aura-opacity);
-    transform: scale(1);
-  }
-
-  50% {
-    left: calc(100% - 128px);
-    top: calc(100% - 48px);
-    opacity: .62;
-    transform: scale(.98);
-  }
-
-  61% {
-    left: 44%;
-    top: calc(100% - 22px);
-    opacity: var(--login-aura-opacity);
-    transform: scale(1.04);
-  }
-
-  72% {
-    left: -76px;
-    top: calc(100% - 46px);
-    opacity: .66;
-    transform: scale(1);
-  }
-
-  84% {
-    left: -126px;
-    top: 52%;
-    opacity: var(--login-aura-opacity);
-    transform: scale(.98);
-  }
-
-  93% {
-    left: -116px;
-    top: 12%;
-    opacity: .60;
+    left: calc(100% - 154px);
+    top: -66px;
+    opacity: .58;
     transform: scale(.96);
   }
 
+  36% {
+    left: calc(100% - 82px);
+    top: 8%;
+    opacity: .62;
+    transform: scale(1.02);
+  }
+
+  44% {
+    left: calc(100% - 58px);
+    top: 43%;
+    opacity: var(--login-aura-opacity);
+    transform: scale(1);
+  }
+
+  52% {
+    left: calc(100% - 96px);
+    top: calc(100% - 92px);
+    opacity: .60;
+    transform: scale(1.03);
+  }
+
+  59% {
+    left: calc(100% - 152px);
+    top: calc(100% - 42px);
+    opacity: .56;
+    transform: scale(.96);
+  }
+
+  67% {
+    left: 56%;
+    top: calc(100% - 20px);
+    opacity: var(--login-aura-opacity);
+    transform: scale(1);
+  }
+
+  75% {
+    left: 18%;
+    top: calc(100% - 24px);
+    opacity: .58;
+    transform: scale(.98);
+  }
+
+  82% {
+    left: -70px;
+    top: calc(100% - 54px);
+    opacity: .60;
+    transform: scale(1.02);
+  }
+
+  89% {
+    left: -128px;
+    top: 46%;
+    opacity: var(--login-aura-opacity);
+    transform: scale(.98);
+  }
+
+  96% {
+    left: -122px;
+    top: 8%;
+    opacity: .50;
+    transform: scale(.94);
+  }
+
   100% {
-    left: -86px;
+    left: -96px;
     top: -62px;
-    opacity: .42;
-    transform: scale(.92);
+    opacity: .38;
+    transform: scale(.90);
   }
 }
 
