@@ -24,6 +24,7 @@ let lastPointerGlowAt = 0;
 let dashboardApplyFrame = 0;
 let pendingDashboard = null;
 let pendingDashboardOptions = {};
+let dashboardLoadingMessage = false;
 let activeFabricationDragColumn = null;
 let fabricationStatusSyncSeq = 0;
 const inventoryAutosaveTimers = new Map();
@@ -463,7 +464,7 @@ async function onPlateFlowLogin(event) {
     renderAppAccess(nextSession);
     els.loginMessage.textContent = "";
     els.plateflowLoginForm.reset();
-    await loadDashboard();
+    loadDashboardAfterLogin();
   } catch (error) {
     els.loginMessage.textContent = error.message;
     els.loginMessage.className = "message error";
@@ -1326,6 +1327,33 @@ function applyDashboardState(dashboard, options = {}) {
   } else {
     renderCustomConfigurator();
   }
+  finishDashboardLoadingMessage();
+}
+
+function loadDashboardAfterLogin() {
+  dashboardLoadingMessage = true;
+  setMessage("Loading workspace...");
+  const fallbackLoad = () => {
+    if (dashboardState) {
+      finishDashboardLoadingMessage();
+      return;
+    }
+    loadDashboard().catch((error) => {
+      dashboardLoadingMessage = false;
+      setMessage(`Signed in, but the workspace did not load yet: ${error.message}`, "error");
+    });
+  };
+  if (!embeddedMode && window.EventSource) {
+    window.setTimeout(fallbackLoad, 900);
+    return;
+  }
+  window.requestAnimationFrame(fallbackLoad);
+}
+
+function finishDashboardLoadingMessage() {
+  if (!dashboardLoadingMessage) return;
+  dashboardLoadingMessage = false;
+  dismissMessage();
 }
 
 function renderDashboardChrome(dashboard) {
