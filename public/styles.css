@@ -566,9 +566,9 @@ body.locked .login-screen {
 }
 
 .login-card-frame {
-  --login-aura-speed: 11s;
-  --login-aura-opacity: .76;
-  --login-aura-blur: 13px;
+  --login-aura-speed: 13.5s;
+  --login-aura-opacity: .70;
+  --login-aura-blur: 18px;
   position: relative;
   z-index: 1;
   width: min(420px, calc(100vw - 64px));
@@ -579,14 +579,14 @@ body.locked .login-screen {
   left: -58px;
   top: -42px;
   z-index: 0;
-  width: 190px;
-  height: 112px;
+  width: 218px;
+  height: 136px;
   border-radius: 999px;
   pointer-events: none;
   background:
-    radial-gradient(circle at 35% 45%, rgba(219, 234, 254, .56), transparent 30%),
-    radial-gradient(circle at 58% 54%, rgba(96, 165, 250, .34), transparent 48%),
-    radial-gradient(circle at 76% 58%, rgba(37, 99, 235, .20), transparent 58%);
+    radial-gradient(circle at 30% 44%, rgba(219, 234, 254, .46), transparent 30%),
+    radial-gradient(circle at 55% 52%, rgba(96, 165, 250, .31), transparent 50%),
+    radial-gradient(circle at 78% 58%, rgba(37, 99, 235, .18), transparent 62%);
   filter: blur(var(--login-aura-blur));
   opacity: var(--login-aura-opacity);
   transform: scale(.92);
@@ -640,9 +640,9 @@ body.locked .login-screen {
 
 [data-theme="dark"] .login-card-cloud {
   background:
-    radial-gradient(circle at 35% 45%, rgba(219, 234, 254, .56), transparent 30%),
-    radial-gradient(circle at 58% 54%, rgba(96, 165, 250, .34), transparent 48%),
-    radial-gradient(circle at 76% 58%, rgba(37, 99, 235, .20), transparent 58%);
+    radial-gradient(circle at 30% 44%, rgba(219, 234, 254, .46), transparent 30%),
+    radial-gradient(circle at 55% 52%, rgba(96, 165, 250, .31), transparent 50%),
+    radial-gradient(circle at 78% 58%, rgba(37, 99, 235, .18), transparent 62%);
 }
 
 [data-theme="dark"] .login-card::after {
@@ -737,59 +737,80 @@ body.locked .login-screen {
 
 @keyframes login-cloud-orbit {
   0% {
-    left: -74px;
-    top: -50px;
-    opacity: .46;
-    transform: scale(.90);
+    left: -86px;
+    top: -62px;
+    opacity: .42;
+    transform: scale(.92);
   }
 
-  12% {
+  9% {
     left: 24%;
-    top: -64px;
+    top: -76px;
     opacity: var(--login-aura-opacity);
-    transform: scale(1.02);
+    transform: scale(1.03);
   }
 
-  26% {
-    left: calc(100% - 110px);
-    top: -50px;
+  20% {
+    left: calc(100% - 132px);
+    top: -72px;
     opacity: .62;
-    transform: scale(.96);
+    transform: scale(.98);
   }
 
-  38% {
-    left: calc(100% - 72px);
-    top: 28%;
+  29% {
+    left: calc(100% - 62px);
+    top: 18%;
     opacity: var(--login-aura-opacity);
     transform: scale(1.04);
+  }
+
+  40% {
+    left: calc(100% - 70px);
+    top: 55%;
+    opacity: var(--login-aura-opacity);
+    transform: scale(1);
   }
 
   50% {
-    left: calc(100% - 116px);
-    top: calc(100% - 32px);
+    left: calc(100% - 128px);
+    top: calc(100% - 48px);
     opacity: .62;
     transform: scale(.98);
   }
 
-  64% {
-    left: 34%;
-    top: calc(100% - 28px);
+  61% {
+    left: 44%;
+    top: calc(100% - 22px);
     opacity: var(--login-aura-opacity);
     transform: scale(1.04);
   }
 
-  80% {
-    left: -112px;
-    top: 45%;
+  72% {
+    left: -76px;
+    top: calc(100% - 46px);
+    opacity: .66;
+    transform: scale(1);
+  }
+
+  84% {
+    left: -126px;
+    top: 52%;
     opacity: var(--login-aura-opacity);
     transform: scale(.98);
   }
 
+  93% {
+    left: -116px;
+    top: 12%;
+    opacity: .60;
+    transform: scale(.96);
+  }
+
   100% {
-    left: -74px;
-    top: -50px;
-    opacity: .46;
-    transform: scale(.90);
+    left: -86px;
+    top: -62px;
+    opacity: .42;
+    transform: scale(.92);
   }
 }
 
