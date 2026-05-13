@@ -440,6 +440,17 @@ function canLoadDashboard(session) {
 async function onPlateFlowLogin(event) {
   event.preventDefault();
   const body = Object.fromEntries(new FormData(els.plateflowLoginForm).entries());
+  const loginButton = els.plateflowLoginButton;
+  const idleLabel = loginButton?.textContent || "Log in";
+  if (loginButton) {
+    loginButton.disabled = true;
+    loginButton.setAttribute("aria-busy", "true");
+    loginButton.textContent = bootstrapRequired || Boolean(body.inviteToken) ? "Creating account..." : "Logging in...";
+  }
+  if (els.loginMessage) {
+    els.loginMessage.textContent = bootstrapRequired || Boolean(body.inviteToken) ? "Creating your account..." : "Signing in...";
+    els.loginMessage.className = "message";
+  }
   try {
     const createAccount = bootstrapRequired || Boolean(body.inviteToken);
     const session = await api(createAccount ? "/auth/plateflow/register" : "/auth/plateflow/login", {
@@ -456,6 +467,12 @@ async function onPlateFlowLogin(event) {
   } catch (error) {
     els.loginMessage.textContent = error.message;
     els.loginMessage.className = "message error";
+  } finally {
+    if (loginButton) {
+      loginButton.disabled = false;
+      loginButton.removeAttribute("aria-busy");
+      loginButton.textContent = idleLabel;
+    }
   }
 }
 

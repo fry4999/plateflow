@@ -50,6 +50,7 @@ const onshapeJsonCache = new Map();
 let mcmasterAuthCache = { token: "", expiresAtMs: 0 };
 let storeRevision = 0;
 let realtimeTimer = null;
+let deferredPersistTimer = null;
 
 const APP_ROLES = ["admin", "student"];
 const WORK_ROLES = ["admin", "student"];
@@ -91,7 +92,12 @@ createServer(async (req, res) => {
 
     const url = new URL(req.url || "/", config.appBaseUrl);
     const session = getSession(req, res);
-    if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/auth/plateflow")) await refreshStore();
+    const shouldRefreshStore = url.pathname.startsWith("/api/") || (
+      url.pathname.startsWith("/auth/plateflow") &&
+      url.pathname !== "/auth/plateflow/login" &&
+      url.pathname !== "/auth/plateflow/logout"
+    );
+    if (shouldRefreshStore) await refreshStore();
 
     if (url.pathname === "/auth/plateflow/register" && req.method === "POST") return await registerPlateFlow(req, res, session);
     if (url.pathname === "/auth/plateflow/login" && req.method === "POST") return await loginPlateFlow(req, res, session);
@@ -422,6 +428,14 @@ async function persistStore() {
   await storage.save(store);
   storeRevision += 1;
   queueRealtimeBroadcast();
+}
+
+function persistStoreSoon() {
+  if (deferredPersistTimer) return;
+  deferredPersistTimer = setTimeout(() => {
+    deferredPersistTimer = null;
+    persistStore().catch((error) => console.error("Deferred persist failed", error));
+  }, 0);
 }
 
 async function refreshStore() {
@@ -1241,7 +1255,7 @@ async function loginPlateFlow(req, res, session) {
   session.user = null;
   restoreOnshapeToken(session);
   audit("auth.login", `PlateFlow login ${user.email}`, user.email);
-  await persistStore();
+  persistStoreSoon();
   return json(res, 200, { user: publicAppUser(user), session: publicSession(session) });
 }
 
