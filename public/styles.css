@@ -567,8 +567,8 @@ body.locked .login-screen {
 
 .login-card-frame {
   --login-aura-speed: 11s;
-  --login-aura-opacity: .72;
-  --login-aura-blur: 14px;
+  --login-aura-opacity: .76;
+  --login-aura-blur: 13px;
   position: relative;
   z-index: 1;
   width: min(420px, calc(100vw - 64px));
@@ -576,8 +576,8 @@ body.locked .login-screen {
 
 .login-card-cloud {
   position: absolute;
-  left: 0;
-  top: 0;
+  left: -58px;
+  top: -42px;
   z-index: 0;
   width: 190px;
   height: 112px;
@@ -589,9 +589,9 @@ body.locked .login-screen {
     radial-gradient(circle at 76% 58%, rgba(37, 99, 235, .20), transparent 58%);
   filter: blur(var(--login-aura-blur));
   opacity: var(--login-aura-opacity);
-  transform: translate3d(-58px, -42px, 0) scale(.92);
+  transform: scale(.92);
   animation: login-cloud-orbit var(--login-aura-speed) linear infinite;
-  will-change: transform, opacity;
+  will-change: left, top, transform, opacity;
 }
 
 .login-card {
@@ -737,43 +737,59 @@ body.locked .login-screen {
 
 @keyframes login-cloud-orbit {
   0% {
+    left: -74px;
+    top: -50px;
     opacity: .46;
-    transform: translate3d(-58px, -42px, 0) scale(.90);
+    transform: scale(.90);
   }
 
   12% {
+    left: 24%;
+    top: -64px;
     opacity: var(--login-aura-opacity);
-    transform: translate3d(72px, -50px, 0) scale(1.02);
+    transform: scale(1.02);
   }
 
   26% {
+    left: calc(100% - 110px);
+    top: -50px;
     opacity: .62;
-    transform: translate3d(calc(100% - 112px), -42px, 0) scale(.96);
+    transform: scale(.96);
   }
 
   38% {
+    left: calc(100% - 72px);
+    top: 28%;
     opacity: var(--login-aura-opacity);
-    transform: translate3d(calc(100% - 82px), 26%, 0) scale(1.04);
+    transform: scale(1.04);
   }
 
   50% {
+    left: calc(100% - 116px);
+    top: calc(100% - 32px);
     opacity: .62;
-    transform: translate3d(calc(100% - 118px), calc(100% - 66px), 0) scale(.98);
+    transform: scale(.98);
   }
 
   64% {
+    left: 34%;
+    top: calc(100% - 28px);
     opacity: var(--login-aura-opacity);
-    transform: translate3d(34%, calc(100% - 62px), 0) scale(1.04);
+    transform: scale(1.04);
   }
 
   80% {
+    left: -112px;
+    top: 45%;
     opacity: var(--login-aura-opacity);
-    transform: translate3d(-86px, 46%, 0) scale(.98);
+    transform: scale(.98);
   }
 
   100% {
+    left: -74px;
+    top: -50px;
     opacity: .46;
-    transform: translate3d(-58px, -42px, 0) scale(.90);
+    transform: scale(.90);
   }
 }
 
