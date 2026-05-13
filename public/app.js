@@ -20,6 +20,7 @@ let selectedInventoryItems = new Set();
 let pointerFrame = 0;
 let pointerX = 0;
 let pointerY = 0;
+let lastPointerGlowAt = 0;
 let dashboardApplyFrame = 0;
 let pendingDashboard = null;
 let pendingDashboardOptions = {};
@@ -328,6 +329,7 @@ function syncPageFromHash() {
   const requested = (location.hash || "#dashboard").slice(1);
   const fallback = visiblePages[0].id;
   const active = visiblePages.some((page) => page.id === requested) ? requested : fallback;
+  document.body.dataset.page = active;
   els.pages.forEach((page) => {
     const selected = page.id === active;
     page.classList.toggle("active-page", selected);
@@ -530,6 +532,10 @@ function toggleTheme() {
 }
 
 function onPagePointerMove(event) {
+  if (document.body.classList.contains("locked") || document.body.dataset.page !== "dashboard") return;
+  const now = performance.now();
+  if (now - lastPointerGlowAt < 36) return;
+  lastPointerGlowAt = now;
   pointerX = Math.max(0, Math.min(window.innerWidth, event.clientX));
   pointerY = Math.max(0, Math.min(window.innerHeight, event.clientY));
   if (pointerFrame) return;

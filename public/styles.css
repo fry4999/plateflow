@@ -67,23 +67,29 @@ body::after {
   left: 0;
   top: 0;
   z-index: 0;
-  width: 720px;
-  height: 720px;
+  width: 500px;
+  height: 500px;
   pointer-events: none;
-  transform: translate3d(calc(var(--page-glow-x) - 360px), calc(var(--page-glow-y) - 360px), 0);
-  background: radial-gradient(circle, rgba(37, 99, 235, .20), rgba(96, 165, 250, .10) 28%, transparent 62%);
-  opacity: .82;
+  transform: translate3d(calc(var(--page-glow-x) - 250px), calc(var(--page-glow-y) - 250px), 0);
+  background: radial-gradient(circle, rgba(37, 99, 235, .18), rgba(96, 165, 250, .08) 30%, transparent 66%);
+  opacity: .70;
   contain: layout paint style;
   backface-visibility: hidden;
+  transition: transform .12s ease-out;
   will-change: transform;
 }
 
 body[data-theme="dark"]::after {
-  background: radial-gradient(circle, rgba(37, 99, 235, .32), rgba(96, 165, 250, .18) 28%, transparent 62%);
+  background: radial-gradient(circle, rgba(37, 99, 235, .24), rgba(96, 165, 250, .12) 30%, transparent 66%);
 }
 
 body.embedded::before,
 body.embedded::after {
+  display: none;
+}
+
+body.locked::after,
+body:not([data-page="dashboard"])::after {
   display: none;
 }
 
@@ -521,8 +527,7 @@ main {
   color: #f8fafc;
   background: rgba(7, 8, 12, .96);
   overflow: visible;
-  box-shadow: 0 24px 90px rgba(0, 0, 0, .42);
-  backdrop-filter: blur(18px);
+  box-shadow: 0 24px 82px rgba(0, 0, 0, .44), 0 0 58px rgba(37, 99, 235, .14);
 }
 
 .login-card::before,
@@ -534,33 +539,18 @@ main {
 }
 
 .login-card::before {
-  inset: -2px;
-  z-index: 0;
-  padding: 2px;
+  inset: -4px;
+  z-index: -1;
+  border: 1px solid rgba(96, 165, 250, .34);
   background:
-    linear-gradient(90deg, transparent, rgba(96, 165, 250, .60), rgba(191, 219, 254, .34), transparent),
-    linear-gradient(180deg, rgba(96, 165, 250, .20), transparent 34%, rgba(37, 99, 235, .22));
-  background-position: 0 0, 0 0;
-  background-size: 240% 100%, 100% 100%;
-  opacity: .72;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  filter: drop-shadow(0 0 16px rgba(96, 165, 250, .36));
-  animation: login-aura-flow 8s ease-in-out infinite;
+    radial-gradient(150px 110px at 16% 0%, rgba(96, 165, 250, .34), transparent 72%),
+    radial-gradient(180px 130px at 88% 100%, rgba(37, 99, 235, .26), transparent 74%);
+  opacity: .66;
+  animation: login-aura-flow 7s ease-in-out infinite;
 }
 
 .login-card::after {
-  inset: -34px;
-  z-index: -1;
-  background:
-    radial-gradient(ellipse at 32% 12%, rgba(96, 165, 250, .34), transparent 36%),
-    radial-gradient(ellipse at 72% 86%, rgba(37, 99, 235, .30), transparent 40%),
-    radial-gradient(ellipse at 50% 50%, rgba(147, 197, 253, .12), transparent 62%);
-  filter: blur(24px);
-  opacity: .70;
-  animation: login-aura-pulse 6.5s ease-in-out infinite;
+  display: none;
 }
 
 .login-card > * {
@@ -570,15 +560,14 @@ main {
 
 [data-theme="dark"] .login-card {
   background: rgba(7, 8, 12, .96);
-  box-shadow: 0 24px 90px rgba(0, 0, 0, .42);
-  backdrop-filter: blur(18px);
+  box-shadow: 0 24px 82px rgba(0, 0, 0, .44), 0 0 58px rgba(37, 99, 235, .14);
 }
 
 [data-theme="dark"] .login-card::before {
+  border-color: rgba(96, 165, 250, .34);
   background:
-    linear-gradient(90deg, transparent, rgba(96, 165, 250, .60), rgba(191, 219, 254, .34), transparent),
-    linear-gradient(180deg, rgba(96, 165, 250, .20), transparent 34%, rgba(37, 99, 235, .22));
-  box-shadow: none;
+    radial-gradient(150px 110px at 16% 0%, rgba(96, 165, 250, .34), transparent 72%),
+    radial-gradient(180px 130px at 88% 100%, rgba(37, 99, 235, .26), transparent 74%);
 }
 
 [data-theme="dark"] .login-card::after {
@@ -598,20 +587,29 @@ main {
 .login-card h1::after {
   content: "";
   position: absolute;
-  left: -10px;
-  top: -12px;
+  left: -22px;
+  top: -18px;
   z-index: -1;
-  width: 185px;
-  height: 84px;
+  width: 230px;
+  height: 96px;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(37, 99, 235, .16), transparent 64%);
-  filter: blur(10px);
-  opacity: .82;
-  animation: login-title-aura 6s ease-in-out infinite;
+  background:
+    radial-gradient(circle, rgba(96, 165, 250, .28), transparent 48%),
+    radial-gradient(circle, rgba(37, 99, 235, .16), transparent 56%);
+  background-position: 0% 42%, 100% 58%;
+  background-size: 64% 100%, 58% 92%;
+  background-repeat: no-repeat;
+  opacity: .70;
+  animation: login-title-aura 5.2s ease-in-out infinite;
 }
 
 [data-theme="dark"] .login-card h1::after {
-  background: radial-gradient(circle, rgba(96, 165, 250, .22), transparent 64%);
+  background:
+    radial-gradient(circle, rgba(96, 165, 250, .30), transparent 48%),
+    radial-gradient(circle, rgba(37, 99, 235, .18), transparent 56%);
+  background-position: 0% 42%, 100% 58%;
+  background-size: 64% 100%, 58% 92%;
+  background-repeat: no-repeat;
 }
 
 .login-card p {
@@ -681,15 +679,13 @@ main {
 @keyframes login-aura-flow {
   0%,
   100% {
-    opacity: .46;
-    background-position: 0 0, 0 0;
-    filter: drop-shadow(0 0 12px rgba(96, 165, 250, .25));
+    opacity: .42;
+    transform: translate3d(-3px, -2px, 0) scale(.998);
   }
 
   50% {
-    opacity: .92;
-    background-position: 100% 0, 0 0;
-    filter: drop-shadow(0 0 24px rgba(96, 165, 250, .52));
+    opacity: .86;
+    transform: translate3d(4px, 3px, 0) scale(1.012);
   }
 }
 
@@ -709,13 +705,21 @@ main {
 @keyframes login-title-aura {
   0%,
   100% {
-    opacity: .52;
-    transform: scale(.96);
+    opacity: .46;
+    background-position: 0% 42%, 100% 58%;
+    transform: translate3d(-6px, -3px, 0) scale(.96);
   }
 
-  50% {
-    opacity: .86;
-    transform: scale(1.04);
+  38% {
+    opacity: .88;
+    background-position: 66% 36%, 8% 64%;
+    transform: translate3d(18px, 3px, 0) scale(1.04);
+  }
+
+  70% {
+    opacity: .68;
+    background-position: 42% 72%, 72% 28%;
+    transform: translate3d(4px, 9px, 0) scale(1.01);
   }
 }
 
