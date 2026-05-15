@@ -475,7 +475,7 @@ body.locked .login-screen {
   --star-end-y: 68vh;
   --star-angle: 27deg;
   --star-length: 190px;
-  --star-duration: 8.2s;
+  --star-duration: 10.2s;
   --star-delay: -1.4s;
   position: absolute;
   left: 0;
@@ -524,7 +524,7 @@ body.locked .login-screen {
   --star-end-y: 82vh;
   --star-angle: 20deg;
   --star-length: 150px;
-  --star-duration: 10.8s;
+  --star-duration: 13.2s;
   --star-delay: -5.8s;
 }
 
@@ -537,7 +537,7 @@ body.locked .login-screen {
   --star-end-y: 58vh;
   --star-angle: 33deg;
   --star-length: 128px;
-  --star-duration: 12.4s;
+  --star-duration: 15.2s;
   --star-delay: -8.6s;
 }
 
@@ -550,7 +550,7 @@ body.locked .login-screen {
   --star-end-y: 98vh;
   --star-angle: 14deg;
   --star-length: 104px;
-  --star-duration: 14.8s;
+  --star-duration: 17.8s;
   --star-delay: -11.2s;
 }
 
