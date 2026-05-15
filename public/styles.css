@@ -103,7 +103,7 @@ body:not([data-page="dashboard"])::after {
   }
 
   body.login-transitioning .login-transition-screen,
-  .login-starfield,
+  .login-screen::after,
   .login-shooting-star,
   .login-card-cloud,
   .login-card::before,
@@ -443,8 +443,10 @@ body.locked .login-screen {
   background-position: 0 0, 13px 17px;
   background-size: 52px 52px, 86px 86px;
   mask-image: linear-gradient(180deg, #000, #000 88%, transparent);
-  opacity: .38;
-  animation: login-star-grid-twinkle 6.8s ease-in-out infinite;
+  opacity: .34;
+  filter: brightness(1);
+  animation: login-dotfield-twinkle 5.6s ease-in-out infinite;
+  will-change: opacity, filter;
 }
 
 [data-theme="dark"] .login-screen::after {
@@ -453,7 +455,7 @@ body.locked .login-screen {
     radial-gradient(rgba(96, 165, 250, .28) 1px, transparent 1.5px);
   background-position: 0 0, 13px 17px;
   background-size: 52px 52px, 86px 86px;
-  opacity: .38;
+  opacity: .34;
 }
 
 .login-visuals {
@@ -462,80 +464,6 @@ body.locked .login-screen {
   z-index: -1;
   overflow: hidden;
   pointer-events: none;
-}
-
-.login-starfield {
-  position: absolute;
-  display: block;
-  inset: 0;
-  background:
-    radial-gradient(circle at 12% 18%, rgba(219, 234, 254, .88) 0 1px, transparent 2px),
-    radial-gradient(circle at 24% 68%, rgba(147, 197, 253, .54) 0 1px, transparent 2px),
-    radial-gradient(circle at 40% 24%, rgba(191, 219, 254, .66) 0 1px, transparent 2px),
-    radial-gradient(circle at 57% 72%, rgba(96, 165, 250, .46) 0 1px, transparent 2px),
-    radial-gradient(circle at 72% 34%, rgba(219, 234, 254, .76) 0 1px, transparent 2px),
-    radial-gradient(circle at 88% 62%, rgba(147, 197, 253, .54) 0 1px, transparent 2px);
-  opacity: .40;
-  animation: login-stars-twinkle 10.5s ease-in-out infinite;
-}
-
-.login-starfield::before,
-.login-starfield::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 2px;
-  height: 2px;
-  border-radius: 999px;
-  background: rgba(219, 234, 254, .86);
-  box-shadow:
-    8vw 12vh 0 rgba(219, 234, 254, .72),
-    17vw 33vh 0 rgba(147, 197, 253, .55),
-    29vw 18vh 0 rgba(241, 245, 249, .68),
-    37vw 56vh 0 rgba(96, 165, 250, .44),
-    49vw 29vh 0 rgba(219, 234, 254, .62),
-    61vw 47vh 0 rgba(147, 197, 253, .58),
-    74vw 20vh 0 rgba(241, 245, 249, .70),
-    83vw 66vh 0 rgba(96, 165, 250, .48),
-    93vw 38vh 0 rgba(219, 234, 254, .66);
-  opacity: .58;
-  transform: translateZ(0);
-  animation: login-star-specks 4.2s ease-in-out infinite;
-}
-
-.login-starfield::after {
-  width: 1px;
-  height: 1px;
-  box-shadow:
-    5vw 72vh 0 rgba(147, 197, 253, .46),
-    15vw 46vh 0 rgba(219, 234, 254, .62),
-    28vw 82vh 0 rgba(96, 165, 250, .42),
-    42vw 12vh 0 rgba(241, 245, 249, .64),
-    55vw 76vh 0 rgba(147, 197, 253, .52),
-    68vw 34vh 0 rgba(219, 234, 254, .66),
-    79vw 86vh 0 rgba(96, 165, 250, .44),
-    91vw 14vh 0 rgba(241, 245, 249, .68),
-    98vw 58vh 0 rgba(147, 197, 253, .52);
-  animation-duration: 5.6s;
-  animation-delay: -2.2s;
-}
-
-.login-starfield-b {
-  transform: scaleX(-1) translateY(4%);
-  opacity: .26;
-  animation-delay: -5.2s;
-  animation-duration: 14s;
-}
-
-[data-theme="dark"] .login-starfield {
-  background:
-    radial-gradient(circle at 12% 18%, rgba(219, 234, 254, .88) 0 1px, transparent 2px),
-    radial-gradient(circle at 24% 68%, rgba(147, 197, 253, .54) 0 1px, transparent 2px),
-    radial-gradient(circle at 40% 24%, rgba(191, 219, 254, .66) 0 1px, transparent 2px),
-    radial-gradient(circle at 57% 72%, rgba(96, 165, 250, .46) 0 1px, transparent 2px),
-    radial-gradient(circle at 72% 34%, rgba(219, 234, 254, .76) 0 1px, transparent 2px),
-    radial-gradient(circle at 88% 62%, rgba(147, 197, 253, .54) 0 1px, transparent 2px);
 }
 
 .login-shooting-star {
@@ -766,66 +694,26 @@ body.locked .login-screen {
   display: none;
 }
 
-@keyframes login-stars-twinkle {
-  0% {
-    opacity: .22;
-    filter: brightness(.88);
+@keyframes login-dotfield-twinkle {
+  0%,
+  100% {
+    opacity: .26;
+    filter: brightness(.86);
   }
 
-  28% {
+  30% {
     opacity: .48;
-    filter: brightness(1.18);
-  }
-
-  58% {
-    opacity: .30;
-    filter: brightness(.96);
-  }
-
-  82% {
-    opacity: .54;
     filter: brightness(1.28);
   }
 
-  100% {
-    opacity: .22;
-    filter: brightness(.88);
-  }
-}
-
-@keyframes login-star-grid-twinkle {
-  0%,
-  100% {
-    opacity: .28;
-    filter: brightness(.92);
-  }
-
-  38% {
-    opacity: .46;
-    filter: brightness(1.22);
-  }
-
-  67% {
-    opacity: .34;
-    filter: brightness(1.05);
-  }
-}
-
-@keyframes login-star-specks {
-  0%,
-  100% {
+  57% {
     opacity: .32;
-    transform: translateZ(0) scale(.88);
+    filter: brightness(1.02);
   }
 
-  42% {
-    opacity: .78;
-    transform: translateZ(0) scale(1.08);
-  }
-
-  68% {
-    opacity: .46;
-    transform: translateZ(0) scale(.96);
+  76% {
+    opacity: .42;
+    filter: brightness(1.16);
   }
 }
 
