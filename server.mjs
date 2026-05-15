@@ -40,17 +40,26 @@ const config = {
   prod: process.env.NODE_ENV === "production"
 };
 
+validateRuntimeConfig();
+
 let storageInitError = "";
 const storage = await createStorage();
 const store = await storage.load();
 const sessions = new Map();
 const rateBuckets = new Map();
+const loginFailureBuckets = new Map();
 const eventClients = new Map();
 const onshapeJsonCache = new Map();
 let mcmasterAuthCache = { token: "", expiresAtMs: 0 };
 let storeRevision = 0;
 let realtimeTimer = null;
 let deferredPersistTimer = null;
+
+const sessionMaxAgeMs = 8 * 60 * 60 * 1000;
+const loginThrottleWindowMs = 15 * 60 * 1000;
+const loginThrottleLockMs = 15 * 60 * 1000;
+const loginIpFailureLimit = 20;
+const loginEmailFailureLimit = 5;
 
 const APP_ROLES = ["admin", "student"];
 const WORK_ROLES = ["admin", "student"];
@@ -148,11 +157,21 @@ createServer(async (req, res) => {
     return await serveStatic(res, url.pathname);
   } catch (error) {
     console.error(error);
-    return json(res, error.status || 500, { error: error.message || "Unexpected server error" });
+    return sendError(res, error);
   }
 }).listen(config.port, () => {
   console.log(`FRC PlateFlow listening on ${config.appBaseUrl}`);
 });
+
+function validateRuntimeConfig() {
+  if (!config.prod) return;
+  if (!config.databaseUrl) {
+    throw new Error("DATABASE_URL is required in production so PlateFlow never falls back to local file storage.");
+  }
+  if (!config.sessionSecret || config.sessionSecret === "dev-only-change-me-change-me-change-me" || config.sessionSecret.length < 32) {
+    throw new Error("SESSION_SECRET must be a strong production secret at least 32 characters long.");
+  }
+}
 
 function loadDotEnv() {
   const envPath = join(root, ".env");
@@ -175,7 +194,7 @@ async function createStorage() {
       const { Pool } = pg.default || pg;
       const pool = new Pool({
         connectionString: config.databaseUrl,
-        ssl: config.databaseUrl.includes("localhost") ? false : { rejectUnauthorized: false }
+        ssl: databaseSslOptions(config.databaseUrl)
       });
       await pool.query(`
         create table if not exists plateflow_store (
@@ -207,7 +226,11 @@ async function createStorage() {
       };
     } catch (error) {
       storageInitError = String(error.message || error).slice(0, 180);
-      console.error("Could not initialize Postgres storage, falling back to local file", error);
+      console.error("Could not initialize Postgres storage", error);
+      if (config.prod) {
+        throw new Error("Could not initialize production Postgres storage. Refusing to start with local file fallback.");
+      }
+      console.error("Falling back to local file storage for development");
     }
   }
 
@@ -221,6 +244,17 @@ async function createStorage() {
       await writeFile(config.dataPath, JSON.stringify(nextStore, null, 2));
     }
   };
+}
+
+function databaseSslOptions(databaseUrl) {
+  const url = new URL(databaseUrl);
+  const sslMode = String(url.searchParams.get("sslmode") || process.env.PGSSLMODE || "").toLowerCase();
+  const host = url.hostname.toLowerCase();
+  if (sslMode === "disable" || host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".internal")) return false;
+  if (sslMode === "no-verify" || sslMode === "allow" || sslMode === "prefer" || process.env.PGSSL_NO_VERIFY === "true") {
+    return { rejectUnauthorized: false };
+  }
+  return { rejectUnauthorized: true };
 }
 
 function loadFileStore() {
@@ -1093,7 +1127,7 @@ function setSecurityHeaders(_req, res) {
 }
 
 function rateLimit(req, res) {
-  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || "local";
+  const ip = clientIp(req);
   const bucketKey = `${ip}:${(req.url || "/").split("?")[0].split("/")[1]}`;
   const now = Date.now();
   const bucket = rateBuckets.get(bucketKey) || { count: 0, reset: now + 60_000 };
@@ -1110,11 +1144,29 @@ function rateLimit(req, res) {
   return true;
 }
 
+function clientIp(req) {
+  if (config.trustProxy) {
+    const forwarded = req.headers["cf-connecting-ip"] ||
+      req.headers["x-real-ip"] ||
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim();
+    if (forwarded) return String(forwarded).trim();
+  }
+  return req.socket.remoteAddress || "local";
+}
+
 function getSession(req, res) {
+  pruneExpiredSessions();
   const cookies = parseCookies(req.headers.cookie || "");
   const rawSid = cookies.sid;
   const sid = verifySigned(rawSid);
-  if (sid && sessions.has(sid)) return sessions.get(sid);
+  if (sid && sessions.has(sid)) {
+    const existing = sessions.get(sid);
+    if (!sessionExpired(existing)) {
+      existing.lastSeenAt = Date.now();
+      return existing;
+    }
+    sessions.delete(sid);
+  }
 
   const newSid = randomBytes(32).toString("base64url");
   const session = {
@@ -1125,7 +1177,8 @@ function getSession(req, res) {
     user: null,
     appUserId: null,
     downloads: new Map(),
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    lastSeenAt: Date.now()
   };
   sessions.set(newSid, session);
   res.setHeader("Set-Cookie", cookie("sid", sign(newSid), {
@@ -1136,6 +1189,20 @@ function getSession(req, res) {
     maxAge: 60 * 60 * 8
   }));
   return session;
+}
+
+function sessionExpired(session) {
+  return !session?.createdAt || Date.now() - Number(session.createdAt) > sessionMaxAgeMs;
+}
+
+function pruneExpiredSessions() {
+  if (!sessions.size) return;
+  const now = Date.now();
+  for (const [sid, session] of sessions) {
+    if (!session?.createdAt || now - Number(session.createdAt) > sessionMaxAgeMs) {
+      sessions.delete(sid);
+    }
+  }
 }
 
 function parseCookies(header) {
@@ -1172,20 +1239,25 @@ function cookie(name, value, opts) {
 
 function publicSession(session) {
   restoreOnshapeToken(session);
+  let appUser = session.appUserId ? store.users.find((user) => user.id === session.appUserId) : null;
+  if (session.appUserId && !appUser) {
+    session.appUserId = null;
+    appUser = null;
+  }
   return {
     authenticated: Boolean(session.token),
-    appAuthenticated: Boolean(session.appUserId),
+    appAuthenticated: Boolean(appUser),
     bootstrapRequired: !store.users.length,
     csrfToken: session.csrf,
     user: session.user,
-    appUser: session.appUserId ? publicAppUser(store.users.find((user) => user.id === session.appUserId)) : null,
+    appUser: publicAppUser(appUser),
     configured: Boolean(config.onshapeClientId && config.onshapeClientSecret),
     appBaseUrl: config.appBaseUrl,
     storage: {
       kind: storage.kind,
       persistent: storage.persistent,
       databaseUrlConfigured: Boolean(config.databaseUrl),
-      error: storageInitError
+      error: appUser?.role === "admin" ? storageInitError : ""
     }
   };
 }
@@ -1201,9 +1273,9 @@ function logoutPlateFlow(res, session) {
 function withAppAccess(session, res, handler, roles = []) {
   const run = (user) => Promise.resolve(handler(user)).catch((error) => {
     console.error(error);
-    return json(res, error.status || 500, { error: error.message || "Unexpected server error" });
+    return sendError(res, error);
   });
-  if (!store.users.length) return run();
+  if (!store.users.length) return json(res, 503, { error: "PlateFlow setup required. Create the first admin account before using the workspace." });
   const user = store.users.find((item) => item.id === session.appUserId && item.status === "active");
   if (!user) return json(res, 401, { error: "Sign in to PlateFlow first" });
   if (roles.length && !roles.includes(user.role)) return json(res, 403, { error: "Your role cannot do that" });
@@ -1247,9 +1319,17 @@ async function registerPlateFlow(req, res, session) {
 async function loginPlateFlow(req, res, session) {
   requireCsrf(req, session);
   const input = validateAuthInput(await readJson(req));
+  assertLoginAllowed(req, input.email);
   const user = store.users.find((item) => item.email === input.email);
-  if (!user || !verifyPassword(input.password, user.passwordHash)) throw httpError(401, "Invalid email or password");
-  if (user.status !== "active") throw httpError(403, "This account is not active yet");
+  if (!user || !verifyPassword(input.password, user.passwordHash)) {
+    recordLoginFailure(req, input.email);
+    throw httpError(401, "Invalid email or password");
+  }
+  if (user.status !== "active") {
+    recordLoginFailure(req, input.email);
+    throw httpError(403, "This account is not active yet");
+  }
+  clearLoginFailures(req, input.email);
   session.appUserId = user.id;
   session.token = null;
   session.user = null;
@@ -1271,6 +1351,59 @@ function validateAuthInput(body, options = {}) {
   if (password.length < 10 || password.length > 200) throw httpError(400, "Password must be at least 10 characters");
   if (options.requireName && !name) throw httpError(400, "Name is required");
   return { email, password, name };
+}
+
+function assertLoginAllowed(req, email) {
+  pruneLoginFailureBuckets();
+  const now = Date.now();
+  for (const { key } of loginThrottleKeys(req, email)) {
+    const bucket = loginFailureBuckets.get(key);
+    if (bucket?.lockedUntil && bucket.lockedUntil > now) {
+      throw httpError(429, "Too many login attempts. Try again in a few minutes.");
+    }
+  }
+}
+
+function recordLoginFailure(req, email) {
+  const now = Date.now();
+  for (const { key, limit } of loginThrottleKeys(req, email)) {
+    const bucket = loginFailureBuckets.get(key) || { count: 0, reset: now + loginThrottleWindowMs, lockedUntil: 0 };
+    if (now > bucket.reset) {
+      bucket.count = 0;
+      bucket.reset = now + loginThrottleWindowMs;
+      bucket.lockedUntil = 0;
+    }
+    bucket.count += 1;
+    if (bucket.count >= limit) bucket.lockedUntil = now + loginThrottleLockMs;
+    loginFailureBuckets.set(key, bucket);
+  }
+}
+
+function clearLoginFailures(req, email) {
+  for (const { key } of loginThrottleKeys(req, email)) {
+    loginFailureBuckets.delete(key);
+  }
+}
+
+function loginThrottleKeys(req, email) {
+  const emailHash = createHash("sha256")
+    .update(String(email || "").toLowerCase())
+    .digest("base64url")
+    .slice(0, 24);
+  return [
+    { key: `login-ip:${clientIp(req)}`, limit: loginIpFailureLimit },
+    { key: `login-email:${emailHash}`, limit: loginEmailFailureLimit }
+  ];
+}
+
+function pruneLoginFailureBuckets() {
+  if (!loginFailureBuckets.size) return;
+  const now = Date.now();
+  for (const [key, bucket] of loginFailureBuckets) {
+    if (Number(bucket.reset || 0) <= now && Number(bucket.lockedUntil || 0) <= now) {
+      loginFailureBuckets.delete(key);
+    }
+  }
 }
 
 function findUsableInvite(email, token) {
@@ -1402,7 +1535,8 @@ async function onshapeCallback(_req, res, session, url) {
     return redirect(res, addQuery(session.returnTo || "/", "auth", "ok"));
   } catch (error) {
     console.error("Onshape OAuth callback failed", error);
-    const detail = encodeURIComponent(error.expose ? error.message : "Token exchange failed. Check hosting environment variables and Onshape redirect URLs.");
+    const fallback = "Token exchange failed. Check hosting environment variables and Onshape redirect URLs.";
+    const detail = encodeURIComponent(config.prod ? fallback : (error.expose ? error.message : fallback));
     return redirect(res, `${addQuery(session.returnTo || "/", "auth", "callback-failed")}&detail=${detail}`);
   }
 }
@@ -6702,6 +6836,13 @@ function httpError(status, message) {
   error.status = status;
   error.expose = status < 500;
   return error;
+}
+
+function sendError(res, error) {
+  const status = Number(error?.status || 500);
+  const expose = Boolean(error?.expose || status < 500 || !config.prod);
+  const message = expose ? (error?.message || "Unexpected server error") : "Unexpected server error";
+  return json(res, status, { error: message });
 }
 
 async function serveStatic(res, pathname) {
