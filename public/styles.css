@@ -477,10 +477,9 @@ body.locked .login-screen {
   width: max(520px, 58vw);
   pointer-events: none;
   background:
-    radial-gradient(rgba(219, 234, 254, .82) 1px, transparent 1.5px),
-    radial-gradient(rgba(96, 165, 250, .50) 1px, transparent 1.5px);
-  background-position: 0 0, 13px 17px;
-  background-size: 52px 52px, 86px 86px;
+    radial-gradient(ellipse at 46% 48%, rgba(219, 234, 254, .20), transparent 48%),
+    radial-gradient(ellipse at 58% 52%, rgba(96, 165, 250, .16), transparent 58%),
+    linear-gradient(90deg, transparent 0%, rgba(147, 197, 253, .08) 44%, transparent 100%);
   clip-path: polygon(
     0 22%,
     9% 16%,
@@ -503,7 +502,8 @@ body.locked .login-screen {
     0 82%
   );
   opacity: 0;
-  filter: brightness(1.6) drop-shadow(0 0 14px rgba(96, 165, 250, .24));
+  filter: blur(2px) drop-shadow(0 0 14px rgba(96, 165, 250, .18));
+  mix-blend-mode: screen;
   transform: translate3d(-118%, 3%, 0) rotate(-7deg);
   animation: login-dot-wave 9.5s ease-in-out infinite;
   will-change: transform, opacity;
