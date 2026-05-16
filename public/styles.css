@@ -105,7 +105,6 @@ body:not([data-page="dashboard"])::after {
   body.login-transitioning .login-transition-screen,
   body.login-transitioning .topbar,
   .login-screen::after,
-  .login-visuals::before,
   .login-shooting-star,
   .login-card-cloud,
   .login-card::before,
@@ -468,47 +467,6 @@ body.locked .login-screen {
   pointer-events: none;
 }
 
-.login-visuals::before {
-  content: "";
-  position: absolute;
-  top: -12%;
-  bottom: -12%;
-  left: 0;
-  width: max(520px, 58vw);
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse at 46% 48%, rgba(219, 234, 254, .20), transparent 48%),
-    radial-gradient(ellipse at 58% 52%, rgba(96, 165, 250, .16), transparent 58%),
-    linear-gradient(90deg, transparent 0%, rgba(147, 197, 253, .08) 44%, transparent 100%);
-  clip-path: polygon(
-    0 22%,
-    9% 16%,
-    19% 24%,
-    30% 15%,
-    42% 25%,
-    53% 18%,
-    66% 27%,
-    78% 19%,
-    91% 29%,
-    100% 24%,
-    100% 70%,
-    88% 65%,
-    76% 75%,
-    64% 66%,
-    51% 78%,
-    39% 69%,
-    27% 81%,
-    15% 72%,
-    0 82%
-  );
-  opacity: 0;
-  filter: blur(2px) drop-shadow(0 0 14px rgba(96, 165, 250, .18));
-  mix-blend-mode: screen;
-  transform: translate3d(-118%, 3%, 0) rotate(-7deg);
-  animation: login-dot-wave 9.5s ease-in-out infinite;
-  will-change: transform, opacity;
-}
-
 .login-shooting-star {
   --star-start-x: -22vw;
   --star-start-y: -10vh;
@@ -749,37 +707,6 @@ body.locked .login-screen {
   76% {
     opacity: .38;
     filter: brightness(1.12);
-  }
-}
-
-@keyframes login-dot-wave {
-  0% {
-    opacity: 0;
-    transform: translate3d(-118%, 3%, 0) rotate(-7deg);
-  }
-
-  13% {
-    opacity: .18;
-  }
-
-  38% {
-    opacity: .48;
-    transform: translate3d(12vw, -2%, 0) rotate(-5deg);
-  }
-
-  64% {
-    opacity: .34;
-    transform: translate3d(74vw, 3%, 0) rotate(-9deg);
-  }
-
-  86% {
-    opacity: 0;
-    transform: translate3d(132vw, -1%, 0) rotate(-6deg);
-  }
-
-  100% {
-    opacity: 0;
-    transform: translate3d(132vw, -1%, 0) rotate(-6deg);
   }
 }
 
