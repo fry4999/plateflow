@@ -103,6 +103,7 @@ body:not([data-page="dashboard"])::after {
   }
 
   body.login-transitioning .login-transition-screen,
+  body.login-transitioning .topbar,
   .login-screen::after,
   .login-visuals::before,
   .login-shooting-star,
@@ -168,7 +169,7 @@ body.login-transitioning .login-transition-screen {
 }
 
 body.login-transitioning .topbar {
-  visibility: hidden;
+  animation: login-topbar-reveal .9s ease-out both;
 }
 
 caption {
@@ -854,6 +855,19 @@ body.locked .login-screen {
   100% {
     opacity: 0;
     visibility: hidden;
+  }
+}
+
+@keyframes login-topbar-reveal {
+  0%,
+  28% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

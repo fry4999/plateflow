@@ -373,15 +373,16 @@ function renderAppAccess(session) {
   bootstrapRequired = Boolean(session.bootstrapRequired);
   const allowApp = canLoadDashboard(session);
   const shouldFadeFromLogin = allowApp && document.body.classList.contains("locked");
+  if (shouldFadeFromLogin && els.loginTransition && !embeddedMode) {
+    document.body.classList.remove("login-transitioning");
+    void els.loginTransition.offsetWidth;
+    document.body.classList.add("login-transitioning");
+  }
   els.loginScreen?.classList.toggle("hidden", allowApp);
   els.appShell?.classList.toggle("hidden", !allowApp);
   document.body.classList.toggle("locked", !allowApp);
   if (shouldFadeFromLogin && els.loginTransition && !embeddedMode) {
-    document.body.classList.remove("login-transitioning");
-    window.requestAnimationFrame(() => {
-      document.body.classList.add("login-transitioning");
-      window.setTimeout(() => document.body.classList.remove("login-transitioning"), 900);
-    });
+    window.setTimeout(() => document.body.classList.remove("login-transitioning"), 900);
   }
   document.body.classList.toggle("bootstrap", Boolean(session.bootstrapRequired));
   document.body.classList.toggle("admin-user", session.appUser?.role === "admin");
