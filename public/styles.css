@@ -511,8 +511,6 @@ body.locked .login-screen {
 .login-shooting-star {
   --star-start-x: -22vw;
   --star-start-y: -10vh;
-  --star-mid-x: 48vw;
-  --star-mid-y: 28vh;
   --star-end-x: 122vw;
   --star-end-y: 68vh;
   --star-angle: 27deg;
@@ -530,7 +528,7 @@ body.locked .login-screen {
   opacity: 0;
   transform: translate3d(var(--star-start-x), var(--star-start-y), 0) rotate(var(--star-angle)) scaleX(.55);
   transform-origin: center;
-  animation: login-shooting-star var(--star-duration) cubic-bezier(.18, .78, .28, 1) infinite;
+  animation: login-shooting-star var(--star-duration) linear infinite;
   animation-delay: var(--star-delay);
   will-change: transform, opacity;
 }
@@ -560,8 +558,6 @@ body.locked .login-screen {
 .login-shooting-star-b {
   --star-start-x: -34vw;
   --star-start-y: 20vh;
-  --star-mid-x: 38vw;
-  --star-mid-y: 43vh;
   --star-end-x: 124vw;
   --star-end-y: 82vh;
   --star-angle: 20deg;
@@ -573,8 +569,6 @@ body.locked .login-screen {
 .login-shooting-star-c {
   --star-start-x: 8vw;
   --star-start-y: -22vh;
-  --star-mid-x: 59vw;
-  --star-mid-y: 18vh;
   --star-end-x: 130vw;
   --star-end-y: 58vh;
   --star-angle: 33deg;
@@ -586,8 +580,6 @@ body.locked .login-screen {
 .login-shooting-star-d {
   --star-start-x: -24vw;
   --star-start-y: 54vh;
-  --star-mid-x: 48vw;
-  --star-mid-y: 66vh;
   --star-end-x: 126vw;
   --star-end-y: 98vh;
   --star-angle: 14deg;
@@ -802,17 +794,12 @@ body.locked .login-screen {
     transform: translate3d(var(--star-start-x), var(--star-start-y), 0) rotate(var(--star-angle)) scaleX(.72);
   }
 
-  66% {
-    opacity: .94;
-    transform: translate3d(var(--star-mid-x), var(--star-mid-y), 0) rotate(var(--star-angle)) scaleX(1);
+  76% {
+    opacity: .88;
+    transform: translate3d(var(--star-end-x), var(--star-end-y), 0) rotate(var(--star-angle)) scaleX(.94);
   }
 
-  79% {
-    opacity: .18;
-    transform: translate3d(var(--star-end-x), var(--star-end-y), 0) rotate(var(--star-angle)) scaleX(.78);
-  }
-
-  80%,
+  82%,
   100% {
     opacity: 0;
     transform: translate3d(var(--star-end-x), var(--star-end-y), 0) rotate(var(--star-angle)) scaleX(.54);
